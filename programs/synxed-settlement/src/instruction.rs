@@ -39,7 +39,9 @@ impl SettlementInstruction {
     }
 
     pub fn unpack(data: &[u8]) -> Result<Self, ProgramError> {
-        let (tag, rest) = data.split_first().ok_or(ProgramError::InvalidInstructionData)?;
+        let (tag, rest) = data
+            .split_first()
+            .ok_or(ProgramError::InvalidInstructionData)?;
         match tag {
             &SETTLE_TAG => {
                 if rest.len() != 32 + 8 + 6 {

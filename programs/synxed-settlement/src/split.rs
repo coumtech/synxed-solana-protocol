@@ -24,9 +24,7 @@ pub enum SplitError {
 impl SplitError {
     pub fn message(self) -> &'static str {
         match self {
-            SplitError::BpsSumNotDenominator => {
-                "split basis points must sum to 10000"
-            }
+            SplitError::BpsSumNotDenominator => "split basis points must sum to 10000",
             SplitError::BpsOutOfRange => "each share bps must be in 0..=10000",
             SplitError::ZeroAmount => "amount must be greater than zero",
         }
@@ -65,8 +63,7 @@ pub fn split_three(
                 .checked_sub(allocated)
                 .ok_or(SplitError::ZeroAmount)?;
         } else {
-            let part = (amount as u128)
-                .saturating_mul(u128::from(shares[i]))
+            let part = (amount as u128).saturating_mul(u128::from(shares[i]))
                 / u128::from(BPS_DENOMINATOR);
             out[i] = part as u64;
             allocated = allocated.saturating_add(out[i]);

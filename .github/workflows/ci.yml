@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  AGAVE_VERSION: v4.2.1
+
 jobs:
   ci:
     name: ci
@@ -32,6 +35,43 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --check --manifest-path programs/synxed-settlement/Cargo.toml
 
       - name: Test Rust split math
         run: cargo test --manifest-path programs/synxed-settlement/Cargo.toml
+
+  program:
+    name: program
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Cache Agave toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: agave-${{ env.AGAVE_VERSION }}-${{ runner.os }}
+
+      - name: Cache program build
+        uses: actions/cache@v4
+        with:
+          path: programs/synxed-settlement/target
+          key: sbf-target-${{ env.AGAVE_VERSION }}-${{ hashFiles('programs/synxed-settlement/Cargo.lock') }}
+
+      - name: Install Agave toolchain
+        run: |
+          if [ ! -x "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
+            sh -c "$(curl -sSfL https://release.anza.xyz/${AGAVE_VERSION}/install)"
+          fi
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Build on-chain program
+        run: cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
+
+      - name: Report binary size
+        run: ls -la programs/synxed-settlement/target/deploy/*.so

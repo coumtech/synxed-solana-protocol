@@ -27,13 +27,7 @@ pub fn process_instruction(
             studio_bps,
             synxed_bps,
         } => process_settle(
-            program_id,
-            accounts,
-            event_id,
-            amount,
-            artist_bps,
-            studio_bps,
-            synxed_bps,
+            program_id, accounts, event_id, amount, artist_bps, studio_bps, synxed_bps,
         ),
     }
 }
