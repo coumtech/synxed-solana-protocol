@@ -17,6 +17,6 @@ default = []
 onchain = ["dep:solana-program"]
 
 [dependencies]
-solana-program = { version = "2.2", optional = true }
+solana-program = { version = "4.1", optional = true }
 
 [dev-dependencies]
