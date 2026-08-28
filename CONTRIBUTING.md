@@ -21,9 +21,10 @@ This is the public **SYNXED Solana settlement protocol** (Coum Technologies Ltd,
 
 1. Fork or create a feature branch from `main`: `feat/*`, `fix/*`, `docs/*`, or `test/*`.
 2. Keep changes scoped to this protocol (split math, program, TypeScript SDK, demo, docs).
-3. Run `bun test` and `bun run typecheck` locally. If you change the Rust program, also run `cargo test --manifest-path programs/synxed-settlement/Cargo.toml`.
+3. Run `bun test` and `bun run typecheck` locally. If you change the Rust program, also run `cargo fmt --check` and `cargo test` (with and without `--features onchain`) against `programs/synxed-settlement/Cargo.toml`.
 4. Open a PR against `main` using the pull request template.
-5. Do not merge your own PR unless maintainers have documented an exception.
+5. Every PR receives an **adversarial review** before merge: a reviewer (human or agent) whose explicit job is to find bugs, broken claims, and security issues in the diff — not to rubber-stamp it. Confirmed findings are fixed in the PR before it merges.
+6. Do not merge your own PR unless maintainers have documented an exception.
 
 ## Secrets
 

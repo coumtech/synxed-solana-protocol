@@ -4,9 +4,10 @@
 //  - "program": one instruction to the deployed settlement program, which
 //    validates the split and pays all three recipients atomically. Requires
 //    a program id (see docs/integration.md for deployment).
-//  - "system-transfer": three SystemProgram transfers computed client-side
-//    with the same split math, plus a memo. Works with no deployed program,
-//    so the demo runs end-to-end on a fresh clone.
+//  - "system-transfer": up to three SystemProgram transfers (zero-lamport
+//    shares are skipped) computed client-side with the same split math,
+//    plus a memo. Works with no deployed program, so the demo runs
+//    end-to-end on a fresh clone.
 //
 // Both modes settle native SOL on devnet as a stand-in asset.
 
@@ -19,7 +20,7 @@ import {
   TransactionInstruction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
-import { buildSettleInstruction, eventIdSeed } from "./instruction.ts";
+import { buildSettleInstruction, eventIdSeed, U64_MAX } from "./instruction.ts";
 import { splitAmountAtomic } from "./split.ts";
 import { ProtocolError, type SettlementRequest } from "./types.ts";
 
@@ -84,6 +85,14 @@ export async function submitSettlement(
   }
   const { request } = options;
   const lamportsTotal = request.amountAtomic * scale;
+  // Enforced here so both modes reject oversized totals identically;
+  // program mode would also catch this in encodeSettleData.
+  if (lamportsTotal > U64_MAX) {
+    throw new ProtocolError(
+      "AMOUNT_U64",
+      `scaled total ${lamportsTotal} lamports exceeds u64`,
+    );
+  }
   // Mirrors the on-chain math: floor the first two shares, remainder to the
   // last, so lamports out always equal lamports in.
   const lamportsByRole = splitAmountAtomic(lamportsTotal, request.splits);
@@ -172,6 +181,7 @@ function memoInstruction(
     event: request.eventId,
     kind: request.kind,
     lamports: lamportsTotal.toString(),
+    memo: request.memo,
   });
   return new TransactionInstruction({
     programId: MEMO_PROGRAM_ID,

@@ -6,7 +6,13 @@ using only the public code in this repository.
 ## 1. Construct a `SettlementRequest`
 
 Your app decides when an event is billable. This protocol only needs the
-result:
+result.
+
+> **The SDK is not published to npm.** Do not `npm install` the name below —
+> the package name resolves only inside this repository's Bun workspace
+> (the demo consumes it exactly this way; see
+> `examples/gaming-payment-demo/package.json`). To use the SDK elsewhere,
+> vendor `sdk/typescript/src`.
 
 ```ts
 import {
@@ -29,9 +35,9 @@ const request: SettlementRequest = {
 };
 ```
 
-> The SDK is consumed from source in this repository (Bun and modern
-> bundlers run TypeScript directly). It is not published to npm yet; vendor
-> `sdk/typescript/src` or import it as a workspace package.
+> The SDK is consumed from source (Bun and modern bundlers run TypeScript
+> directly), either as the workspace package above or by vendoring
+> `sdk/typescript/src`.
 
 ## 2. Compute (and display) the split
 
@@ -82,6 +88,10 @@ A reference deployment is live on devnet and can be used directly:
 SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
 ```
 
+The reference deployment is upgradeable by the maintainers (standard
+upgradeable-loader deployment). Deploy your own copy if you need to trust
+the exact bytecode.
+
 To deploy your own copy you need the
 [Solana CLI tools](https://docs.solana.com/cli/install) with
 `cargo build-sbf` (plus `rustup`, which `cargo build-sbf` uses to link its
@@ -89,7 +99,7 @@ toolchain):
 
 ```bash
 cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
-solana program deploy target/deploy/synxed_settlement.so --url devnet
+solana program deploy programs/synxed-settlement/target/deploy/synxed_settlement.so --url devnet
 ```
 
 Put the printed program id in `.env` as `SETTLEMENT_PROGRAM_ID`. Deploy

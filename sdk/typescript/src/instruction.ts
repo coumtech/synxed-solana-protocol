@@ -19,7 +19,7 @@ export const SETTLEMENT_SEED = "settlement";
 export const EVENT_SEED_LENGTH = 32;
 export const SETTLE_DATA_LENGTH = 1 + 32 + 8 + 2 + 2 + 2;
 
-const U64_MAX = 0xffff_ffff_ffff_ffffn;
+export const U64_MAX = 0xffff_ffff_ffff_ffffn;
 
 /**
  * Derive the fixed-size on-chain event id from an application event id.

@@ -84,8 +84,8 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 
 ### Settlement modes
 
-- **Fallback (default):** three system transfers computed with the split
-  math, plus a memo — works with nothing deployed.
+- **Fallback (default):** up to three system transfers computed with the
+  split math, plus a memo — works with nothing deployed.
 - **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
   becomes a single instruction that re-validates the split on-chain,
   enforces per-event idempotency, and pays all three wallets atomically. A
@@ -95,8 +95,9 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
   SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
   ```
 
-  Or deploy your own copy of `programs/synxed-settlement`
-  ([docs/integration.md](docs/integration.md)).
+  The reference deployment is upgradeable by the maintainers; deploy your
+  own copy of `programs/synxed-settlement` if you need to trust the exact
+  bytecode ([docs/integration.md](docs/integration.md)).
 
 ## Repository layout
 

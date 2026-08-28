@@ -21,7 +21,7 @@ import {
   type SettlementRequest,
   type SettlementRole,
   type SplitResult,
-} from "../../../sdk/typescript/src/index.ts";
+} from "@coumtech/synxed-solana-protocol";
 import { fakeAudioAdImpression } from "./event.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -35,14 +35,21 @@ function envString(name: string): string | undefined {
   return value !== undefined && value.trim() !== "" ? value.trim() : undefined;
 }
 
+const DECIMAL_INTEGER = /^[+-]?\d+$/;
+
 function envInt(name: string, fallback: number): number {
   const raw = envString(name);
   if (raw === undefined) {
     return fallback;
   }
+  // Strict decimal only: parseInt would silently truncate "3500.9" or
+  // accept "35junk", and BigInt would accept hex/binary prefixes.
+  if (!DECIMAL_INTEGER.test(raw)) {
+    throw new Error(`${name} must be a decimal integer, got "${raw}"`);
+  }
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isSafeInteger(parsed)) {
-    throw new Error(`${name} must be an integer, got "${raw}"`);
+    throw new Error(`${name} must be a decimal integer, got "${raw}"`);
   }
   return parsed;
 }
@@ -52,11 +59,10 @@ function envBigInt(name: string, fallback: bigint): bigint {
   if (raw === undefined) {
     return fallback;
   }
-  try {
-    return BigInt(raw);
-  } catch {
-    throw new Error(`${name} must be an integer, got "${raw}"`);
+  if (!DECIMAL_INTEGER.test(raw)) {
+    throw new Error(`${name} must be a decimal integer, got "${raw}"`);
   }
+  return BigInt(raw);
 }
 
 interface DemoRecipients {
@@ -112,10 +118,14 @@ function loadPayer(path: string): Keypair {
   if (
     !Array.isArray(parsed) ||
     parsed.length !== 64 ||
-    !parsed.every((n): n is number => typeof n === "number")
+    !parsed.every(
+      (n): n is number =>
+        typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 255,
+    )
   ) {
     throw new Error(
-      `${path} is not a 64-byte JSON keypair (solana-keygen format)`,
+      `${path} is not a 64-byte JSON keypair (solana-keygen format: ` +
+        `an array of 64 integers in 0..=255)`,
     );
   }
   return Keypair.fromSecretKey(Uint8Array.from(parsed));
@@ -173,6 +183,14 @@ async function ensureFunds(
     throw new Error(
       `Devnet airdrop failed (${message}). Fund the payer manually at ` +
         `https://faucet.solana.com — address ${payer.publicKey.toBase58()}`,
+    );
+  }
+  const after = BigInt(await connection.getBalance(payer.publicKey));
+  if (after < neededLamports) {
+    throw new Error(
+      `Balance ${after} lamports still below required ${neededLamports} ` +
+        `after airdrop. Fund the payer at https://faucet.solana.com — ` +
+        `address ${payer.publicKey.toBase58()}`,
     );
   }
 }
@@ -236,10 +254,16 @@ async function main(): Promise<void> {
   const rpcUrl = envString("SOLANA_RPC_URL") ?? DEVNET_RPC_URL;
   const connection = new Connection(rpcUrl, "confirmed");
   const scale = envBigInt("LAMPORTS_PER_UNIT", 1_000n);
+  if (scale <= 0n) {
+    throw new Error(`LAMPORTS_PER_UNIT must be positive, got ${scale}`);
+  }
   const lamportsTotal = amountAtomic * scale;
-  const smallestShare = splitAmountAtomic(lamportsTotal, request.splits)
+  // Zero-lamport shares are skipped entirely, so only nonzero payouts can
+  // hit the rent-exemption floor for brand-new recipient accounts.
+  const smallestNonzeroShare = splitAmountAtomic(lamportsTotal, request.splits)
+    .filter((share) => share > 0n)
     .reduce((min, share) => (share < min ? share : min));
-  if (smallestShare < APPROX_RENT_EXEMPT_MIN_LAMPORTS) {
+  if (smallestNonzeroShare < APPROX_RENT_EXEMPT_MIN_LAMPORTS) {
     console.log(
       `\nNote: small payouts may fail rent-exemption for brand-new accounts ` +
         `(~${APPROX_RENT_EXEMPT_MIN_LAMPORTS} lamports minimum). ` +
@@ -247,17 +271,29 @@ async function main(): Promise<void> {
     );
   }
 
-  await ensureFunds(connection, payer, lamportsTotal + 1_000_000n);
-
   const programIdRaw = envString("SETTLEMENT_PROGRAM_ID");
+  let programId: PublicKey | undefined;
+  if (programIdRaw !== undefined) {
+    try {
+      programId = new PublicKey(programIdRaw);
+    } catch {
+      throw new Error(
+        `SETTLEMENT_PROGRAM_ID is not a valid base58 pubkey: "${programIdRaw}"`,
+      );
+    }
+  }
+
+  // Program mode also pays rent for the 41-byte settlement record
+  // (~1,176,240 lamports); budget for it plus transaction fees.
+  const overhead = programId !== undefined ? 1_200_000n : 1_000_000n;
+  await ensureFunds(connection, payer, lamportsTotal + overhead);
+
   const submission = await submitSettlement({
     connection,
     payer,
     request,
     lamportsPerAtomicUnit: scale,
-    ...(programIdRaw !== undefined
-      ? { programId: new PublicKey(programIdRaw) }
-      : {}),
+    ...(programId !== undefined ? { programId } : {}),
   });
 
   console.log(`\nSettled on devnet (${submission.mode} mode)`);

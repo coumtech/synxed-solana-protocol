@@ -74,8 +74,13 @@ Accounts, in order:
 | 5 | system program | no | no | transfers and account creation |
 
 The program validates the split with the same rules as above and fails the
-whole transaction on any violation (`InvalidArgument`). Payouts are native
-SOL transfers from the payer.
+whole transaction on any violation. Split violations return
+`InvalidArgument`; a missing payer signature returns
+`MissingRequiredSignature`, non-writable payout accounts
+`InvalidAccountData`, a wrong record address `InvalidSeeds`, a wrong system
+program account `IncorrectProgramId`, and an already-settled event
+`AccountAlreadyInitialized`. Payouts are native SOL transfers from the
+payer; zero-lamport shares are skipped.
 
 ## Idempotency
 
@@ -99,10 +104,10 @@ transfer/allocate/assign to tolerate pre-funded accounts.
 
 ## Client fallback mode
 
-When no program id is configured, the TypeScript client settles with three
-`SystemProgram.transfer` instructions in a single transaction, computed with
-the identical split function, plus a memo instruction recording the event
-id. Same amounts, same conservation guarantee, weaker atomicity semantics
+When no program id is configured, the TypeScript client settles with up to
+three `SystemProgram.transfer` instructions in a single transaction
+(zero-lamport shares are skipped), computed with the identical split
+function, plus a memo instruction recording the event id. Same amounts, same conservation guarantee, weaker atomicity semantics
 (no on-chain re-validation, no idempotency record). It exists so the demo
 produces a real devnet transaction without requiring anyone to deploy the
 program first.
