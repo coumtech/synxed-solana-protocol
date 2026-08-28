@@ -1,0 +1,26 @@
+{
+  "name": "synxed-solana-protocol",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "sdk/typescript",
+    "examples/gaming-payment-demo"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "test:rust": "cargo test --manifest-path programs/synxed-settlement/Cargo.toml",
+    "typecheck": "bunx tsc --noEmit -p sdk/typescript/tsconfig.json && bunx tsc --noEmit -p examples/gaming-payment-demo/tsconfig.json && bunx tsc --noEmit -p tests/tsconfig.json",
+    "demo": "bun run examples/gaming-payment-demo/src/index.ts",
+    "demo:keygen": "bun run examples/gaming-payment-demo/src/keygen.ts"
+  },
+  "devDependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "@types/bun": "^1.2.22",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

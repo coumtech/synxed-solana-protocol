@@ -1,0 +1,22 @@
+[package]
+name = "synxed-settlement"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "SYNXED Solana settlement program: 3-way audio-ad revenue split"
+repository = "https://github.com/coumtech/synxed-solana-protocol"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+# Enable when the Solana BPF toolchain is installed:
+#   cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
+onchain = ["dep:solana-program"]
+
+[dependencies]
+solana-program = { version = "2.2", optional = true }
+
+[dev-dependencies]
