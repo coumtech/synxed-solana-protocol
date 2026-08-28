@@ -86,11 +86,17 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 
 - **Fallback (default):** three system transfers computed with the split
   math, plus a memo — works with nothing deployed.
-- **Program mode:** deploy `programs/synxed-settlement` to devnet
-  ([docs/integration.md](docs/integration.md)), set
-  `SETTLEMENT_PROGRAM_ID`, and settlement becomes a single instruction that
-  re-validates the split on-chain, enforces per-event idempotency, and pays
-  all three wallets atomically.
+- **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
+  becomes a single instruction that re-validates the split on-chain,
+  enforces per-event idempotency, and pays all three wallets atomically. A
+  reference deployment exists on devnet — no build tools required:
+
+  ```
+  SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
+  ```
+
+  Or deploy your own copy of `programs/synxed-settlement`
+  ([docs/integration.md](docs/integration.md)).
 
 ## Repository layout
 

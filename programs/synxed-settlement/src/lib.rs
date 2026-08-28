@@ -13,7 +13,10 @@ pub mod processor;
 pub mod state;
 
 #[cfg(feature = "onchain")]
-solana_program::entrypoint!(processor::process_instruction);
+use processor::process_instruction;
+
+#[cfg(feature = "onchain")]
+solana_program::entrypoint!(process_instruction);
 
 pub use split::{
     split_three, SplitError, BPS_DENOMINATOR, DEFAULT_AMOUNT_ATOMIC, DEFAULT_ARTIST_BPS,

@@ -95,11 +95,11 @@ fn process_settle(
     Ok(())
 }
 
-fn transfer(
-    from: &AccountInfo,
-    to: &AccountInfo,
+fn transfer<'a>(
+    from: &AccountInfo<'a>,
+    to: &AccountInfo<'a>,
     lamports: u64,
-    system_program: &AccountInfo,
+    system_program: &AccountInfo<'a>,
 ) -> ProgramResult {
     if lamports == 0 {
         return Ok(());
