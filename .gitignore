@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Secrets and local env (never commit)
+.env
+.env.*
+!.env.example
+
+# Solana / program keypairs — local only
+.keys/
+**/id.json
+**/*keypair*.json
+**/*-keypair.json
+target/deploy/*.json
+
+# Build artifacts
+target/
+.anchor/
+test-ledger/
+dist/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
