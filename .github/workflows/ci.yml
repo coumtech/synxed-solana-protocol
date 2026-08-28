@@ -52,13 +52,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Cache Agave toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.local/share/solana
           key: agave-${{ env.AGAVE_VERSION }}-${{ runner.os }}
 
       - name: Cache program build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: programs/synxed-settlement/target
           key: sbf-target-${{ env.AGAVE_VERSION }}-${{ hashFiles('programs/synxed-settlement/Cargo.lock') }}
