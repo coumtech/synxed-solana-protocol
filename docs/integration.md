@@ -76,8 +76,16 @@ console.log(submission.explorerUrl);
 
 ## 4. Deploying the program (optional, for program mode)
 
-Requires the [Solana CLI tools](https://docs.solana.com/cli/install) with
-`cargo build-sbf`:
+A reference deployment is live on devnet and can be used directly:
+
+```
+SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
+```
+
+To deploy your own copy you need the
+[Solana CLI tools](https://docs.solana.com/cli/install) with
+`cargo build-sbf` (plus `rustup`, which `cargo build-sbf` uses to link its
+toolchain):
 
 ```bash
 cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
