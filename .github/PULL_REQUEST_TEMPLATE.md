@@ -10,6 +10,7 @@
 - [ ] `bun run typecheck` passes
 - [ ] Docs updated if the `SettlementRequest` shape or split rules changed
 - [ ] Devnet-only: no mainnet, token launch, or RWA work in this repository
+- [ ] Adversarial review completed: findings addressed or explicitly accepted below
 
 ## Test plan
 

@@ -20,3 +20,8 @@ onchain = ["dep:solana-program"]
 solana-program = { version = "2.2", optional = true }
 
 [dev-dependencies]
+
+# Split math is bounds-checked by construction; keep runtime overflow checks
+# on anyway so future arithmetic edits fail loudly instead of wrapping.
+[profile.release]
+overflow-checks = true

@@ -24,6 +24,7 @@ export {
   SETTLE_DATA_LENGTH,
   SETTLE_TAG,
   SETTLEMENT_SEED,
+  U64_MAX,
   buildSettleInstruction,
   encodeSettleData,
   eventIdSeed,

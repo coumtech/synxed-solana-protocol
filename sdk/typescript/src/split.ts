@@ -40,7 +40,8 @@ export function assertBpsTriple(
 function assertRoles(
   splits: readonly [SplitShare, SplitShare, SplitShare],
 ): void {
-  const seen = new Set<string>();
+  // Positional matching also rules out duplicates: each slot must carry
+  // exactly its own distinct role.
   for (let i = 0; i < SETTLEMENT_ROLES.length; i += 1) {
     const expected = SETTLEMENT_ROLES[i];
     const share = splits[i];
@@ -50,10 +51,6 @@ function assertRoles(
         `splits[${i}] must be role "${expected}"`,
       );
     }
-    if (seen.has(share.role)) {
-      throw new ProtocolError("DUPLICATE_ROLE", `duplicate role ${share.role}`);
-    }
-    seen.add(share.role);
   }
 }
 

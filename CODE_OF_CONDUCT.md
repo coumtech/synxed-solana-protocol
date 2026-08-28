@@ -28,11 +28,14 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainers through GitHub (open an issue for conduct
-concerns that are safe to discuss publicly, or use the repository's private
-reporting channels otherwise). All complaints will be reviewed and
-investigated promptly and fairly. Maintainers who do not follow or enforce
-this Code of Conduct may be removed from the project team.
+reported to the maintainers through GitHub: open an issue for conduct
+concerns that are safe to discuss publicly, or use the repository's
+**Security → Report a vulnerability** private form for reports that should
+not be public (conduct reports sent there are handled confidentially, even
+though the form is labeled for security issues). All complaints will be
+reviewed and investigated promptly and fairly. Maintainers who do not
+follow or enforce this Code of Conduct may be removed from the project
+team.
 
 ## Attribution
 

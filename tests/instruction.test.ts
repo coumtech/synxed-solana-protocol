@@ -38,6 +38,16 @@ describe("eventIdSeed", () => {
     expect(a1).not.toEqual(b);
   });
 
+  test("is exactly sha256 of the utf8 event id (known-answer)", () => {
+    // Computed independently: printf 'evt_demo_1' | shasum -a 256
+    const expectedHex =
+      "977213b18424e30a8cd18abfb8ea1553600fe9ce56bdda8e6b510d500903e681";
+    const actualHex = Array.from(eventIdSeed("evt_demo_1"))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    expect(actualHex).toBe(expectedHex);
+  });
+
   test("rejects an empty event id", () => {
     expectCode(() => eventIdSeed(""), "EVENT_ID_EMPTY");
   });

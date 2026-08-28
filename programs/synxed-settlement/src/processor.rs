@@ -55,6 +55,11 @@ fn process_settle(
     if !payer.is_writable || !artist.is_writable || !studio.is_writable || !synxed.is_writable {
         return Err(ProgramError::InvalidAccountData);
     }
+    // Defense-in-depth: the system_instruction builders hard-code the real
+    // system program id, but reject a wrong account explicitly and early.
+    if *system_program.key != solana_program::system_program::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
 
     let parts = split_three(amount, artist_bps, studio_bps, synxed_bps)
         .map_err(|_| ProgramError::InvalidArgument)?;

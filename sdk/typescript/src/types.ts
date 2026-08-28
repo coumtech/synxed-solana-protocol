@@ -65,7 +65,6 @@ export type ProtocolErrorCode =
   | "BPS_INTEGER"
   | "ZERO_AMOUNT"
   | "ROLE_MISMATCH"
-  | "DUPLICATE_ROLE"
   | "EVENT_ID_EMPTY"
   | "SEED_LENGTH"
   | "AMOUNT_U64"
