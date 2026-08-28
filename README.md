@@ -1,6 +1,6 @@
 # SYNXED Solana Settlement Protocol
 
-An open-source, Solana-native **revenue settlement protocol** for gaming
+An open source, Solana native **revenue settlement protocol** for gaming
 and audio: a billable event (for example an in-game audio-ad impression)
 becomes a deterministic 3-way revenue split settled on-chain, with the
 transaction visible in Solana Explorer.
@@ -132,4 +132,4 @@ docs/                         architecture, protocol spec, integration guide
 
 ## License
 
-[Apache-2.0](LICENSE) © Coum Technologies Ltd.
+[Apache 2.0](LICENSE) © Coum Technologies Ltd.
