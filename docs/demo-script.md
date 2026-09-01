@@ -51,8 +51,9 @@ Wait for the `Settled on devnet (program mode)` block. Copy the
 **1:15 — Show the transaction.**
 In Explorer, scroll to the instruction list: the memo, then the settlement
 program instruction with its inner transfers — one to each wallet, amounts
-matching the table. Point at the record account creation: "that's the
-idempotency record; this event can never be paid twice."
+matching the table. Point at the inner `Transfer`, `Allocate`, `Assign`
+trio that builds the record account: "that's the idempotency record; this
+event can never be paid twice."
 
 **1:40 — Close.**
 "Open source, Apache 2.0, devnet only. The platform that decides *what* is
@@ -61,8 +62,8 @@ README's architecture diagram if there's time.
 
 ## If something fails on camera
 
-- Airdrop rate-limited: fund from the web faucet instead; the demo retries
-  the balance check.
+- Airdrop rate-limited: the demo makes one airdrop attempt, then stops with
+  the faucet URL and your address. Fund from the web faucet and rerun.
 - `SETTLEMENT_PROGRAM_ID` unset: the demo falls back to system transfers —
   still a real transaction, just without the on-chain record. Say so.
 - Explorer slow to index: the signature is printed; search it directly.

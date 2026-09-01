@@ -302,6 +302,18 @@ fn rejects_an_invalid_split_before_paying_anyone() {
 }
 
 #[test]
+fn rejects_a_recipient_equal_to_the_record() {
+    let mut f = Fixture::new();
+    let record = f.record_pda(&event(9));
+    f.artist = record;
+    let err = f
+        .settle(event(9), AMOUNT, BPS)
+        .expect_err("a payout to the record itself must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
+    assert!(f.svm.get_account(&record).is_none(), "no record created");
+}
+
+#[test]
 fn rejects_a_wrong_record_address() {
     let mut f = Fixture::new();
     let wrong = Pubkey::new_unique();

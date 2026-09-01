@@ -34,7 +34,8 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 | `cluster` | `"devnet"` \| `"mainnet-beta"` | Devnet only today |
 | `mode` | `"program"` \| `"system-transfer"` | Which settlement mode produced it |
 | `asset` | string | `"SOL_LAMPORTS_STANDIN"` today; SPL mint address later |
-| `amountAtomic` | string (u64) | Gross amount settled, in the asset's atomic units |
+| `amountAtomic` | string (u64) | Gross amount as requested, in the request's atomic units (micro-dollars in the demo) |
+| `lamportsPerAtomicUnit` | string (u64) | Stand-in scaling applied at settlement (`1` once a native asset is used); on-chain total = `amountAtomic × lamportsPerAtomicUnit` |
 | `payouts` | `PayoutLine[]` | Exactly one per configured share, in share order |
 | `occurredAt` | RFC 3339 | From the originating `SettlementRequest` |
 | `settledAt` | RFC 3339 | Block time of the transaction |
@@ -45,14 +46,15 @@ One row per recipient per settlement.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `role` | string | `artist`, `studio`, `platform`, `rewards_pool`, … |
+| `role` | string | `artist`, `studio`, `platform`, `rewards_pool`, … (the SDK's `synxed` role maps to `platform`) |
 | `recipient` | string | Wallet that received the funds on-chain |
 | `bps` | integer | Share in basis points at settlement time |
-| `amountAtomic` | string (u64) | Exact on-chain amount (floor / remainder rule applied) |
+| `amountOnChain` | string (u64) | Exact on-chain amount in on-chain units (lamports on devnet), floor / remainder rule applied |
 | `beneficiary` | string \| null | Ledger-level owner when `recipient` is a pool or custodian |
 
-`amountAtomic` across a settlement's `PayoutLine`s must sum to the
-settlement's `amountAtomic`. Ledger builders reject rows that do not.
+`amountOnChain` across a settlement's `PayoutLine`s must sum to
+`amountAtomic × lamportsPerAtomicUnit`. Ledger builders reject rows that do
+not.
 
 ### `LedgerEntry`
 
@@ -64,7 +66,7 @@ their ultimate beneficiaries.
 | `entryId` | string | `sha256(signature + role + beneficiary)`; idempotent |
 | `beneficiary` | string | Wallet or platform account id |
 | `role` | string | Same vocabulary as `PayoutLine.role` |
-| `amountAtomic` | string (u64) | Amount credited to the beneficiary |
+| `amountOnChain` | string (u64) | Amount credited to the beneficiary, in on-chain units |
 | `sourceSignature` | string | On-chain settlement this entry derives from |
 | `state` | `"accrued"` \| `"claimable"` \| `"paid"` | See lifecycle |
 | `paidSignature` | string \| null | Transaction that paid the beneficiary, once `paid` |
@@ -82,7 +84,7 @@ How pooled shares reach many small beneficiaries.
 | `batchId` | string | Unique per batch |
 | `pool` | string | Pool wallet the batch draws from |
 | `entries` | string[] | `entryId`s included; each must be `claimable` |
-| `totalAtomic` | string (u64) | Sum of included entries |
+| `totalOnChain` | string (u64) | Sum of included entries, in on-chain units |
 | `signature` | string \| null | Distribution transaction once executed |
 
 ## Lifecycle
@@ -124,7 +126,7 @@ a fold over chain data:
    `PayoutLine`s from its transfers.
 2. Compare against the ledger's `SettlementRecord`; any mismatch is a
    ledger defect, never a chain defect.
-3. Sum `LedgerEntry.amountAtomic` per pool and compare with the pool
+3. Sum `LedgerEntry.amountOnChain` per pool and compare with the pool
    wallet's on-chain inflows minus executed `ClaimBatch` totals; the
    difference is the pool's undistributed balance and must be non-negative.
 

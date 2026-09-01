@@ -69,6 +69,11 @@ fn process_settle(
     if record.key != &pda {
         return Err(ProgramError::InvalidSeeds);
     }
+    // A payout sent to the record itself could never be recovered: nothing
+    // can debit a record once it is program-owned.
+    if artist.key == record.key || studio.key == record.key || synxed.key == record.key {
+        return Err(ProgramError::InvalidArgument);
+    }
     if !record.is_writable {
         return Err(ProgramError::InvalidAccountData);
     }

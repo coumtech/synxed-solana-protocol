@@ -182,6 +182,30 @@ describe("buildSettleInstruction", () => {
       expect(actual.isWritable).toBe(expected.isWritable);
     }
   });
+
+  test("rejects a recipient that is the settlement record itself", () => {
+    const [record] = findSettlementRecordPda(PROGRAM_ID, FIXED_SEED);
+    expectCode(
+      () =>
+        buildSettleInstruction(
+          {
+            programId: PROGRAM_ID,
+            payer: Keypairish("payer"),
+            artist: record,
+            studio: Keypairish("studio"),
+            synxed: Keypairish("synxed"),
+          },
+          {
+            eventSeed: FIXED_SEED,
+            amount: 20_000n,
+            artistBps: 3_500,
+            studioBps: 4_000,
+            synxedBps: 2_500,
+          },
+        ),
+      "RECIPIENT_IS_RECORD",
+    );
+  });
 });
 
 /** Deterministic throwaway pubkey per label (not a real keypair). */

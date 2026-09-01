@@ -125,7 +125,9 @@ docs/                         architecture, protocol spec, integration guide,
 
 **Planned next:**
 
-- Configurable payout ledger schema (spec + public example types)
+- Payout ledger: schema proposal drafted in
+  [docs/payout-ledger.md](docs/payout-ledger.md); public example types and
+  reference implementation to follow
 - Wallet-connect flow in the demo
 - SPL/devnet stablecoin settlement path
 

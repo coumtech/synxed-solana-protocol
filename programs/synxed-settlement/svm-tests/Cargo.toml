@@ -2,6 +2,7 @@
 name = "synxed-settlement-svm-tests"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 license = "Apache-2.0"
 publish = false
 description = "In-process SVM tests for the compiled settlement program (requires cargo build-sbf output)"
