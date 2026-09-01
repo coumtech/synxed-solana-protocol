@@ -1,0 +1,20 @@
+[package]
+name = "synxed-settlement-svm-tests"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "Apache-2.0"
+publish = false
+description = "In-process SVM tests for the compiled settlement program (requires cargo build-sbf output)"
+
+# Kept as a separate crate so the program's own `cargo test` stays free of the
+# heavy SVM runtime dependencies. Run after `cargo build-sbf --features onchain`:
+#   cargo test --manifest-path programs/synxed-settlement/svm-tests/Cargo.toml
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+litesvm = "0.16"
+solana-sdk = "4"
+solana-system-interface = { version = "3", features = ["bincode"] }

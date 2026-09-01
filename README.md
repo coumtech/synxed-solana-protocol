@@ -52,7 +52,7 @@ bun install
 **1. Run the tests**
 
 ```bash
-bun test            # split math + instruction layout (TypeScript)
+bun test            # split math, instruction layout, client guards (TypeScript)
 bun run typecheck   # strict TS, no `any`
 cargo test --manifest-path programs/synxed-settlement/Cargo.toml   # optional
 ```
@@ -105,8 +105,11 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 programs/synxed-settlement    Solana program (Rust)
 sdk/typescript                TypeScript SDK: types, split, codec, client
 examples/gaming-payment-demo  CLI demo: fake impression -> devnet settlement
-tests/                        Bun test suite
-docs/                         architecture, protocol spec, integration guide
+tests/                        Bun test suite (SDK)
+programs/synxed-settlement/svm-tests
+                              In-process SVM tests of the compiled program
+docs/                         architecture, protocol spec, integration guide,
+                              payout ledger proposal, demo script
 ```
 
 ## Scope and roadmap
@@ -116,11 +119,15 @@ docs/                         architecture, protocol spec, integration guide
 - Deterministic, auditable 3-way split primitive (Rust + TypeScript)
 - Devnet settlement program with per-event idempotency
 - Strict TypeScript client and a reproducible CLI demo
-- Tests for the happy path and every invalid-split case
+- Tests for the happy path and every invalid-split case, plus in-process
+  SVM tests of the compiled program (idempotency, pre-funded record
+  defense, account validation) run in CI on every pull request
 
 **Planned next:**
 
-- Configurable payout ledger schema (spec + public example types)
+- Payout ledger: schema proposal drafted in
+  [docs/payout-ledger.md](docs/payout-ledger.md); public example types and
+  reference implementation to follow
 - Wallet-connect flow in the demo
 - SPL/devnet stablecoin settlement path
 

@@ -46,7 +46,8 @@ this protocol.
 | `programs/synxed-settlement` | Solana program: `Settle` instruction, split validation, idempotency record, SOL payouts |
 | `sdk/typescript` | Types, split math, instruction codec, devnet submission client |
 | `examples/gaming-payment-demo` | CLI simulator: fake impression -> split -> devnet transaction -> Explorer link |
-| `tests/` | Bun tests for split math and the instruction byte layout |
+| `tests/` | Bun tests for split math, the instruction byte layout, and client guards |
+| `programs/synxed-settlement/svm-tests` | LiteSVM tests that run the compiled program: settlement, idempotency, pre-funded record defense, account validation |
 
 ## Design decisions
 

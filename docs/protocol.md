@@ -74,11 +74,12 @@ Accounts, in order:
 | 5 | system program | no | no | transfers and account creation |
 
 The program validates the split with the same rules as above and fails the
-whole transaction on any violation. Split violations return
-`InvalidArgument`; a missing payer signature returns
-`MissingRequiredSignature`, non-writable payout accounts
-`InvalidAccountData`, a wrong record address `InvalidSeeds`, a wrong system
-program account `IncorrectProgramId`, and an already-settled event
+whole transaction on any violation. Split violations, and a payout
+recipient equal to the record account, return `InvalidArgument`; a missing
+payer signature returns `MissingRequiredSignature`; a non-writable payer,
+payout, or record account returns `InvalidAccountData`; a wrong record
+address `InvalidSeeds`; a wrong system program account
+`IncorrectProgramId`; and an already-settled event
 `AccountAlreadyInitialized`. Payouts are native SOL transfers from the
 payer; zero-lamport shares are skipped.
 
@@ -93,14 +94,23 @@ seeds = ["settlement", event_id]
 Clients derive the 32-byte `event_id` as `sha256(application_event_id)`
 (`eventIdSeed` in the SDK). The record account stores a 1-byte
 discriminator, the event id, and the settled amount (41 bytes). If the
-record already exists, the program rejects the instruction with
-`AccountAlreadyInitialized`, so the same event cannot be settled twice.
+record is already owned by the program (or carries data), the program
+rejects the instruction with `AccountAlreadyInitialized`, so the same event
+cannot be settled twice.
 
-Known limitation (documented, acceptable for a devnet prototype): a third
-party can grief a specific `event_id` by pre-funding its record PDA before
-settlement, since the program refuses to touch a record account that
-already holds lamports. A production version would create the record via
-transfer/allocate/assign to tolerate pre-funded accounts.
+The record is created as transfer + allocate + assign rather than a single
+`create_account`. `create_account` fails when the target address already
+holds lamports, which would let anyone permanently block an `event_id` by
+parking a small deposit (the rent floor for an empty account, about 0.0009
+SOL) on its PDA before settlement. With the three-step
+creation, a pre-funded PDA is simply topped up to rent exemption (the payer
+pays only the shortfall), then allocated and assigned under the program's
+signer seeds. Because only the system program can allocate or assign a
+system-owned account and both require the PDA's signature, no third party
+can put a record-shaped account at that address ahead of the program. Any
+account at the record address that already carries data is rejected with
+`AccountAlreadyInitialized`; a data-less account owned by anything other
+than the system program is rejected with `InvalidAccountData`.
 
 ## Client fallback mode
 

@@ -69,4 +69,5 @@ export type ProtocolErrorCode =
   | "SEED_LENGTH"
   | "AMOUNT_U64"
   | "SCALE_RANGE"
-  | "RECIPIENT_PUBKEY";
+  | "RECIPIENT_PUBKEY"
+  | "RECIPIENT_IS_RECORD";

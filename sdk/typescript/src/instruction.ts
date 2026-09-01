@@ -96,6 +96,19 @@ export function buildSettleInstruction(
     accounts.programId,
     params.eventSeed,
   );
+  const recipients = [
+    ["artist", accounts.artist],
+    ["studio", accounts.studio],
+    ["synxed", accounts.synxed],
+  ] as const;
+  for (const [role, key] of recipients) {
+    if (key.equals(record)) {
+      throw new ProtocolError(
+        "RECIPIENT_IS_RECORD",
+        `${role} recipient must not be the settlement record account`,
+      );
+    }
+  }
   return new TransactionInstruction({
     programId: accounts.programId,
     keys: [

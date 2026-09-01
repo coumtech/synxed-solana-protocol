@@ -69,22 +69,48 @@ fn process_settle(
     if record.key != &pda {
         return Err(ProgramError::InvalidSeeds);
     }
-    if record.lamports() > 0 {
+    // A payout sent to the record itself could never be recovered: nothing
+    // can debit a record once it is program-owned.
+    if artist.key == record.key || studio.key == record.key || synxed.key == record.key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if !record.is_writable {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    // Idempotency is keyed on ownership, not lamports: a record this program
+    // already owns (or that carries data) means the event was settled.
+    if record.owner == program_id || !record.data_is_empty() {
         return Err(ProgramError::AccountAlreadyInitialized);
     }
+    // Only a system-owned, data-less account can be turned into a record.
+    // Anything else at this address was not produced by this program.
+    if *record.owner != solana_program::system_program::ID {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
-    let rent = Rent::get()?;
-    let rent_lamports = rent.minimum_balance(SETTLEMENT_RECORD_SIZE);
+    // Create the record as transfer + allocate + assign rather than
+    // create_account. create_account fails if the address already holds
+    // lamports, which let anyone block an event id by pre-funding its PDA.
+    // This path tolerates pre-funded accounts: the payer only tops up
+    // whatever is missing toward rent exemption.
+    let seeds: &[&[u8]] = &[SETTLEMENT_SEED, &event_id, &[bump]];
+    let required = Rent::get()?.minimum_balance(SETTLEMENT_RECORD_SIZE);
+    let shortfall = required.saturating_sub(record.lamports());
+    if shortfall > 0 {
+        invoke(
+            &system_instruction::transfer(payer.key, record.key, shortfall),
+            &[payer.clone(), record.clone(), system_program.clone()],
+        )?;
+    }
     invoke_signed(
-        &system_instruction::create_account(
-            payer.key,
-            record.key,
-            rent_lamports,
-            SETTLEMENT_RECORD_SIZE as u64,
-            program_id,
-        ),
-        &[payer.clone(), record.clone(), system_program.clone()],
-        &[&[SETTLEMENT_SEED, &event_id, &[bump]]],
+        &system_instruction::allocate(record.key, SETTLEMENT_RECORD_SIZE as u64),
+        &[record.clone(), system_program.clone()],
+        &[seeds],
+    )?;
+    invoke_signed(
+        &system_instruction::assign(record.key, program_id),
+        &[record.clone(), system_program.clone()],
+        &[seeds],
     )?;
 
     {
