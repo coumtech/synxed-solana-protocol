@@ -24,3 +24,11 @@ updates:
       # together with a cargo build-sbf verification.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+  - package-ecosystem: "cargo"
+    directory: "/programs/synxed-settlement/svm-tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
