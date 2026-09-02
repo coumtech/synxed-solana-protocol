@@ -108,12 +108,16 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 ### Verify the deployment
 
 Anyone with Docker can confirm the reference devnet program is exactly the
-build of this source tree — no trust in the maintainers required:
+build of this source tree, without taking the maintainers' word for it:
 
 ```bash
-cargo install solana-verify
+cargo install solana-verify --locked --version 0.5.1
 scripts/verify-deployment.sh      # builds in the pinned container, compares with on-chain
 ```
+
+Prefer not to run a maintainer-written script? The docs also give the
+`solana-verify verify-from-repo` command, which clones and builds a commit
+on its own.
 
 CI runs the same check after every push to `main` and daily
 ([Verify deployment](.github/workflows/verify-deployment.yml)). Why a

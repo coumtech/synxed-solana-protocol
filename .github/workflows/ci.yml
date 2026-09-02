@@ -89,8 +89,8 @@ jobs:
 
       # This is the test build used by the SVM tests below. The release
       # artifact is the pinned container build (docs/verified-build.md), so
-      # this hash is not expected to match the deployment.
-      - name: Report test build size and hash
+      # this plain file sha256 is not expected to match the deployment.
+      - name: Report test build size and plain sha256
         run: |
           ls -la programs/synxed-settlement/target/deploy/*.so
           sha256sum programs/synxed-settlement/target/deploy/synxed_settlement.so

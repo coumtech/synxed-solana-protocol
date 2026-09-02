@@ -2,13 +2,19 @@ name: Verify deployment
 
 # Confirms the reference devnet program is byte-for-byte the build of `main`,
 # using the pinned reproducible build container (see docs/verified-build.md).
-# Runs after every push to main, daily, and on demand. A failure means either
-# the deployment has not been upgraded to `main` yet, or it was built from
-# something else.
+# Runs after every push to main, daily, on demand, and on pull requests that
+# change the verification tooling itself (program changes legitimately lag
+# the deployment until the post-merge upgrade, so they do not trigger it).
+# A failure means either the deployment has not been upgraded to `main` yet,
+# or it was built from something else.
 
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - scripts/verify-deployment.sh
+      - .github/workflows/verify-deployment.yml
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
