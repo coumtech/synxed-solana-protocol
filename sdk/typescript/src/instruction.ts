@@ -1,9 +1,11 @@
 // Client-side codec for the on-chain settlement program.
 //
-// The byte layout must stay in lockstep with
+// Byte layouts must stay in lockstep with
 // `programs/synxed-settlement/src/instruction.rs`:
-//   tag(u8=0) | event_id([u8;32]) | amount(u64 LE) |
-//   artist_bps(u16 LE) | studio_bps(u16 LE) | synxed_bps(u16 LE)
+//   Settle:  tag(u8=0) | event_id([u8;32]) | amount(u64 LE) |
+//            artist_bps(u16 LE) | studio_bps(u16 LE) | synxed_bps(u16 LE)
+//   SettleN: tag(u8=1) | event_id([u8;32]) | amount(u64 LE) |
+//            count(u8) | bps[count](u16 LE)
 
 import { createHash } from "node:crypto";
 import {
@@ -11,13 +13,16 @@ import {
   SystemProgram,
   TransactionInstruction,
 } from "@solana/web3.js";
-import { assertBpsTriple } from "./split.ts";
+import { assertBpsShares, assertBpsTriple } from "./split.ts";
 import { ProtocolError } from "./types.ts";
 
 export const SETTLE_TAG = 0;
+export const SETTLE_N_TAG = 1;
 export const SETTLEMENT_SEED = "settlement";
 export const EVENT_SEED_LENGTH = 32;
 export const SETTLE_DATA_LENGTH = 1 + 32 + 8 + 2 + 2 + 2;
+/** `SettleN` bytes before the bps list: tag + event id + amount + count. */
+export const SETTLE_N_HEADER_LENGTH = 1 + 32 + 8 + 1;
 
 export const U64_MAX = 0xffff_ffff_ffff_ffffn;
 
@@ -55,12 +60,7 @@ export interface SettleParams {
 
 export function encodeSettleData(params: SettleParams): Uint8Array {
   assertSeed(params.eventSeed);
-  if (params.amount <= 0n || params.amount > U64_MAX) {
-    throw new ProtocolError(
-      "AMOUNT_U64",
-      "amount must be a positive u64 (1..=2^64-1)",
-    );
-  }
+  assertAmountU64(params.amount);
   assertBpsTriple([params.artistBps, params.studioBps, params.synxedBps]);
 
   const data = new Uint8Array(SETTLE_DATA_LENGTH);
@@ -74,6 +74,30 @@ export function encodeSettleData(params: SettleParams): Uint8Array {
   return data;
 }
 
+export interface SettleNParams {
+  eventSeed: Uint8Array;
+  amount: bigint;
+  /** One entry per share, in recipient order. */
+  bps: readonly number[];
+}
+
+export function encodeSettleNData(params: SettleNParams): Uint8Array {
+  assertSeed(params.eventSeed);
+  assertAmountU64(params.amount);
+  assertBpsShares(params.bps);
+
+  const data = new Uint8Array(SETTLE_N_HEADER_LENGTH + 2 * params.bps.length);
+  const view = new DataView(data.buffer);
+  data[0] = SETTLE_N_TAG;
+  data.set(params.eventSeed, 1);
+  view.setBigUint64(33, params.amount, true);
+  data[41] = params.bps.length;
+  params.bps.forEach((share, i) => {
+    view.setUint16(SETTLE_N_HEADER_LENGTH + 2 * i, share, true);
+  });
+  return data;
+}
+
 export interface SettleAccounts {
   programId: PublicKey;
   payer: PublicKey;
@@ -83,9 +107,8 @@ export interface SettleAccounts {
 }
 
 /**
- * Build the `Settle` instruction. Account order must match
- * `process_settle` in the program: payer, artist, studio, synxed,
- * settlement record PDA, system program.
+ * Build the `Settle` instruction. Account order must match the program:
+ * payer, artist, studio, synxed, settlement record PDA, system program.
  */
 export function buildSettleInstruction(
   accounts: SettleAccounts,
@@ -96,19 +119,12 @@ export function buildSettleInstruction(
     accounts.programId,
     params.eventSeed,
   );
-  const recipients = [
+  const recipients: ReadonlyArray<readonly [string, PublicKey]> = [
     ["artist", accounts.artist],
     ["studio", accounts.studio],
     ["synxed", accounts.synxed],
-  ] as const;
-  for (const [role, key] of recipients) {
-    if (key.equals(record)) {
-      throw new ProtocolError(
-        "RECIPIENT_IS_RECORD",
-        `${role} recipient must not be the settlement record account`,
-      );
-    }
-  }
+  ];
+  assertNoneIsRecord(recipients, record);
   return new TransactionInstruction({
     programId: accounts.programId,
     keys: [
@@ -121,6 +137,75 @@ export function buildSettleInstruction(
     ],
     data: Buffer.from(data),
   });
+}
+
+export interface SettleNAccounts {
+  programId: PublicKey;
+  payer: PublicKey;
+  /** One writable recipient per share, in the same order as `bps`. */
+  recipients: readonly PublicKey[];
+}
+
+/**
+ * Build the `SettleN` instruction. Account order must match the program:
+ * payer, one recipient per share, settlement record PDA, system program.
+ */
+export function buildSettleNInstruction(
+  accounts: SettleNAccounts,
+  params: SettleNParams,
+): TransactionInstruction {
+  if (accounts.recipients.length !== params.bps.length) {
+    throw new ProtocolError(
+      "RECIPIENT_COUNT",
+      `expected ${params.bps.length} recipients, got ${accounts.recipients.length}`,
+    );
+  }
+  const data = encodeSettleNData(params);
+  const [record] = findSettlementRecordPda(
+    accounts.programId,
+    params.eventSeed,
+  );
+  assertNoneIsRecord(
+    accounts.recipients.map((key, i) => [`shares[${i}]`, key] as const),
+    record,
+  );
+  return new TransactionInstruction({
+    programId: accounts.programId,
+    keys: [
+      { pubkey: accounts.payer, isSigner: true, isWritable: true },
+      ...accounts.recipients.map((pubkey) => ({
+        pubkey,
+        isSigner: false,
+        isWritable: true,
+      })),
+      { pubkey: record, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from(data),
+  });
+}
+
+function assertNoneIsRecord(
+  recipients: ReadonlyArray<readonly [string, PublicKey]>,
+  record: PublicKey,
+): void {
+  for (const [label, key] of recipients) {
+    if (key.equals(record)) {
+      throw new ProtocolError(
+        "RECIPIENT_IS_RECORD",
+        `${label} recipient must not be the settlement record account`,
+      );
+    }
+  }
+}
+
+function assertAmountU64(amount: bigint): void {
+  if (amount <= 0n || amount > U64_MAX) {
+    throw new ProtocolError(
+      "AMOUNT_U64",
+      "amount must be a positive u64 (1..=2^64-1)",
+    );
+  }
 }
 
 function assertSeed(seed: Uint8Array): void {

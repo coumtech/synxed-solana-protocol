@@ -115,6 +115,44 @@ keys are yours; never commit them.
   https://faucet.solana.com works when the RPC faucet is rate-limited.
 - Everything here is devnet-only. Do not point the client at mainnet.
 
+## N-way splits and pooled shares
+
+For more than three parties — for example a listener rewards pool — build a
+`SettlementRequestN` and use the N-way functions. Labels are yours; the
+program only sees recipients and basis points.
+
+```ts
+import {
+  computeSettlementN,
+  submitSettlementN,
+  type SettlementRequestN,
+} from "@coumtech/synxed-solana-protocol";
+
+const request: SettlementRequestN = {
+  eventId: "evt_8f2c...",
+  occurredAt: new Date().toISOString(),
+  kind: "audio_ad_impression",
+  amountAtomic: 20_000n,
+  asset: "SOL_LAMPORTS_STANDIN",
+  shares: [
+    { label: "artist", recipient: "<base58>", bps: 3_500 },
+    { label: "studio", recipient: "<base58>", bps: 3_500 },
+    { label: "synxed", recipient: "<base58>", bps: 2_000 },
+    { label: "rewards_pool", recipient: "<pool wallet>", bps: 1_000 },
+  ],
+  memo: "audio ad impression",
+};
+
+const result = computeSettlementN(request); // payouts per label
+const submission = await submitSettlementN({ connection, payer, request,
+  lamportsPerAtomicUnit: 1_000n, programId });
+```
+
+One to eight shares are accepted; the shares must sum to 10000 bps. A
+pooled share is just a recipient wallet on-chain — distribution from the
+pool to individual listeners is an off-chain, batched concern described in
+[payout-ledger.md](payout-ledger.md).
+
 ## Reference: the runnable example
 
 `examples/gaming-payment-demo` wires all of the above into a CLI:

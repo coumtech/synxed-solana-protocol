@@ -1,10 +1,14 @@
 import {
   BPS_DENOMINATOR,
+  MAX_SHARES,
   ProtocolError,
   SETTLEMENT_ROLES,
   type ComputedPayout,
+  type ComputedPayoutN,
   type SettlementRequest,
+  type SettlementRequestN,
   type SplitResult,
+  type SplitResultN,
   type SplitShare,
 } from "./types.ts";
 
@@ -20,10 +24,17 @@ function assertBps(bps: number): void {
   }
 }
 
-/** Validate a 3-way bps configuration: integers in range, summing to 10000. */
-export function assertBpsTriple(
-  bps: readonly [number, number, number],
-): void {
+/**
+ * Validate an N-way bps configuration: 1..=MAX_SHARES integer shares, each
+ * in range, summing to exactly 10000.
+ */
+export function assertBpsShares(bps: readonly number[]): void {
+  if (bps.length === 0 || bps.length > MAX_SHARES) {
+    throw new ProtocolError(
+      "SHARE_COUNT",
+      `share count must be in 1..=${MAX_SHARES}, got ${bps.length}`,
+    );
+  }
   let sum = 0;
   for (const share of bps) {
     assertBps(share);
@@ -35,6 +46,40 @@ export function assertBpsTriple(
       `split basis points must sum to ${BPS_DENOMINATOR}, got ${sum}`,
     );
   }
+}
+
+/** Validate a 3-way bps configuration: integers in range, summing to 10000. */
+export function assertBpsTriple(
+  bps: readonly [number, number, number],
+): void {
+  assertBpsShares(bps);
+}
+
+/**
+ * Split `amount` across N BPS shares. Floor-divides the first N-1 shares
+ * and assigns the remainder to the last share so payouts sum to `amount`.
+ * Mirrors `split_shares` in the program.
+ */
+export function splitAmountAtomicShares(
+  amount: bigint,
+  bps: readonly number[],
+): bigint[] {
+  if (amount <= 0n) {
+    throw new ProtocolError("ZERO_AMOUNT", "amount must be greater than zero");
+  }
+  assertBpsShares(bps);
+  const payouts: bigint[] = [];
+  let allocated = 0n;
+  for (let i = 0; i < bps.length; i += 1) {
+    if (i === bps.length - 1) {
+      payouts.push(amount - allocated);
+    } else {
+      const part = (amount * BigInt(bps[i])) / BigInt(BPS_DENOMINATOR);
+      payouts.push(part);
+      allocated += part;
+    }
+  }
+  return payouts;
 }
 
 function assertRoles(
@@ -66,12 +111,12 @@ export function splitAmountAtomic(
     throw new ProtocolError("ZERO_AMOUNT", "amount must be greater than zero");
   }
   assertRoles(shares);
-  assertBpsTriple([shares[0].bps, shares[1].bps, shares[2].bps]);
-
-  const first = (amount * BigInt(shares[0].bps)) / BigInt(BPS_DENOMINATOR);
-  const second = (amount * BigInt(shares[1].bps)) / BigInt(BPS_DENOMINATOR);
-  const third = amount - first - second;
-  return [first, second, third];
+  const parts = splitAmountAtomicShares(amount, [
+    shares[0].bps,
+    shares[1].bps,
+    shares[2].bps,
+  ]);
+  return [parts[0], parts[1], parts[2]];
 }
 
 export function computeSettlement(request: SettlementRequest): SplitResult {
@@ -81,6 +126,30 @@ export function computeSettlement(request: SettlementRequest): SplitResult {
     payout(request.splits[1], amounts[1]),
     payout(request.splits[2], amounts[2]),
   ] as const;
+  return {
+    request,
+    payouts,
+    totalAtomic: request.amountAtomic,
+  };
+}
+
+/** Compute the payouts of an N-way settlement request. */
+export function computeSettlementN(request: SettlementRequestN): SplitResultN {
+  request.shares.forEach((share, i) => {
+    if (share.label.trim() === "") {
+      throw new ProtocolError("LABEL_EMPTY", `shares[${i}] label must not be empty`);
+    }
+  });
+  const amounts = splitAmountAtomicShares(
+    request.amountAtomic,
+    request.shares.map((share) => share.bps),
+  );
+  const payouts: ComputedPayoutN[] = request.shares.map((share, i) => ({
+    label: share.label,
+    recipient: share.recipient,
+    bps: share.bps,
+    amountAtomic: amounts[i],
+  }));
   return {
     request,
     payouts,

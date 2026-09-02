@@ -12,6 +12,7 @@
     "test:rust": "cargo test --manifest-path programs/synxed-settlement/Cargo.toml",
     "typecheck": "bunx tsc --noEmit -p sdk/typescript/tsconfig.json && bunx tsc --noEmit -p examples/gaming-payment-demo/tsconfig.json && bunx tsc --noEmit -p tests/tsconfig.json",
     "demo": "bun run examples/gaming-payment-demo/src/index.ts",
+    "demo:nway": "bun run examples/gaming-payment-demo/src/nway.ts",
     "demo:keygen": "bun run examples/gaming-payment-demo/src/keygen.ts"
   },
   "devDependencies": {

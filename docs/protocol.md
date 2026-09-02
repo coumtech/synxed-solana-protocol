@@ -3,26 +3,28 @@
 ## Overview
 
 The SYNXED settlement protocol settles a single revenue event (for example
-an in-game audio-ad impression) into a deterministic 3-way payout:
+an in-game audio-ad impression) into a deterministic payout across
+configured shares — three by default, up to eight with `SettleN`:
 
 ```
 gross amount -> [artist, studio, synxed]
+gross amount -> [artist, studio, synxed, rewards_pool, ...]   (SettleN)
 ```
 
 Shares are expressed in **basis points** (bps). `10000` bps = 100%.
 
 ## Split math
 
-Given `amount` (a positive integer of atomic units) and shares
-`[artist_bps, studio_bps, synxed_bps]`:
+Given `amount` (a positive integer of atomic units) and `n` shares
+`[bps_0, ..., bps_n-1]` with `1 <= n <= 8`:
 
 1. Every share must be an integer in `0..=10000`.
-2. The three shares must sum to exactly `10000`. Anything else is rejected —
+2. The shares must sum to exactly `10000`. Anything else is rejected —
    never renormalized.
 3. `amount` must be greater than zero.
-4. The first two payouts are floor divisions:
+4. The first `n - 1` payouts are floor divisions:
    `payout_i = floor(amount * bps_i / 10000)`.
-5. The last payout is the remainder: `amount - payout_0 - payout_1`.
+5. The last payout is the remainder: `amount - sum(payout_0..payout_n-2)`.
 
 Property (conservation): the three payouts always sum to `amount` exactly.
 No atomic unit is created or destroyed by rounding; any rounding dust lands
@@ -31,8 +33,10 @@ rather than hidden.
 
 The same algorithm is implemented twice and kept in lockstep:
 
-- Rust: `programs/synxed-settlement/src/split.rs` (`split_three`)
-- TypeScript: `sdk/typescript/src/split.ts` (`splitAmountAtomic`)
+- Rust: `programs/synxed-settlement/src/split.rs` (`split_shares`, with
+  `split_three` as the three-way wrapper)
+- TypeScript: `sdk/typescript/src/split.ts` (`splitAmountAtomicShares`,
+  with `splitAmountAtomic` as the three-way wrapper)
 
 `tests/instruction.test.ts` pins the shared byte layout, and both languages
 carry conservation and rejection tests.
@@ -82,6 +86,40 @@ address `InvalidSeeds`; a wrong system program account
 `IncorrectProgramId`; and an already-settled event
 `AccountAlreadyInitialized`. Payouts are native SOL transfers from the
 payer; zero-lamport shares are skipped.
+
+## On-chain instruction: `SettleN`
+
+The N-way form of `Settle`. Same validation, record, and payout semantics;
+the share count is carried in the data and the recipients in the account
+list.
+
+Instruction data (little-endian, `42 + 2n` bytes):
+
+| Offset | Size | Field | Type |
+| --- | --- | --- | --- |
+| 0 | 1 | tag (`1`) | `u8` |
+| 1 | 32 | `event_id` | `[u8; 32]` |
+| 33 | 8 | `amount` (lamports) | `u64` LE |
+| 41 | 1 | `n` (share count, `1..=8`) | `u8` |
+| 42 | 2n | `bps_0 .. bps_n-1` | `u16` LE each |
+
+Accounts, in order — exactly `n + 3`:
+
+| # | Account | Signer | Writable | Purpose |
+| --- | --- | --- | --- | --- |
+| 0 | payer | yes | yes | funds the payouts and the record account |
+| 1..n | recipient `i` | no | yes | receives share `i` |
+| n+1 | settlement record | no | yes | PDA, marks the event as settled |
+| n+2 | system program | no | no | transfers and account creation |
+
+A data length that does not match `n`, `n = 0`, or `n > 8` is rejected
+with `InvalidInstructionData`; an account list whose length is not
+`n + 3` is rejected with `NotEnoughAccountKeys` (this strictness applies to
+`Settle` as well). Both instructions share the same record PDA, so an event
+settled through one cannot be settled again through the other.
+
+The three-way `Settle` instruction is equivalent to `SettleN` with
+`n = 3` and remains supported unchanged.
 
 ## Idempotency
 

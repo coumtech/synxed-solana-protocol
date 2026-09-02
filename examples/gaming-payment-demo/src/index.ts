@@ -2,12 +2,11 @@
 // split -> (optionally) a settlement transaction on Solana devnet.
 //
 // Dry-run by default. Set SOLANA_PAYER_KEYPAIR in .env to submit for real.
-// See README.md for the 10-minute walkthrough.
+// See README.md for the 10-minute walkthrough, and nway.ts for the N-way
+// variant with a listener rewards pool share.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { resolve } from "node:path";
+import { Connection } from "@solana/web3.js";
 import {
   APPROX_RENT_EXEMPT_MIN_LAMPORTS,
   DEFAULT_ARTIST_BPS,
@@ -23,122 +22,18 @@ import {
   type SplitResult,
 } from "@coumtech/synxed-solana-protocol";
 import { fakeAudioAdImpression } from "./event.ts";
-
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const RECIPIENTS_FILE = resolve(REPO_ROOT, ".keys/demo-recipients.json");
-
-const USD_DECIMALS = 6n;
-const AIRDROP_LAMPORTS = 1_000_000_000; // 1 SOL
-
-function envString(name: string): string | undefined {
-  const value = process.env[name];
-  return value !== undefined && value.trim() !== "" ? value.trim() : undefined;
-}
-
-const DECIMAL_INTEGER = /^[+-]?\d+$/;
-
-function envInt(name: string, fallback: number): number {
-  const raw = envString(name);
-  if (raw === undefined) {
-    return fallback;
-  }
-  // Strict decimal only: parseInt would silently truncate "3500.9" or
-  // accept "35junk", and BigInt would accept hex/binary prefixes.
-  if (!DECIMAL_INTEGER.test(raw)) {
-    throw new Error(`${name} must be a decimal integer, got "${raw}"`);
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(parsed)) {
-    throw new Error(`${name} must be a decimal integer, got "${raw}"`);
-  }
-  return parsed;
-}
-
-function envBigInt(name: string, fallback: bigint): bigint {
-  const raw = envString(name);
-  if (raw === undefined) {
-    return fallback;
-  }
-  if (!DECIMAL_INTEGER.test(raw)) {
-    throw new Error(`${name} must be a decimal integer, got "${raw}"`);
-  }
-  return BigInt(raw);
-}
-
-interface DemoRecipients {
-  artist: string;
-  studio: string;
-  synxed: string;
-}
-
-function isDemoRecipients(value: unknown): value is DemoRecipients {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record["artist"] === "string" &&
-    typeof record["studio"] === "string" &&
-    typeof record["synxed"] === "string"
-  );
-}
-
-/**
- * Recipient wallets: env overrides win; otherwise generate three demo
- * pubkeys once and reuse them across runs (stored gitignored under .keys/).
- */
-function loadRecipients(): DemoRecipients {
-  const fromEnv = {
-    artist: envString("ARTIST_PUBKEY"),
-    studio: envString("STUDIO_PUBKEY"),
-    synxed: envString("SYNXED_PUBKEY"),
-  };
-  if (fromEnv.artist && fromEnv.studio && fromEnv.synxed) {
-    return { artist: fromEnv.artist, studio: fromEnv.studio, synxed: fromEnv.synxed };
-  }
-  if (existsSync(RECIPIENTS_FILE)) {
-    const parsed: unknown = JSON.parse(readFileSync(RECIPIENTS_FILE, "utf8"));
-    if (isDemoRecipients(parsed)) {
-      return parsed;
-    }
-  }
-  const generated: DemoRecipients = {
-    artist: Keypair.generate().publicKey.toBase58(),
-    studio: Keypair.generate().publicKey.toBase58(),
-    synxed: Keypair.generate().publicKey.toBase58(),
-  };
-  mkdirSync(dirname(RECIPIENTS_FILE), { recursive: true });
-  writeFileSync(RECIPIENTS_FILE, `${JSON.stringify(generated, null, 2)}\n`);
-  console.log(`Generated demo recipient wallets -> ${RECIPIENTS_FILE}`);
-  return generated;
-}
-
-function loadPayer(path: string): Keypair {
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-  if (
-    !Array.isArray(parsed) ||
-    parsed.length !== 64 ||
-    !parsed.every(
-      (n): n is number =>
-        typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 255,
-    )
-  ) {
-    throw new Error(
-      `${path} is not a 64-byte JSON keypair (solana-keygen format: ` +
-        `an array of 64 integers in 0..=255)`,
-    );
-  }
-  return Keypair.fromSecretKey(Uint8Array.from(parsed));
-}
-
-function usd(amountAtomic: bigint): string {
-  const denominator = 10n ** USD_DECIMALS;
-  const whole = amountAtomic / denominator;
-  const fraction = (amountAtomic % denominator)
-    .toString()
-    .padStart(Number(USD_DECIMALS), "0");
-  return `$${whole}.${fraction}`;
-}
+import {
+  REPO_ROOT,
+  ensureFunds,
+  envBigInt,
+  envInt,
+  envString,
+  fundingOverhead,
+  loadPayer,
+  loadRecipients,
+  parseProgramId,
+  usd,
+} from "./shared.ts";
 
 function printSplitTable(result: SplitResult): void {
   console.log("\nDeterministic revenue split");
@@ -153,46 +48,6 @@ function printSplitTable(result: SplitResult): void {
     `  ${"total".padEnd(8)} ${"10000".padStart(5)}  ` +
       `${result.totalAtomic.toString().padStart(15)}   ${usd(result.totalAtomic)}`,
   );
-}
-
-async function ensureFunds(
-  connection: Connection,
-  payer: Keypair,
-  neededLamports: bigint,
-): Promise<void> {
-  const balance = BigInt(await connection.getBalance(payer.publicKey));
-  if (balance >= neededLamports) {
-    return;
-  }
-  console.log(
-    `Payer balance ${balance} lamports < required ${neededLamports}; requesting devnet airdrop...`,
-  );
-  try {
-    const signature = await connection.requestAirdrop(
-      payer.publicKey,
-      AIRDROP_LAMPORTS,
-    );
-    const latest = await connection.getLatestBlockhash();
-    await connection.confirmTransaction(
-      { signature, ...latest },
-      "confirmed",
-    );
-    console.log("Airdrop confirmed.");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Devnet airdrop failed (${message}). Fund the payer manually at ` +
-        `https://faucet.solana.com — address ${payer.publicKey.toBase58()}`,
-    );
-  }
-  const after = BigInt(await connection.getBalance(payer.publicKey));
-  if (after < neededLamports) {
-    throw new Error(
-      `Balance ${after} lamports still below required ${neededLamports} ` +
-        `after airdrop. Fund the payer at https://faucet.solana.com — ` +
-        `address ${payer.publicKey.toBase58()}`,
-    );
-  }
 }
 
 async function main(): Promise<void> {
@@ -271,22 +126,8 @@ async function main(): Promise<void> {
     );
   }
 
-  const programIdRaw = envString("SETTLEMENT_PROGRAM_ID");
-  let programId: PublicKey | undefined;
-  if (programIdRaw !== undefined) {
-    try {
-      programId = new PublicKey(programIdRaw);
-    } catch {
-      throw new Error(
-        `SETTLEMENT_PROGRAM_ID is not a valid base58 pubkey: "${programIdRaw}"`,
-      );
-    }
-  }
-
-  // Program mode also pays rent for the 41-byte settlement record
-  // (~1,176,240 lamports); budget for it plus transaction fees.
-  const overhead = programId !== undefined ? 1_200_000n : 1_000_000n;
-  await ensureFunds(connection, payer, lamportsTotal + overhead);
+  const programId = parseProgramId();
+  await ensureFunds(connection, payer, lamportsTotal + fundingOverhead(programId));
 
   const submission = await submitSettlement({
     connection,
@@ -299,15 +140,14 @@ async function main(): Promise<void> {
   console.log(`\nSettled on devnet (${submission.mode} mode)`);
   console.log(`  total     ${submission.lamportsTotal} lamports`);
   const roles: readonly SettlementRole[] = ["artist", "studio", "synxed"];
-  for (let i = 0; i < roles.length; i += 1) {
-    const role = roles[i] as SettlementRole;
-    const lamports = submission.lamportsByRole[i] ?? 0n;
+  roles.forEach((role, i) => {
+    const lamports = submission.lamportsByRole[i];
     const share = request.splits[i];
     console.log(
       `  ${role.padEnd(8)} ${lamports.toString().padStart(10)} lamports -> ` +
-        `${share?.recipient ?? "?"}`,
+        `${share.recipient}`,
     );
-  }
+  });
   console.log(`  signature ${submission.signature}`);
   console.log(`  explorer  ${submission.explorerUrl}`);
   console.log(
