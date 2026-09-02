@@ -90,11 +90,11 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 
 ### Settlement modes
 
-- **Fallback (default):** up to three system transfers computed with the
-  split math, plus a memo — works with nothing deployed.
+- **Fallback (default):** one system transfer per nonzero share, computed
+  with the split math, plus a memo — works with nothing deployed.
 - **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
   becomes a single instruction that re-validates the split on-chain,
-  enforces per-event idempotency, and pays all three wallets atomically. A
+  enforces per-event idempotency, and pays every wallet atomically. A
   reference deployment exists on devnet — no build tools required:
 
   ```

@@ -88,11 +88,12 @@ fn settle(
     if record.key != &pda {
         return Err(ProgramError::InvalidSeeds);
     }
-    // A payout sent to the record itself could never be recovered: nothing
-    // can debit a record once it is program-owned.
+    // A payout sent to a settlement record — this event's or any other
+    // event's — could never be recovered: nothing can debit a record once it
+    // is program-owned.
     if recipients
         .iter()
-        .any(|recipient| recipient.key == record.key)
+        .any(|recipient| recipient.key == record.key || recipient.owner == program_id)
     {
         return Err(ProgramError::InvalidArgument);
     }

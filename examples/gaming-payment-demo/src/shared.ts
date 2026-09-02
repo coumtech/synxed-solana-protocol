@@ -101,48 +101,52 @@ function isDemoRecipients(value: unknown): value is DemoRecipients {
  * `withRewardsPool` to make sure a pool wallet exists too.
  */
 export function loadRecipients(withRewardsPool = false): DemoRecipients {
-  const fromEnv = {
-    artist: envString("ARTIST_PUBKEY"),
-    studio: envString("STUDIO_PUBKEY"),
-    synxed: envString("SYNXED_PUBKEY"),
-    rewardsPool: envString("REWARDS_POOL_PUBKEY"),
-  };
-  if (
-    fromEnv.artist &&
-    fromEnv.studio &&
-    fromEnv.synxed &&
-    (!withRewardsPool || fromEnv.rewardsPool)
-  ) {
-    return {
-      artist: fromEnv.artist,
-      studio: fromEnv.studio,
-      synxed: fromEnv.synxed,
-      ...(fromEnv.rewardsPool !== undefined
-        ? { rewardsPool: fromEnv.rewardsPool }
-        : {}),
-    };
-  }
-
-  let stored: DemoRecipients | undefined;
+  // Resolution per wallet, independently: env override, then the stored
+  // demo wallet, then a freshly generated one (persisted for reuse).
+  let stored: Partial<DemoRecipients> = {};
   if (existsSync(RECIPIENTS_FILE)) {
     const parsed: unknown = JSON.parse(readFileSync(RECIPIENTS_FILE, "utf8"));
     if (isDemoRecipients(parsed)) {
       stored = parsed;
     }
   }
-  const recipients: DemoRecipients = stored ?? {
-    artist: Keypair.generate().publicKey.toBase58(),
-    studio: Keypair.generate().publicKey.toBase58(),
-    synxed: Keypair.generate().publicKey.toBase58(),
+  let generated = false;
+  const resolve = (envName: string, current: string | undefined): string => {
+    const fromEnv = envString(envName);
+    if (fromEnv !== undefined) {
+      return fromEnv;
+    }
+    if (current !== undefined) {
+      return current;
+    }
+    generated = true;
+    return Keypair.generate().publicKey.toBase58();
   };
-  let changed = stored === undefined;
-  if (withRewardsPool && recipients.rewardsPool === undefined) {
-    recipients.rewardsPool = Keypair.generate().publicKey.toBase58();
-    changed = true;
+  const recipients: DemoRecipients = {
+    artist: resolve("ARTIST_PUBKEY", stored.artist),
+    studio: resolve("STUDIO_PUBKEY", stored.studio),
+    synxed: resolve("SYNXED_PUBKEY", stored.synxed),
+  };
+  if (withRewardsPool) {
+    recipients.rewardsPool = resolve("REWARDS_POOL_PUBKEY", stored.rewardsPool);
+  } else if (stored.rewardsPool !== undefined) {
+    recipients.rewardsPool = stored.rewardsPool;
   }
-  if (changed) {
+  if (generated) {
+    // Persist only the generated/stored wallets, never env overrides, so a
+    // later run without the env vars falls back to the same demo wallets.
+    const toStore: DemoRecipients = {
+      artist: envString("ARTIST_PUBKEY") === undefined ? recipients.artist : (stored.artist ?? recipients.artist),
+      studio: envString("STUDIO_PUBKEY") === undefined ? recipients.studio : (stored.studio ?? recipients.studio),
+      synxed: envString("SYNXED_PUBKEY") === undefined ? recipients.synxed : (stored.synxed ?? recipients.synxed),
+      ...(recipients.rewardsPool !== undefined && envString("REWARDS_POOL_PUBKEY") === undefined
+        ? { rewardsPool: recipients.rewardsPool }
+        : stored.rewardsPool !== undefined
+          ? { rewardsPool: stored.rewardsPool }
+          : {}),
+    };
     mkdirSync(dirname(RECIPIENTS_FILE), { recursive: true });
-    writeFileSync(RECIPIENTS_FILE, `${JSON.stringify(recipients, null, 2)}\n`);
+    writeFileSync(RECIPIENTS_FILE, `${JSON.stringify(toStore, null, 2)}\n`);
     console.log(`Updated demo recipient wallets -> ${RECIPIENTS_FILE}`);
   }
   return recipients;

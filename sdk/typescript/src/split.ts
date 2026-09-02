@@ -64,6 +64,13 @@ export function splitAmountAtomicShares(
   amount: bigint,
   bps: readonly number[],
 ): bigint[] {
+  // Same order as the program: share count, then amount, then each share.
+  if (bps.length === 0 || bps.length > MAX_SHARES) {
+    throw new ProtocolError(
+      "SHARE_COUNT",
+      `share count must be in 1..=${MAX_SHARES}, got ${bps.length}`,
+    );
+  }
   if (amount <= 0n) {
     throw new ProtocolError("ZERO_AMOUNT", "amount must be greater than zero");
   }

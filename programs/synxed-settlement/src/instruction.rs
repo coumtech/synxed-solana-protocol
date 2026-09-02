@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(expected.len(), 47);
     }
 
-    /// Golden bytes for `SettleN`, also pinned in `tests/instruction.test.ts`.
+    /// Golden bytes for `SettleN`, also pinned in `tests/instruction-n.test.ts`.
     #[test]
     fn pack_n_matches_shared_golden_bytes() {
         let mut expected = vec![SETTLE_N_TAG];

@@ -26,10 +26,11 @@ Given `amount` (a positive integer of atomic units) and `n` shares
    `payout_i = floor(amount * bps_i / 10000)`.
 5. The last payout is the remainder: `amount - sum(payout_0..payout_n-2)`.
 
-Property (conservation): the three payouts always sum to `amount` exactly.
-No atomic unit is created or destroyed by rounding; any rounding dust lands
-in the last (platform) share, and that behavior is deliberate and documented
-rather than hidden.
+Property (conservation): the payouts always sum to `amount` exactly. No
+atomic unit is created or destroyed by rounding; any rounding dust lands in
+the last share (the platform share in the three-way form, whatever is
+configured last in `SettleN`), and that behavior is deliberate and
+documented rather than hidden.
 
 The same algorithm is implemented twice and kept in lockstep:
 
@@ -38,8 +39,9 @@ The same algorithm is implemented twice and kept in lockstep:
 - TypeScript: `sdk/typescript/src/split.ts` (`splitAmountAtomicShares`,
   with `splitAmountAtomic` as the three-way wrapper)
 
-`tests/instruction.test.ts` pins the shared byte layout, and both languages
-carry conservation and rejection tests.
+`tests/instruction.test.ts` and `tests/instruction-n.test.ts` pin the shared
+byte layouts against golden vectors also asserted in the Rust codec tests,
+and both languages carry conservation and rejection tests.
 
 ## Default configuration
 
@@ -79,7 +81,8 @@ Accounts, in order:
 
 The program validates the split with the same rules as above and fails the
 whole transaction on any violation. Split violations, and a payout
-recipient equal to the record account, return `InvalidArgument`; a missing
+recipient that is a settlement record (this event's or any other's — such
+funds could never be recovered), return `InvalidArgument`; a missing
 payer signature returns `MissingRequiredSignature`; a non-writable payer,
 payout, or record account returns `InvalidAccountData`; a wrong record
 address `InvalidSeeds`; a wrong system program account
@@ -119,7 +122,12 @@ with `InvalidInstructionData`; an account list whose length is not
 settled through one cannot be settled again through the other.
 
 The three-way `Settle` instruction is equivalent to `SettleN` with
-`n = 3` and remains supported unchanged.
+`n = 3` and remains supported on the wire unchanged. One behavioral
+tightening applies to both: the account list must be exact, so a client
+that appended unused accounts (for example sysvars) will now be rejected
+with `NotEnoughAccountKeys`. The payer may itself be a recipient; the
+record's `amount` field always stores the gross amount, not the payer's net
+outflow.
 
 ## Idempotency
 
@@ -152,10 +160,10 @@ than the system program is rejected with `InvalidAccountData`.
 
 ## Client fallback mode
 
-When no program id is configured, the TypeScript client settles with up to
-three `SystemProgram.transfer` instructions in a single transaction
-(zero-lamport shares are skipped), computed with the identical split
-function, plus a memo instruction recording the event id. Same amounts, same conservation guarantee, weaker atomicity semantics
+When no program id is configured, the TypeScript client settles with one
+`SystemProgram.transfer` instruction per nonzero share in a single
+transaction (up to eight), computed with the identical split function, plus
+a memo instruction recording the event id. Same amounts, same conservation guarantee, weaker atomicity semantics
 (no on-chain re-validation, no idempotency record). It exists so the demo
 produces a real devnet transaction without requiring anyone to deploy the
 program first.

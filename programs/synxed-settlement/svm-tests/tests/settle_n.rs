@@ -120,6 +120,69 @@ fn rejects_the_record_as_any_recipient() {
 }
 
 #[test]
+fn rejects_another_events_record_as_a_recipient() {
+    let mut f = Fixture::new();
+    f.settle(event(41), AMOUNT, BPS)
+        .expect("first event settles");
+    let stuck_target = f.record_pda(&event(41));
+    let recipients = [f.artist, f.studio, f.synxed, stuck_target];
+    let err = f
+        .settle_n(event(42), AMOUNT, &REWARDS_BPS, &recipients)
+        .expect_err("paying into a program-owned record must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
+    assert!(f.svm.get_account(&f.record_pda(&event(42))).is_none());
+}
+
+#[test]
+fn duplicate_recipients_accumulate_their_shares() {
+    let mut f = Fixture::new();
+    let recipients = [f.artist, f.artist, f.studio];
+    f.settle_n(event(43), AMOUNT, &[3_000, 3_000, 4_000], &recipients)
+        .expect("duplicate recipients are allowed");
+    assert_eq!(f.balance(&f.artist), 12_000_000);
+    assert_eq!(f.balance(&f.studio), 8_000_000);
+}
+
+#[test]
+fn rejects_a_read_only_recipient_and_a_wrong_system_program() {
+    let mut f = Fixture::new();
+    let recipients = four_recipients(&f);
+    let record = f.record_pda(&event(44));
+    let payer = f.payer.insecure_clone();
+
+    let mut readonly = f.settle_n_instruction(event(44), AMOUNT, &REWARDS_BPS, &recipients, record);
+    readonly.accounts[2].is_writable = false;
+    let err = f
+        .send(&[readonly], &[&payer], &payer.pubkey())
+        .expect_err("read-only recipient must fail");
+    assert!(err.contains("InvalidAccountData"), "got {err}");
+
+    let mut wrong_system =
+        f.settle_n_instruction(event(44), AMOUNT, &REWARDS_BPS, &recipients, record);
+    let last = wrong_system.accounts.len() - 1;
+    wrong_system.accounts[last].pubkey = Pubkey::new_unique();
+    let err = f
+        .send(&[wrong_system], &[&payer], &payer.pubkey())
+        .expect_err("wrong system program account must fail");
+    assert!(err.contains("IncorrectProgramId"), "got {err}");
+    assert!(f.svm.get_account(&record).is_none());
+}
+
+#[test]
+fn rejects_a_count_byte_that_lies_about_the_bps_list() {
+    let mut f = Fixture::new();
+    let recipients = four_recipients(&f);
+    let record = f.record_pda(&event(45));
+    let mut ix = f.settle_n_instruction(event(45), AMOUNT, &REWARDS_BPS, &recipients, record);
+    ix.data[41] = 3; // claims three shares, carries four
+    let payer = f.payer.insecure_clone();
+    let err = f
+        .send(&[ix], &[&payer], &payer.pubkey())
+        .expect_err("count/length mismatch must fail");
+    assert!(err.contains("InvalidInstructionData"), "got {err}");
+}
+
+#[test]
 fn skips_zero_lamport_shares_without_touching_new_accounts() {
     let mut f = Fixture::new();
     let idle = Pubkey::new_unique();

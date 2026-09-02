@@ -74,11 +74,11 @@ console.log(submission.explorerUrl);
   SOL lamports on devnet. `lamportsPerAtomicUnit` (default `1`) converts
   between the two. Keep each recipient's share above the ~`890880` lamport
   rent-exempt minimum or transfers to brand-new accounts will fail.
-- **Fallback mode (default):** three `SystemProgram` transfers plus a memo.
+- **Fallback mode (default):** one `SystemProgram` transfer per nonzero share plus a memo.
   No deployment needed.
 - **Program mode:** pass `programId` and the client sends a single `Settle`
   instruction; the program re-validates the split on-chain, writes the
-  idempotency record, and pays all three recipients atomically.
+  idempotency record, and pays every recipient atomically.
 
 ## 4. Deploying the program (optional, for program mode)
 

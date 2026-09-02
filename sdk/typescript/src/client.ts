@@ -168,12 +168,13 @@ export async function submitSettlementN(
   options: SubmitSettlementNOptions,
 ): Promise<SettlementSubmissionN> {
   const { request } = options;
-  // Validates share count, labels, and bps before anything else.
-  computeSettlementN(request);
   const lamportsTotal = scaledTotal(
     request.amountAtomic,
     options.lamportsPerAtomicUnit,
   );
+  // Validates share count, labels, and bps (same order as the 3-way path:
+  // scale first, then the request).
+  computeSettlementN(request);
   const bps = request.shares.map((share) => share.bps);
   const lamportsByShare = splitAmountAtomicShares(lamportsTotal, bps);
   const recipients = request.shares.map((share) =>

@@ -37,7 +37,12 @@ import {
 const DEFAULT_LABELS = ["artist", "studio", "synxed", "rewards_pool"] as const;
 const DEFAULT_BPS = [3_500, 3_500, 2_000, 1_000] as const;
 
-/** Map a share label to a demo wallet; unknown labels get a throwaway key. */
+/**
+ * Map a share label to a wallet. The four built-in labels use the demo
+ * wallets; any other label must name its wallet via `<LABEL>_PUBKEY`
+ * (upper-cased, e.g. `CHARITY_PUBKEY`) so funds never go to an address
+ * nobody controls.
+ */
 function recipientFor(label: string, recipients: DemoRecipients): string {
   switch (label) {
     case "artist":
@@ -48,8 +53,17 @@ function recipientFor(label: string, recipients: DemoRecipients): string {
       return recipients.synxed;
     case "rewards_pool":
       return recipients.rewardsPool ?? Keypair.generate().publicKey.toBase58();
-    default:
-      return Keypair.generate().publicKey.toBase58();
+    default: {
+      const envName = `${label.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_PUBKEY`;
+      const configured = envString(envName);
+      if (configured === undefined) {
+        throw new Error(
+          `share "${label}" has no wallet: set ${envName} in .env ` +
+            "(refusing to pay a label nobody controls)",
+        );
+      }
+      return configured;
+    }
   }
 }
 
