@@ -8,79 +8,102 @@ on devnet. It is upgradeable by the maintainers (standard upgradeable
 loader), which is exactly why an independent check matters: anyone can
 rebuild from a given commit and compare the bytes on chain.
 
-## Level 1 — build locally and compare (one command)
+## One canonical build environment
+
+`cargo build-sbf` does **not** produce identical bytes across hosts: the
+same source and the same Agave version gave three different binaries on
+macOS, on a Linux CI runner, and in the build container (the prebuilt
+platform-tools embed host paths, and toolchain minor versions differ in
+post-processing). Comparing hashes is therefore only meaningful against a
+build from a fixed environment. This project pins one:
+
+| | |
+| --- | --- |
+| Image | `solanafoundation/solana-verifiable-build@sha256:588d0c6f45c2faa4456c7b8279897d8af8c6cd17e9613bb8ddf622a820039eb2` (tag `4.0.3`) |
+| Toolchain inside | Agave 4.0.3 `cargo-build-sbf`, platform-tools v1.54, sBPF v0 |
+| Build command | `cargo build-sbf --features onchain` on `programs/synxed-settlement` |
+
+The deployed program is built in that image. The verification script and
+the CI workflow build in that image. If you build in that image, you get
+the same bytes — on Linux, on macOS (under emulation), anywhere Docker runs.
+
+## Verify it yourself
+
+Prerequisites: Docker running, `cargo install solana-verify`.
 
 ```bash
 scripts/verify-deployment.sh
 ```
 
-The script builds `programs/synxed-settlement` with the pinned Agave
-toolchain (`cargo build-sbf --features onchain`), dumps the on-chain
-program, and compares SHA-256 digests. `MATCH` means the deployed bytes are
-the build of your checkout; `DRIFT` means they are not.
+The script copies the program crate to a scratch directory, builds it in
+the pinned image with `solana-verify build`, hashes the result, fetches the
+on-chain program hash, and compares. Output ends in `MATCH` (exit 0) or
+`DRIFT` (exit 1); an incomplete run (missing tools, build or RPC failure)
+exits 2 and never claims either. The first run pulls a ~2 GB image; on
+Apple Silicon the image is `linux/amd64` and runs under emulation, so
+expect 15–30 minutes the first time.
 
-CI runs the same script on every push to `main` and once a day
-(`.github/workflows/verify-deployment.yml`), so a deployment that lags or
-diverges from `main` shows up as a failed run.
+CI runs the same script after every push to `main` and once a day
+(`.github/workflows/verify-deployment.yml`). A red run means the
+deployment has not been upgraded to `main` yet, or was built from
+something else.
 
-What this proves: the on-chain program equals a build of this source tree
-*with this toolchain version*. What it does not prove: that the toolchain
-itself is honest. For that, use level 2.
+Trust boundary: the on-chain hash comes from whatever RPC you point at.
+Use an RPC you trust, or cross-check with a second one.
 
-## Level 2 — reproducible container build
+## Verify against a git commit directly
 
-[`solana-verify`](https://github.com/Ellipsis-Labs/solana-verifiable-build)
-builds the program inside a pinned Docker image so the result does not
-depend on anything installed on your machine.
-
-```bash
-cargo install solana-verify
-# The mount path must be absolute (Docker volume syntax).
-solana-verify build --library-name synxed_settlement "$PWD/programs/synxed-settlement" -- --features onchain
-solana-verify get-executable-hash programs/synxed-settlement/target/deploy/synxed_settlement.so
-solana-verify get-program-hash -u https://api.devnet.solana.com HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
-```
-
-Docker must be running. On Apple Silicon the build image is `linux/amd64`
-and runs under emulation, so expect the first build to take a while.
-
-Equal hashes mean the deployed program is byte-identical to a clean-room
-build of the source. `solana-verify verify-from-repo` can do the same
-against a git commit directly:
+`solana-verify` can clone the repository at a commit and build it in the
+same image:
 
 ```bash
 solana-verify verify-from-repo -u https://api.devnet.solana.com \
   --program-id HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT \
+  --base-image solanafoundation/solana-verifiable-build@sha256:588d0c6f45c2faa4456c7b8279897d8af8c6cd17e9613bb8ddf622a820039eb2 \
   --library-name synxed_settlement \
   --mount-path programs/synxed-settlement \
-  https://github.com/coumtech/synxed-solana-protocol
+  --commit-hash <commit the deployment was built from> \
+  https://github.com/coumtech/synxed-solana-protocol -- --features onchain
 ```
+
+Without `--base-image` the tool picks an image from the `solana-program`
+version in `Cargo.lock` (a different toolchain), and without
+`--features onchain` the crate builds without its entrypoint — both give a
+mismatch that says nothing about the deployment. After a match the tool
+offers to upload a verification record on-chain; decline unless you mean
+to sign for it with a funded key.
 
 ## Current deployment
 
 | | |
 | --- | --- |
-| Program id | `HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT` |
-| Cluster | devnet |
-| Source | `main` at the commit named in the latest release notes / PR |
-| Toolchain | Agave v4.2.1 (`cargo-build-sbf` 4.1.0, platform-tools v1.54) |
+| Program id | `HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT` (devnet) |
+| Built from | `main` at the commit named in the PR that last upgraded it |
+| Build | pinned image above |
+| Upgrade authority | the maintainers' devnet payer key |
 
-The expected hash is not hard-coded here on purpose: the check is the
-comparison itself, and the CI workflow performs it against whatever `main`
-currently is.
+The expected hash is deliberately not hard-coded here: the check *is* the
+comparison, performed against whatever `main` currently is.
 
 ## Maintainer procedure for an upgrade
 
 1. Merge the change to `main` (after CI and the adversarial review).
-2. Build from the merged commit and upgrade in place:
+2. Build the release artifact in the pinned image — never with a native
+   toolchain:
    ```bash
-   cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
-   solana program deploy programs/synxed-settlement/target/deploy/synxed_settlement.so \
-     --program-id HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT --url devnet
+   solana-verify build \
+     --base-image solanafoundation/solana-verifiable-build@sha256:588d0c6f45c2faa4456c7b8279897d8af8c6cd17e9613bb8ddf622a820039eb2 \
+     --library-name synxed_settlement "$PWD/programs/synxed-settlement" -- --features onchain
    ```
-3. Run `scripts/verify-deployment.sh` and confirm `MATCH`.
-4. Trigger the *Verify deployment* workflow (or wait for the daily run) so
-   the public record shows green.
+3. Upgrade in place, signing with the upgrade authority:
+   ```bash
+   solana program deploy programs/synxed-settlement/target/deploy/synxed_settlement.so \
+     --program-id HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT \
+     --keypair <upgrade authority keypair> --url devnet
+   ```
+4. Run `scripts/verify-deployment.sh` and confirm `MATCH`, then trigger
+   the *Verify deployment* workflow (or wait for the daily run) so the
+   public record shows green.
 
 Do not merge program changes without upgrading: the docs describe `main`,
-and the daily check will fail until the deployment catches up.
+and the daily check fails until the deployment catches up.

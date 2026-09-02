@@ -107,16 +107,17 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 
 ### Verify the deployment
 
-Anyone can confirm the reference devnet program is exactly the build of
-this source tree — no trust in the maintainers required:
+Anyone with Docker can confirm the reference devnet program is exactly the
+build of this source tree — no trust in the maintainers required:
 
 ```bash
-scripts/verify-deployment.sh      # builds from source, compares with on-chain bytes
+cargo install solana-verify
+scripts/verify-deployment.sh      # builds in the pinned container, compares with on-chain
 ```
 
 CI runs the same check after every push to `main` and daily
-([Verify deployment](.github/workflows/verify-deployment.yml)). For a fully
-reproducible, container-based build, see
+([Verify deployment](.github/workflows/verify-deployment.yml)). Why a
+container, which image, and how to verify a specific commit:
 [docs/verified-build.md](docs/verified-build.md).
 
 ## Repository layout

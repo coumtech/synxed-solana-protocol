@@ -87,7 +87,10 @@ jobs:
       - name: Build on-chain program
         run: cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
 
-      - name: Report binary size and hash
+      # This is the test build used by the SVM tests below. The release
+      # artifact is the pinned container build (docs/verified-build.md), so
+      # this hash is not expected to match the deployment.
+      - name: Report test build size and hash
         run: |
           ls -la programs/synxed-settlement/target/deploy/*.so
           sha256sum programs/synxed-settlement/target/deploy/synxed_settlement.so

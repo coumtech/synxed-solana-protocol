@@ -1,8 +1,10 @@
 name: Verify deployment
 
-# Confirms the reference devnet program is byte-for-byte the build of `main`.
-# Runs after every push to main, daily, and on demand. A failure means the
-# deployed program and the public source have drifted apart.
+# Confirms the reference devnet program is byte-for-byte the build of `main`,
+# using the pinned reproducible build container (see docs/verified-build.md).
+# Runs after every push to main, daily, and on demand. A failure means either
+# the deployment has not been upgraded to `main` yet, or it was built from
+# something else.
 
 on:
   push:
@@ -15,7 +17,8 @@ permissions:
   contents: read
 
 env:
-  AGAVE_VERSION: v4.2.1
+  SOLANA_VERIFY_VERSION: "0.5.1"
+  RUST_TOOLCHAIN: "1.98.0"
   PROGRAM_ID: HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
   RPC_URL: https://api.devnet.solana.com
 
@@ -27,18 +30,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Cache Agave toolchain
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache solana-verify binary
+        id: cache-solana-verify
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/.local/share/solana
-          key: agave-${{ env.AGAVE_VERSION }}-${{ runner.os }}
+          path: ~/.cargo/bin/solana-verify
+          key: solana-verify-${{ env.SOLANA_VERIFY_VERSION }}-${{ runner.os }}
 
-      - name: Install Agave toolchain
-        run: |
-          if [ ! -x "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
-            sh -c "$(curl -sSfL https://release.anza.xyz/${AGAVE_VERSION}/install)"
-          fi
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install solana-verify
+        if: steps.cache-solana-verify.outputs.cache-hit != 'true'
+        run: cargo install solana-verify --locked --version "$SOLANA_VERIFY_VERSION"
 
-      - name: Build from source and compare with the on-chain program
+      - name: Build in the pinned container and compare with the on-chain program
         run: scripts/verify-deployment.sh "$PROGRAM_ID" "$RPC_URL"
