@@ -105,6 +105,20 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
   own copy of `programs/synxed-settlement` if you need to trust the exact
   bytecode ([docs/integration.md](docs/integration.md)).
 
+### Verify the deployment
+
+Anyone can confirm the reference devnet program is exactly the build of
+this source tree — no trust in the maintainers required:
+
+```bash
+scripts/verify-deployment.sh      # builds from source, compares with on-chain bytes
+```
+
+CI runs the same check after every push to `main` and daily
+([Verify deployment](.github/workflows/verify-deployment.yml)). For a fully
+reproducible, container-based build, see
+[docs/verified-build.md](docs/verified-build.md).
+
 ## Repository layout
 
 ```

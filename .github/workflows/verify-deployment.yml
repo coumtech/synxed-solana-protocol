@@ -1,0 +1,44 @@
+name: Verify deployment
+
+# Confirms the reference devnet program is byte-for-byte the build of `main`.
+# Runs after every push to main, daily, and on demand. A failure means the
+# deployed program and the public source have drifted apart.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AGAVE_VERSION: v4.2.1
+  PROGRAM_ID: HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
+  RPC_URL: https://api.devnet.solana.com
+
+jobs:
+  verify:
+    name: verify-deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Cache Agave toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.local/share/solana
+          key: agave-${{ env.AGAVE_VERSION }}-${{ runner.os }}
+
+      - name: Install Agave toolchain
+        run: |
+          if [ ! -x "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
+            sh -c "$(curl -sSfL https://release.anza.xyz/${AGAVE_VERSION}/install)"
+          fi
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Build from source and compare with the on-chain program
+        run: scripts/verify-deployment.sh "$PROGRAM_ID" "$RPC_URL"

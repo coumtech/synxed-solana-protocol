@@ -26,6 +26,14 @@ This is the public **SYNXED Solana settlement protocol** (Coum Technologies Ltd,
 5. Every PR receives an **adversarial review** before merge: a reviewer (human or agent) whose explicit job is to find bugs, broken claims, and security issues in the diff — not to rubber-stamp it. Confirmed findings are fixed in the PR before it merges.
 6. Do not merge your own PR unless maintainers have documented an exception.
 
+## Changing the on-chain program
+
+Program changes are not done when they merge — they are done when the
+reference devnet deployment matches `main` again. Follow the upgrade
+procedure in [docs/verified-build.md](docs/verified-build.md) right after
+merging, then confirm with `scripts/verify-deployment.sh`. The *Verify
+deployment* workflow runs the same check daily and fails on drift.
+
 ## Secrets
 
 - Never commit `.env`, keypairs, or program deploy keys. Use `.env.example`.
