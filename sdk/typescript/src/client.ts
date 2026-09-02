@@ -2,12 +2,12 @@
 //
 // Two submission modes:
 //  - "program": one instruction to the deployed settlement program, which
-//    validates the split and pays all three recipients atomically. Requires
-//    a program id (see docs/integration.md for deployment).
-//  - "system-transfer": up to three SystemProgram transfers (zero-lamport
-//    shares are skipped) computed client-side with the same split math,
-//    plus a memo. Works with no deployed program, so the demo runs
-//    end-to-end on a fresh clone.
+//    validates the split and pays every recipient atomically. Requires a
+//    program id (see docs/integration.md for deployment).
+//  - "system-transfer": up to N SystemProgram transfers (zero-lamport shares
+//    are skipped) computed client-side with the same split math, plus a
+//    memo. Works with no deployed program, so the demo runs end-to-end on a
+//    fresh clone.
 //
 // Both modes settle native SOL on devnet as a stand-in asset.
 
@@ -20,9 +20,22 @@ import {
   TransactionInstruction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
-import { buildSettleInstruction, eventIdSeed, U64_MAX } from "./instruction.ts";
-import { splitAmountAtomic } from "./split.ts";
-import { ProtocolError, type SettlementRequest } from "./types.ts";
+import {
+  buildSettleInstruction,
+  buildSettleNInstruction,
+  eventIdSeed,
+  U64_MAX,
+} from "./instruction.ts";
+import {
+  computeSettlementN,
+  splitAmountAtomic,
+  splitAmountAtomicShares,
+} from "./split.ts";
+import {
+  ProtocolError,
+  type SettlementRequest,
+  type SettlementRequestN,
+} from "./types.ts";
 
 export const DEVNET_RPC_URL = "https://api.devnet.solana.com";
 
@@ -62,6 +75,23 @@ export interface SettlementSubmission {
   lamportsByRole: readonly [bigint, bigint, bigint];
 }
 
+export interface SubmitSettlementNOptions {
+  connection: Connection;
+  payer: Keypair;
+  request: SettlementRequestN;
+  lamportsPerAtomicUnit?: bigint;
+  programId?: PublicKey;
+}
+
+export interface SettlementSubmissionN {
+  signature: string;
+  explorerUrl: string;
+  mode: SettlementMode;
+  lamportsTotal: bigint;
+  /** Lamports per share, in `request.shares` order. */
+  lamportsByShare: readonly bigint[];
+}
+
 export function explorerTxUrl(signature: string, cluster = "devnet"): string {
   return `https://explorer.solana.com/tx/${signature}?cluster=${cluster}`;
 }
@@ -73,68 +103,34 @@ export function explorerAddressUrl(
   return `https://explorer.solana.com/address/${address}?cluster=${cluster}`;
 }
 
+/** Settle a three-way request through `Settle` (or system transfers). */
 export async function submitSettlement(
   options: SubmitSettlementOptions,
 ): Promise<SettlementSubmission> {
-  const scale = options.lamportsPerAtomicUnit ?? 1n;
-  if (scale <= 0n) {
-    throw new ProtocolError(
-      "SCALE_RANGE",
-      "lamportsPerAtomicUnit must be a positive bigint",
-    );
-  }
   const { request } = options;
-  const lamportsTotal = request.amountAtomic * scale;
-  // Enforced here so both modes reject oversized totals identically;
-  // program mode would also catch this in encodeSettleData.
-  if (lamportsTotal > U64_MAX) {
-    throw new ProtocolError(
-      "AMOUNT_U64",
-      `scaled total ${lamportsTotal} lamports exceeds u64`,
-    );
-  }
-  // Mirrors the on-chain math: floor the first two shares, remainder to the
+  const lamportsTotal = scaledTotal(
+    request.amountAtomic,
+    options.lamportsPerAtomicUnit,
+  );
+  // Mirrors the on-chain math: floor the first shares, remainder to the
   // last, so lamports out always equal lamports in.
   const lamportsByRole = splitAmountAtomic(lamportsTotal, request.splits);
-  const recipients = request.splits.map((share) => {
-    try {
-      return new PublicKey(share.recipient);
-    } catch {
-      throw new ProtocolError(
-        "RECIPIENT_PUBKEY",
-        `recipient for role "${share.role}" is not a valid base58 pubkey`,
-      );
-    }
-  });
-  const [artist, studio, synxed] = recipients as [
-    PublicKey,
-    PublicKey,
-    PublicKey,
-  ];
+  const [artist, studio, synxed] = request.splits.map((share) =>
+    parseRecipient(share.role, share.recipient),
+  ) as [PublicKey, PublicKey, PublicKey];
 
-  const transaction = new Transaction();
-  transaction.add(memoInstruction(request, lamportsTotal));
-
+  const transaction = new Transaction().add(
+    memoInstruction(request.eventId, request.kind, request.memo, lamportsTotal),
+  );
   let mode: SettlementMode;
   if (options.programId === undefined) {
     mode = "system-transfer";
-    const targets: readonly [PublicKey, PublicKey, PublicKey] = [
-      artist,
-      studio,
-      synxed,
-    ];
-    for (let i = 0; i < targets.length; i += 1) {
-      const lamports = lamportsByRole[i] ?? 0n;
-      if (lamports > 0n) {
-        transaction.add(
-          SystemProgram.transfer({
-            fromPubkey: options.payer.publicKey,
-            toPubkey: targets[i] as PublicKey,
-            lamports,
-          }),
-        );
-      }
-    }
+    addTransfers(
+      transaction,
+      options.payer.publicKey,
+      [artist, studio, synxed],
+      lamportsByRole,
+    );
   } else {
     mode = "program";
     transaction.add(
@@ -157,12 +153,7 @@ export async function submitSettlement(
     );
   }
 
-  const signature = await sendAndConfirmTransaction(
-    options.connection,
-    transaction,
-    [options.payer],
-    { commitment: "confirmed" },
-  );
+  const signature = await send(options.connection, options.payer, transaction);
   return {
     signature,
     explorerUrl: explorerTxUrl(signature),
@@ -172,20 +163,137 @@ export async function submitSettlement(
   };
 }
 
+/** Settle an N-way request through `SettleN` (or system transfers). */
+export async function submitSettlementN(
+  options: SubmitSettlementNOptions,
+): Promise<SettlementSubmissionN> {
+  const { request } = options;
+  const lamportsTotal = scaledTotal(
+    request.amountAtomic,
+    options.lamportsPerAtomicUnit,
+  );
+  // Validates share count, labels, and bps (same order as the 3-way path:
+  // scale first, then the request).
+  computeSettlementN(request);
+  const bps = request.shares.map((share) => share.bps);
+  const lamportsByShare = splitAmountAtomicShares(lamportsTotal, bps);
+  const recipients = request.shares.map((share) =>
+    parseRecipient(share.label, share.recipient),
+  );
+
+  const transaction = new Transaction().add(
+    memoInstruction(request.eventId, request.kind, request.memo, lamportsTotal),
+  );
+  let mode: SettlementMode;
+  if (options.programId === undefined) {
+    mode = "system-transfer";
+    addTransfers(
+      transaction,
+      options.payer.publicKey,
+      recipients,
+      lamportsByShare,
+    );
+  } else {
+    mode = "program";
+    transaction.add(
+      buildSettleNInstruction(
+        {
+          programId: options.programId,
+          payer: options.payer.publicKey,
+          recipients,
+        },
+        {
+          eventSeed: eventIdSeed(request.eventId),
+          amount: lamportsTotal,
+          bps,
+        },
+      ),
+    );
+  }
+
+  const signature = await send(options.connection, options.payer, transaction);
+  return {
+    signature,
+    explorerUrl: explorerTxUrl(signature),
+    mode,
+    lamportsTotal,
+    lamportsByShare,
+  };
+}
+
+function scaledTotal(amountAtomic: bigint, scale: bigint | undefined): bigint {
+  const factor = scale ?? 1n;
+  if (factor <= 0n) {
+    throw new ProtocolError(
+      "SCALE_RANGE",
+      "lamportsPerAtomicUnit must be a positive bigint",
+    );
+  }
+  const total = amountAtomic * factor;
+  // Enforced here so both modes reject oversized totals identically;
+  // program mode would also catch this when encoding the instruction.
+  if (total > U64_MAX) {
+    throw new ProtocolError(
+      "AMOUNT_U64",
+      `scaled total ${total} lamports exceeds u64`,
+    );
+  }
+  return total;
+}
+
+function parseRecipient(label: string, recipient: string): PublicKey {
+  try {
+    return new PublicKey(recipient);
+  } catch {
+    throw new ProtocolError(
+      "RECIPIENT_PUBKEY",
+      `recipient for "${label}" is not a valid base58 pubkey`,
+    );
+  }
+}
+
+function addTransfers(
+  transaction: Transaction,
+  from: PublicKey,
+  recipients: readonly PublicKey[],
+  lamports: readonly bigint[],
+): void {
+  recipients.forEach((toPubkey, i) => {
+    const amount = lamports[i];
+    if (amount > 0n) {
+      transaction.add(
+        SystemProgram.transfer({ fromPubkey: from, toPubkey, lamports: amount }),
+      );
+    }
+  });
+}
+
+async function send(
+  connection: Connection,
+  payer: Keypair,
+  transaction: Transaction,
+): Promise<string> {
+  return sendAndConfirmTransaction(connection, transaction, [payer], {
+    commitment: "confirmed",
+  });
+}
+
 function memoInstruction(
-  request: SettlementRequest,
+  eventId: string,
+  kind: string,
+  memo: string,
   lamportsTotal: bigint,
 ): TransactionInstruction {
-  const memo = JSON.stringify({
+  const text = JSON.stringify({
     protocol: "synxed-settlement",
-    event: request.eventId,
-    kind: request.kind,
+    event: eventId,
+    kind,
     lamports: lamportsTotal.toString(),
-    memo: request.memo,
+    memo,
   });
   return new TransactionInstruction({
     programId: MEMO_PROGRAM_ID,
     keys: [],
-    data: Buffer.from(memo, "utf8"),
+    data: Buffer.from(text, "utf8"),
   });
 }

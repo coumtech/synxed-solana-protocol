@@ -74,11 +74,11 @@ console.log(submission.explorerUrl);
   SOL lamports on devnet. `lamportsPerAtomicUnit` (default `1`) converts
   between the two. Keep each recipient's share above the ~`890880` lamport
   rent-exempt minimum or transfers to brand-new accounts will fail.
-- **Fallback mode (default):** three `SystemProgram` transfers plus a memo.
+- **Fallback mode (default):** one `SystemProgram` transfer per nonzero share plus a memo.
   No deployment needed.
 - **Program mode:** pass `programId` and the client sends a single `Settle`
   instruction; the program re-validates the split on-chain, writes the
-  idempotency record, and pays all three recipients atomically.
+  idempotency record, and pays every recipient atomically.
 
 ## 4. Deploying the program (optional, for program mode)
 
@@ -114,6 +114,44 @@ keys are yours; never commit them.
 - Fund the payer with devnet SOL: the demo attempts an RPC airdrop, and
   https://faucet.solana.com works when the RPC faucet is rate-limited.
 - Everything here is devnet-only. Do not point the client at mainnet.
+
+## N-way splits and pooled shares
+
+For more than three parties — for example a listener rewards pool — build a
+`SettlementRequestN` and use the N-way functions. Labels are yours; the
+program only sees recipients and basis points.
+
+```ts
+import {
+  computeSettlementN,
+  submitSettlementN,
+  type SettlementRequestN,
+} from "@coumtech/synxed-solana-protocol";
+
+const request: SettlementRequestN = {
+  eventId: "evt_8f2c...",
+  occurredAt: new Date().toISOString(),
+  kind: "audio_ad_impression",
+  amountAtomic: 20_000n,
+  asset: "SOL_LAMPORTS_STANDIN",
+  shares: [
+    { label: "artist", recipient: "<base58>", bps: 3_500 },
+    { label: "studio", recipient: "<base58>", bps: 3_500 },
+    { label: "synxed", recipient: "<base58>", bps: 2_000 },
+    { label: "rewards_pool", recipient: "<pool wallet>", bps: 1_000 },
+  ],
+  memo: "audio ad impression",
+};
+
+const result = computeSettlementN(request); // payouts per label
+const submission = await submitSettlementN({ connection, payer, request,
+  lamportsPerAtomicUnit: 1_000n, programId });
+```
+
+One to eight shares are accepted; the shares must sum to 10000 bps. A
+pooled share is just a recipient wallet on-chain — distribution from the
+pool to individual listeners is an off-chain, batched concern described in
+[payout-ledger.md](payout-ledger.md).
 
 ## Reference: the runnable example
 

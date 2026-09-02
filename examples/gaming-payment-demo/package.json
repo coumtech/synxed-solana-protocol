@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "demo": "bun run src/index.ts",
+    "demo:nway": "bun run src/nway.ts",
     "keygen": "bun run src/keygen.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

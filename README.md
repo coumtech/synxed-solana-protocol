@@ -38,6 +38,11 @@ math that always sums to the gross amount (rounding dust goes to the last
 share, documented in [docs/protocol.md](docs/protocol.md)). Invalid splits
 are rejected — in the client and on-chain — never renormalized.
 
+Splits are not limited to three parties. The `SettleN` instruction settles
+one to eight configured shares under the same rules, which is how a
+listener rewards pool becomes a fourth recipient (artist 35% / studio 35% /
+SYNXED 20% / rewards pool 10%): `bun run demo:nway`.
+
 ## Quickstart (~10 minutes)
 
 Prerequisites: [Bun](https://bun.sh) ≥ 1.1. Rust is optional (only for the
@@ -60,7 +65,8 @@ cargo test --manifest-path programs/synxed-settlement/Cargo.toml   # optional
 **2. Dry-run the demo** (no wallet, no network writes)
 
 ```bash
-bun run demo
+bun run demo          # three-way: artist / studio / SYNXED
+bun run demo:nway     # four-way: adds a listener rewards pool share
 ```
 
 Prints a simulated audio-ad impression and its deterministic split.
@@ -84,11 +90,11 @@ minted by this repo. Amounts are micro-dollars scaled into lamports
 
 ### Settlement modes
 
-- **Fallback (default):** up to three system transfers computed with the
-  split math, plus a memo — works with nothing deployed.
+- **Fallback (default):** one system transfer per nonzero share, computed
+  with the split math, plus a memo — works with nothing deployed.
 - **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
   becomes a single instruction that re-validates the split on-chain,
-  enforces per-event idempotency, and pays all three wallets atomically. A
+  enforces per-event idempotency, and pays every wallet atomically. A
   reference deployment exists on devnet — no build tools required:
 
   ```
@@ -116,7 +122,9 @@ docs/                         architecture, protocol spec, integration guide,
 
 **Current scope (implemented here):**
 
-- Deterministic, auditable 3-way split primitive (Rust + TypeScript)
+- Deterministic, auditable split primitive (Rust + TypeScript): three-way
+  by default, one to eight shares via `SettleN`, both sharing one
+  per-event idempotency record
 - Devnet settlement program with per-event idempotency
 - Strict TypeScript client and a reproducible CLI demo
 - Tests for the happy path and every invalid-split case, plus in-process

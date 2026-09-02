@@ -5,7 +5,11 @@
 //! payouts always sum to `amount` (conservation).
 
 pub const BPS_DENOMINATOR: u32 = 10_000;
+/// Share count of the original three-way `Settle` instruction.
 pub const SHARE_COUNT: usize = 3;
+/// Upper bound on shares per settlement. Bounded so account lists and
+/// instruction data stay small and compute stays predictable.
+pub const MAX_SHARES: usize = 8;
 
 pub const DEFAULT_ARTIST_BPS: u16 = 3_500;
 pub const DEFAULT_STUDIO_BPS: u16 = 4_000;
@@ -19,6 +23,7 @@ pub enum SplitError {
     BpsSumNotDenominator,
     BpsOutOfRange,
     ZeroAmount,
+    ShareCount,
 }
 
 impl SplitError {
@@ -27,8 +32,50 @@ impl SplitError {
             SplitError::BpsSumNotDenominator => "split basis points must sum to 10000",
             SplitError::BpsOutOfRange => "each share bps must be in 0..=10000",
             SplitError::ZeroAmount => "amount must be greater than zero",
+            SplitError::ShareCount => "share count must be in 1..=8",
         }
     }
+}
+
+/// Validate and split `amount` across `bps.len()` shares, writing the
+/// payouts into `out` (which must have the same length).
+///
+/// The first `n - 1` shares are floor divisions; the last share receives
+/// the remainder, so the payouts always sum to `amount` exactly.
+pub fn split_shares(amount: u64, bps: &[u16], out: &mut [u64]) -> Result<(), SplitError> {
+    let n = bps.len();
+    if n == 0 || n > MAX_SHARES || out.len() != n {
+        return Err(SplitError::ShareCount);
+    }
+    if amount == 0 {
+        return Err(SplitError::ZeroAmount);
+    }
+    let mut sum: u32 = 0;
+    for &share in bps {
+        if share > BPS_DENOMINATOR as u16 {
+            return Err(SplitError::BpsOutOfRange);
+        }
+        sum += u32::from(share);
+    }
+    if sum != BPS_DENOMINATOR {
+        return Err(SplitError::BpsSumNotDenominator);
+    }
+
+    let mut allocated: u64 = 0;
+    for i in 0..n {
+        if i + 1 == n {
+            // Cannot underflow: the floored shares sum to at most `amount`.
+            out[i] = amount
+                .checked_sub(allocated)
+                .ok_or(SplitError::ZeroAmount)?;
+        } else {
+            let part =
+                (amount as u128).saturating_mul(u128::from(bps[i])) / u128::from(BPS_DENOMINATOR);
+            out[i] = part as u64;
+            allocated = allocated.saturating_add(out[i]);
+        }
+    }
+    Ok(())
 }
 
 /// Validate and split `amount` across three shares.
@@ -40,35 +87,8 @@ pub fn split_three(
     studio_bps: u16,
     synxed_bps: u16,
 ) -> Result<[u64; SHARE_COUNT], SplitError> {
-    if amount == 0 {
-        return Err(SplitError::ZeroAmount);
-    }
-    let shares = [artist_bps, studio_bps, synxed_bps];
-    let mut sum: u32 = 0;
-    for bps in shares {
-        if bps > BPS_DENOMINATOR as u16 {
-            return Err(SplitError::BpsOutOfRange);
-        }
-        sum += u32::from(bps);
-    }
-    if sum != BPS_DENOMINATOR {
-        return Err(SplitError::BpsSumNotDenominator);
-    }
-
     let mut out = [0u64; SHARE_COUNT];
-    let mut allocated: u64 = 0;
-    for i in 0..SHARE_COUNT {
-        if i + 1 == SHARE_COUNT {
-            out[i] = amount
-                .checked_sub(allocated)
-                .ok_or(SplitError::ZeroAmount)?;
-        } else {
-            let part = (amount as u128).saturating_mul(u128::from(shares[i]))
-                / u128::from(BPS_DENOMINATOR);
-            out[i] = part as u64;
-            allocated = allocated.saturating_add(out[i]);
-        }
-    }
+    split_shares(amount, &[artist_bps, studio_bps, synxed_bps], &mut out)?;
     Ok(out)
 }
 
@@ -113,5 +133,56 @@ mod tests {
     fn rejects_bps_above_denominator() {
         let err = split_three(20_000, 10_001, 0, 0).unwrap_err();
         assert_eq!(err, SplitError::BpsOutOfRange);
+    }
+
+    #[test]
+    fn four_way_split_with_rewards_pool() {
+        let mut out = [0u64; 4];
+        split_shares(20_000, &[3_500, 3_500, 2_000, 1_000], &mut out).expect("valid");
+        assert_eq!(out, [7_000, 7_000, 4_000, 2_000]);
+    }
+
+    #[test]
+    fn conserves_amount_for_every_share_count() {
+        let amounts = [1u64, 2, 3, 7, 19, 101, 20_000, 999_999_999_999, u64::MAX];
+        for n in 1..=MAX_SHARES {
+            // Spread 10000 bps unevenly across n shares; last share takes the rest.
+            let mut bps = vec![(BPS_DENOMINATOR as u16 / n as u16) - 1; n];
+            let used: u32 = bps.iter().map(|&b| u32::from(b)).sum::<u32>() - u32::from(bps[n - 1]);
+            bps[n - 1] = (BPS_DENOMINATOR - used) as u16;
+            for &amount in &amounts {
+                let mut out = vec![0u64; n];
+                split_shares(amount, &bps, &mut out).expect("valid split");
+                let total = out.iter().fold(0u128, |acc, &x| acc + u128::from(x));
+                assert_eq!(total, u128::from(amount), "n={n} amount={amount}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_bad_share_counts() {
+        let mut none: [u64; 0] = [];
+        assert_eq!(
+            split_shares(20_000, &[], &mut none).unwrap_err(),
+            SplitError::ShareCount
+        );
+        let too_many = [1_250u16; MAX_SHARES + 1];
+        let mut out = [0u64; MAX_SHARES + 1];
+        assert_eq!(
+            split_shares(20_000, &too_many, &mut out).unwrap_err(),
+            SplitError::ShareCount
+        );
+        let mut wrong_len = [0u64; 2];
+        assert_eq!(
+            split_shares(20_000, &[5_000, 3_000, 2_000], &mut wrong_len).unwrap_err(),
+            SplitError::ShareCount
+        );
+    }
+
+    #[test]
+    fn single_share_takes_everything() {
+        let mut out = [0u64; 1];
+        split_shares(20_000, &[10_000], &mut out).expect("valid");
+        assert_eq!(out, [20_000]);
     }
 }

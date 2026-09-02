@@ -10,11 +10,14 @@ description = "In-process SVM tests for the compiled settlement program (require
 # Kept as a separate crate so the program's own `cargo test` stays free of the
 # heavy SVM runtime dependencies. Run after `cargo build-sbf --features onchain`:
 #   cargo test --manifest-path programs/synxed-settlement/svm-tests/Cargo.toml
+#
+# The SVM crates are regular dependencies (not dev-dependencies) so the shared
+# test fixture in src/ can use them; this crate is never published or deployed.
 
 [lib]
 path = "src/lib.rs"
 
-[dev-dependencies]
+[dependencies]
 litesvm = "0.16"
 solana-sdk = "4"
 solana-system-interface = { version = "3", features = ["bincode"] }

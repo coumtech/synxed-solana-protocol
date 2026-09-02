@@ -19,6 +19,6 @@ use processor::process_instruction;
 solana_program::entrypoint!(process_instruction);
 
 pub use split::{
-    split_three, SplitError, BPS_DENOMINATOR, DEFAULT_AMOUNT_ATOMIC, DEFAULT_ARTIST_BPS,
-    DEFAULT_STUDIO_BPS, DEFAULT_SYNXED_BPS, SHARE_COUNT,
+    split_shares, split_three, SplitError, BPS_DENOMINATOR, DEFAULT_AMOUNT_ATOMIC,
+    DEFAULT_ARTIST_BPS, DEFAULT_STUDIO_BPS, DEFAULT_SYNXED_BPS, MAX_SHARES, SHARE_COUNT,
 };

@@ -1,11 +1,11 @@
-//! Settle instruction processor.
+//! Settlement instruction processor.
 
 use crate::instruction::SettlementInstruction;
-use crate::split::split_three;
+use crate::split::{split_shares, MAX_SHARES, SHARE_COUNT};
 use crate::state::{
     settlement_pda, SETTLEMENT_RECORD_DISCRIMINATOR, SETTLEMENT_RECORD_SIZE, SETTLEMENT_SEED,
 };
-use solana_program::account_info::{next_account_info, AccountInfo};
+use solana_program::account_info::AccountInfo;
 use solana_program::entrypoint::ProgramResult;
 use solana_program::program::{invoke, invoke_signed};
 use solana_program::program_error::ProgramError;
@@ -26,33 +26,56 @@ pub fn process_instruction(
             artist_bps,
             studio_bps,
             synxed_bps,
-        } => process_settle(
-            program_id, accounts, event_id, amount, artist_bps, studio_bps, synxed_bps,
-        ),
+        } => {
+            let mut payouts = [0u64; SHARE_COUNT];
+            split_shares(amount, &[artist_bps, studio_bps, synxed_bps], &mut payouts)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            settle(program_id, accounts, event_id, amount, &payouts)
+        }
+        SettlementInstruction::SettleN {
+            event_id,
+            amount,
+            bps,
+        } => {
+            let count = bps.len();
+            if count == 0 || count > MAX_SHARES {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            let mut payouts = [0u64; MAX_SHARES];
+            split_shares(amount, &bps, &mut payouts[..count])
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            settle(program_id, accounts, event_id, amount, &payouts[..count])
+        }
     }
 }
 
-fn process_settle(
+/// Shared settlement path for both instructions.
+///
+/// `accounts` must be exactly: payer, one recipient per payout (in order),
+/// the settlement record PDA, the system program.
+fn settle(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     event_id: [u8; 32],
     amount: u64,
-    artist_bps: u16,
-    studio_bps: u16,
-    synxed_bps: u16,
+    payouts: &[u64],
 ) -> ProgramResult {
-    let acc_iter = &mut accounts.iter();
-    let payer = next_account_info(acc_iter)?;
-    let artist = next_account_info(acc_iter)?;
-    let studio = next_account_info(acc_iter)?;
-    let synxed = next_account_info(acc_iter)?;
-    let record = next_account_info(acc_iter)?;
-    let system_program = next_account_info(acc_iter)?;
+    let count = payouts.len();
+    if accounts.len() != count + 3 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let payer = &accounts[0];
+    let recipients = &accounts[1..1 + count];
+    let record = &accounts[1 + count];
+    let system_program = &accounts[2 + count];
 
     if !payer.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
-    if !payer.is_writable || !artist.is_writable || !studio.is_writable || !synxed.is_writable {
+    if !payer.is_writable || !record.is_writable {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if recipients.iter().any(|recipient| !recipient.is_writable) {
         return Err(ProgramError::InvalidAccountData);
     }
     // Defense-in-depth: the system_instruction builders hard-code the real
@@ -61,21 +84,18 @@ fn process_settle(
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    let parts = split_three(amount, artist_bps, studio_bps, synxed_bps)
-        .map_err(|_| ProgramError::InvalidArgument)?;
-    let [artist_amt, studio_amt, synxed_amt] = parts;
-
     let (pda, bump) = settlement_pda(program_id, &event_id);
     if record.key != &pda {
         return Err(ProgramError::InvalidSeeds);
     }
-    // A payout sent to the record itself could never be recovered: nothing
-    // can debit a record once it is program-owned.
-    if artist.key == record.key || studio.key == record.key || synxed.key == record.key {
+    // A payout sent to a settlement record — this event's or any other
+    // event's — could never be recovered: nothing can debit a record once it
+    // is program-owned.
+    if recipients
+        .iter()
+        .any(|recipient| recipient.key == record.key || recipient.owner == program_id)
+    {
         return Err(ProgramError::InvalidArgument);
-    }
-    if !record.is_writable {
-        return Err(ProgramError::InvalidAccountData);
     }
     // Idempotency is keyed on ownership, not lamports: a record this program
     // already owns (or that carries data) means the event was settled.
@@ -120,9 +140,9 @@ fn process_settle(
         data[33..41].copy_from_slice(&amount.to_le_bytes());
     }
 
-    transfer(payer, artist, artist_amt, system_program)?;
-    transfer(payer, studio, studio_amt, system_program)?;
-    transfer(payer, synxed, synxed_amt, system_program)?;
+    for (recipient, &lamports) in recipients.iter().zip(payouts) {
+        transfer(payer, recipient, lamports, system_program)?;
+    }
     Ok(())
 }
 
