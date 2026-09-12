@@ -1,0 +1,288 @@
+import { useState, type FormEvent } from "react";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { PublicKey } from "@solana/web3.js";
+import type { SettlementReconciliation } from "@coumtech/synxed-solana-protocol/ledger";
+import type {
+  SettlementRequestN,
+  ShareInput,
+} from "@coumtech/synxed-solana-protocol/types";
+
+const DEFAULT_RPC = "https://api.devnet.solana.com";
+const DEFAULT_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
+const AMOUNT_ATOMIC = 20_000n;
+const UNITS_PER_ATOMIC = 1_000n;
+const FUNDING_OVERHEAD = 1_200_000n;
+
+export const DEVNET_ENDPOINT =
+  import.meta.env.VITE_SOLANA_RPC_URL?.trim() || DEFAULT_RPC;
+
+const PROGRAM_ID = new PublicKey(
+  import.meta.env.VITE_SETTLEMENT_PROGRAM_ID?.trim() || DEFAULT_PROGRAM_ID,
+);
+
+const SHARE_CONFIG = [
+  { label: "artist", title: "Artist", bps: 3_500, amount: "$0.007" },
+  { label: "studio", title: "Studio", bps: 3_500, amount: "$0.007" },
+  { label: "synxed", title: "SYNXED platform", bps: 2_000, amount: "$0.004" },
+  {
+    label: "rewards_pool",
+    title: "Listener rewards pool",
+    bps: 1_000,
+    amount: "$0.002",
+  },
+] as const;
+
+type ShareLabel = (typeof SHARE_CONFIG)[number]["label"];
+type RecipientFields = Record<ShareLabel, string>;
+
+const INITIAL_RECIPIENTS: RecipientFields = {
+  artist: "6AF4DwckLZ7pxwWYarmJx5Sk6dyziagHNoDA8CJpDQa5",
+  studio: "EfKS8o2pDsHAJUKQQ3evE5m6PgYR7rxEYvGQavk2y1Da",
+  synxed: "GJ7JUe6w6DktBDBPKGWNzhJUhRRFExJqb2hrtdsQFX7s",
+  rewards_pool: "48fB8mLhZJNZxVjyebuEhu5nvKPSyM31asQE6kkjqhA9",
+};
+
+type RunState =
+  | { status: "idle" }
+  | { status: "working"; message: string }
+  | { status: "error"; message: string }
+  | {
+      status: "matched";
+      signature: string;
+      reconciliation: SettlementReconciliation;
+    };
+
+export function App(): React.JSX.Element {
+  const { connection } = useConnection();
+  const { publicKey, sendTransaction } = useWallet();
+  const [recipients, setRecipients] =
+    useState<RecipientFields>(INITIAL_RECIPIENTS);
+  const [run, setRun] = useState<RunState>({ status: "idle" });
+  const connectedAddress = publicKey?.toBase58() ?? null;
+
+  async function settle(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (publicKey === null) {
+      setRun({ status: "error", message: "Connect a devnet wallet first." });
+      return;
+    }
+
+    try {
+      setRun({ status: "working", message: "Validating the four-way settlement…" });
+      const [
+        { buildSettlementNTransaction },
+        { assertLedgerCluster, reconcileSettlementN },
+      ] = await Promise.all([
+          import("@coumtech/synxed-solana-protocol/client"),
+          import("@coumtech/synxed-solana-protocol/ledger"),
+        ]);
+      await assertLedgerCluster(connection, "devnet");
+      const shares: ShareInput[] = SHARE_CONFIG.map((share) => ({
+        label: share.label,
+        recipient: recipients[share.label].trim(),
+        bps: share.bps,
+      }));
+      const request: SettlementRequestN = {
+        eventId: `evt_wallet_${crypto.randomUUID()}`,
+        occurredAt: new Date().toISOString(),
+        kind: "audio_ad_impression",
+        amountAtomic: AMOUNT_ATOMIC,
+        asset: "SOL_LAMPORTS_STANDIN",
+        shares,
+        memo: "Phase 2 wallet-connected four-way settlement",
+      };
+      const prepared = buildSettlementNTransaction({
+        payer: publicKey,
+        request,
+        lamportsPerAtomicUnit: UNITS_PER_ATOMIC,
+        programId: PROGRAM_ID,
+      });
+      const balance = BigInt(await connection.getBalance(publicKey, "confirmed"));
+      const required = prepared.lamportsTotal + FUNDING_OVERHEAD;
+      if (balance < required) {
+        throw new Error(
+          `Wallet needs at least ${required} lamports on devnet; current balance is ${balance}.`,
+        );
+      }
+
+      setRun({ status: "working", message: "Approve the transaction in your wallet…" });
+      const signature = await sendTransaction(prepared.transaction, connection, {
+        preflightCommitment: "confirmed",
+        skipPreflight: false,
+      });
+      setRun({
+        status: "working",
+        message: "Transaction submitted. Waiting for finalized evidence…",
+      });
+      const reconciliation = await reconcileSettlementN({
+        connection,
+        signature,
+        programId: PROGRAM_ID,
+        request,
+        unitsPerAtomicUnit: UNITS_PER_ATOMIC,
+        beneficiaryIds: {
+          artist: "artist:demo",
+          studio: "studio:demo",
+          synxed: "platform:synxed",
+        },
+      });
+      persistEvidence(signature, reconciliation);
+      setRun({ status: "matched", signature, reconciliation });
+    } catch (error: unknown) {
+      setRun({
+        status: "error",
+        message: error instanceof Error ? error.message : "Settlement failed.",
+      });
+    }
+  }
+
+  return (
+    <main>
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="SYNXED settlement demo home">
+          <span className="brand-mark" aria-hidden="true">S</span>
+          <span>SYNXED</span>
+        </a>
+        <WalletMultiButton />
+      </header>
+
+      <section className="hero" aria-labelledby="page-title">
+        <div>
+          <p className="eyebrow">Phase 2 · Solana devnet</p>
+          <h1 id="page-title">Revenue, split visibly.</h1>
+          <p className="lede">
+            Sign one four-way settlement, inspect it on-chain, and reconcile
+            every payout against finalized Solana evidence.
+          </p>
+        </div>
+        <div className="proof-card">
+          <span>Protocol status</span>
+          <strong><i aria-hidden="true" /> Verified build</strong>
+          <code>{shorten(PROGRAM_ID.toBase58())}</code>
+        </div>
+      </section>
+
+      <section className="split-grid" aria-label="Default revenue split">
+        {SHARE_CONFIG.map((share, index) => (
+          <article className="share-card" key={share.label}>
+            <span className="share-index">0{index + 1}</span>
+            <p>{share.title}</p>
+            <strong>{share.bps / 100}%</strong>
+            <small>{share.amount} of the $0.020 event</small>
+          </article>
+        ))}
+      </section>
+
+      <section className="workspace">
+        <form className="settlement-form" onSubmit={settle}>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Settlement request</p>
+              <h2>Recipient wallets</h2>
+            </div>
+            <span className="network-pill">Devnet only</span>
+          </div>
+
+          <p className="form-note">
+            Public demo addresses are prefilled. Replace them with wallets you
+            control if you want to inspect every recipient balance.
+          </p>
+
+          <div className="fields">
+            {SHARE_CONFIG.map((share) => (
+              <label key={share.label}>
+                <span>{share.title}</span>
+                <input
+                  name={share.label}
+                  value={recipients[share.label]}
+                  onChange={(event) =>
+                    setRecipients((current) => ({
+                      ...current,
+                      [share.label]: event.target.value,
+                    }))
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                  required
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="signing-row">
+            <div>
+              <span>Signing wallet</span>
+              <code>{connectedAddress === null ? "Not connected" : shorten(connectedAddress)}</code>
+            </div>
+            <button
+              className="settle-button"
+              type="submit"
+              disabled={connectedAddress === null || run.status === "working"}
+            >
+              {run.status === "working" ? "Working…" : "Sign & settle 0.02 SOL"}
+            </button>
+          </div>
+        </form>
+
+        <aside className="evidence-panel" aria-live="polite">
+          <p className="eyebrow">Finalized evidence</p>
+          <h2>Reconciliation</h2>
+          {run.status === "idle" ? (
+            <p className="muted">
+              Connect a devnet wallet and submit the settlement. Chain evidence
+              will appear here after finality.
+            </p>
+          ) : null}
+          {run.status === "working" ? <p className="status working">{run.message}</p> : null}
+          {run.status === "error" ? <p className="status error">{run.message}</p> : null}
+          {run.status === "matched" ? (
+            <div className="match-result">
+              <div className="match-badge"><i aria-hidden="true" /> MATCH</div>
+              <dl>
+                <div><dt>Slot</dt><dd>{run.reconciliation.record.slot}</dd></div>
+                <div><dt>Direct entries</dt><dd>{run.reconciliation.directEntries.length}</dd></div>
+                <div><dt>Pool entries</dt><dd>{run.reconciliation.poolPayouts.length}</dd></div>
+              </dl>
+              <a href={explorerTxUrl(run.signature)} target="_blank" rel="noreferrer">
+                Open transaction in Explorer ↗
+              </a>
+              <details>
+                <summary>View ledger JSON</summary>
+                <pre>{JSON.stringify(run.reconciliation, null, 2)}</pre>
+              </details>
+            </div>
+          ) : null}
+          <footer>
+            <span>Finality</span>
+            <strong>Required</strong>
+            <span>Mismatch policy</span>
+            <strong>Fail closed</strong>
+          </footer>
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+function explorerTxUrl(signature: string): string {
+  return `https://explorer.solana.com/tx/${encodeURIComponent(signature)}?cluster=devnet`;
+}
+
+function persistEvidence(
+  signature: string,
+  reconciliation: SettlementReconciliation,
+): void {
+  try {
+    localStorage.setItem(
+      `synxed:settlement-evidence:v1:${signature}`,
+      JSON.stringify({ version: 1, reconciliation }),
+    );
+  } catch {
+    // Display remains authoritative even when private browsing blocks storage.
+  }
+}
+
+function shorten(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-6)}`;
+}

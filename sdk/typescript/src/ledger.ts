@@ -151,6 +151,20 @@ export interface ReconcileSettlementNOptions
   pollIntervalMs?: number;
 }
 
+/** Fail before signing when an RPC endpoint is not the expected cluster. */
+export async function assertLedgerCluster(
+  connection: Pick<Connection, "getGenesisHash">,
+  cluster: LedgerCluster = "devnet",
+): Promise<void> {
+  const genesisHash = await connection.getGenesisHash();
+  if (genesisHash !== GENESIS_HASHES[cluster]) {
+    throw new LedgerError(
+      "CLUSTER_MISMATCH",
+      `RPC genesis hash does not identify ${cluster}`,
+    );
+  }
+}
+
 /** Fetch and reconcile a finalized program-mode SettleN transaction. */
 export async function reconcileSettlementN(
   options: ReconcileSettlementNOptions,
@@ -164,13 +178,7 @@ export async function reconcileSettlementN(
       "finality timeout and poll interval must be positive",
     );
   }
-  const genesisHash = await options.connection.getGenesisHash();
-  if (genesisHash !== GENESIS_HASHES[cluster]) {
-    throw new LedgerError(
-      "CLUSTER_MISMATCH",
-      `RPC genesis hash does not identify ${cluster}`,
-    );
-  }
+  await assertLedgerCluster(options.connection, cluster);
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {

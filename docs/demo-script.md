@@ -21,6 +21,10 @@ SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
 Have a browser tab open on https://explorer.solana.com with the cluster
 set to devnet.
 
+For the wallet-connected version, run `bun run demo:wallet` and open the local
+URL in a browser with a funded devnet wallet. The CLI remains useful as the
+fully automated fallback.
+
 ## Script
 
 **0:00 — The problem (one sentence).**

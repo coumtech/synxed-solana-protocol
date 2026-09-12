@@ -13,6 +13,7 @@ import {
   SystemProgram,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import { assertBpsShares, assertBpsTriple } from "./split.ts";
 import { ProtocolError } from "./types.ts";
 
