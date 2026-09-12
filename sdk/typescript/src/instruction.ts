@@ -7,7 +7,7 @@
 //   SettleN: tag(u8=1) | event_id([u8;32]) | amount(u64 LE) |
 //            count(u8) | bps[count](u16 LE)
 
-import { createHash } from "node:crypto";
+import { sha256 } from "@noble/hashes/sha256";
 import {
   PublicKey,
   SystemProgram,
@@ -34,7 +34,7 @@ export function eventIdSeed(eventId: string): Uint8Array {
   if (eventId.length === 0) {
     throw new ProtocolError("EVENT_ID_EMPTY", "eventId must not be empty");
   }
-  return new Uint8Array(createHash("sha256").update(eventId, "utf8").digest());
+  return sha256(new TextEncoder().encode(eventId));
 }
 
 /** PDA of the settlement record that marks an event id as settled. */

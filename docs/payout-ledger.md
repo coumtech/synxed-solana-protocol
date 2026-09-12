@@ -1,9 +1,10 @@
-# Payout ledger — proposal
+# Payout ledger and reconciliation
 
-> **Status: proposal, not implemented.** This document specifies the
-> off-chain ledger that sits between settlement transactions and the
-> people who are owed money. It is published for review ahead of the next
-> release; nothing here is enforced by the current program or SDK.
+> **Status: Phase 2 reference implementation.** The public TypeScript SDK
+> defines these records, extracts evidence from finalized `SettleN`
+> transactions, and rejects any mismatch in event seed, amount, shares,
+> recipients, memo, or inner transfers. It is an auditable reference layer,
+> not SYNXED's private production database.
 
 ## Why a ledger
 
@@ -32,10 +33,10 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 | `signature` | string | Transaction signature (base58) |
 | `slot` | integer | Slot the transaction landed in |
 | `cluster` | `"devnet"` \| `"mainnet-beta"` | Devnet only today |
-| `mode` | `"program"` \| `"system-transfer"` | Which settlement mode produced it |
+| `mode` | `"program"` | Only program-mode transactions are authoritative ledger inputs |
 | `asset` | string | `"SOL_LAMPORTS_STANDIN"` today; SPL mint address later |
 | `amountAtomic` | string (u64) | Gross amount as requested, in the request's atomic units (micro-dollars in the demo) |
-| `lamportsPerAtomicUnit` | string (u64) | Stand-in scaling applied at settlement (`1` once a native asset is used); on-chain total = `amountAtomic × lamportsPerAtomicUnit` |
+| `unitsPerAtomicUnit` | string (u64) | Asset-unit scaling applied at settlement; on-chain total = `amountAtomic × unitsPerAtomicUnit` |
 | `payouts` | `PayoutLine[]` | Exactly one per configured share, in share order |
 | `occurredAt` | RFC 3339 | From the originating `SettlementRequest` |
 | `settledAt` | RFC 3339 | Block time of the transaction |
@@ -50,10 +51,10 @@ One row per recipient per settlement.
 | `recipient` | string | Wallet that received the funds on-chain |
 | `bps` | integer | Share in basis points at settlement time |
 | `amountOnChain` | string (u64) | Exact on-chain amount in on-chain units (lamports on devnet), floor / remainder rule applied |
-| `beneficiary` | string \| null | Ledger-level owner when `recipient` is a pool or custodian |
+| `beneficiaryId` | string \| null | Stable ledger identity; `null` when the recipient is a pool awaiting allocation |
 
 `amountOnChain` across a settlement's `PayoutLine`s must sum to
-`amountAtomic × lamportsPerAtomicUnit`. Ledger builders reject rows that do
+`amountAtomic × unitsPerAtomicUnit`. Ledger builders reject rows that do
 not.
 
 ### `LedgerEntry`
@@ -64,8 +65,10 @@ their ultimate beneficiaries.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `entryId` | string | `sha256(signature + role + beneficiary)`; idempotent |
-| `beneficiary` | string | Wallet or platform account id |
+| `beneficiaryId` | string | Stable platform identity, deliberately separate from a wallet |
+| `wallet` | string \| null | Current payout wallet, if one is bound |
 | `role` | string | Same vocabulary as `PayoutLine.role` |
+| `pool` | string \| null | Pool wallet for accrued entries; `null` for direct payouts |
 | `amountOnChain` | string (u64) | Amount credited to the beneficiary, in on-chain units |
 | `sourceSignature` | string | On-chain settlement this entry derives from |
 | `state` | `"accrued"` \| `"claimable"` \| `"paid"` | See lifecycle |
@@ -130,12 +133,19 @@ a fold over chain data:
    wallet's on-chain inflows minus executed `ClaimBatch` totals; the
    difference is the pool's undistributed balance and must be non-negative.
 
-## Open questions for review
+The SDK's `reconcileSettlementN` waits for finality, decodes the instruction,
+derives its settlement-record PDA, validates the structured memo, and compares
+the exact multiset of inner system transfers. Record-account rent transfers are
+identified separately and never counted as payouts. `allocatePoolPayout`
+requires unique beneficiary IDs, positive amounts, and exact conservation.
 
-- Claim threshold: fixed per asset, or configurable per pool?
-- Should `beneficiary` for listeners be a wallet, or a platform account id
-  that is later bound to a wallet at claim time?
-- Retention: how long must `accrued` entries stay claimable before they
-  return to the pool (if ever)?
-- Whether `SettlementRecord.mode == "system-transfer"` rows belong in a
-  production ledger at all, given that mode has no on-chain idempotency.
+## Phase 2 policy decisions
+
+- Claim thresholds are configurable per pool and asset; no global hard-coded
+  amount can remain correct across SOL and tokens with different decimals.
+- Beneficiaries use stable platform IDs with optional wallet bindings so wallet
+  rotation does not break accounting history.
+- Accrued value does not expire automatically. Any future retention or return
+  policy must be explicit, versioned, and auditable.
+- System-transfer demo transactions are not authoritative ledger inputs because
+  they do not have the program's on-chain idempotency record.

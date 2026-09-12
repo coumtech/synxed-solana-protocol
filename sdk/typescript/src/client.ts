@@ -120,7 +120,7 @@ export async function submitSettlement(
   ) as [PublicKey, PublicKey, PublicKey];
 
   const transaction = new Transaction().add(
-    memoInstruction(request.eventId, request.kind, request.memo, lamportsTotal),
+    memoInstruction(request, lamportsTotal),
   );
   let mode: SettlementMode;
   if (options.programId === undefined) {
@@ -182,7 +182,7 @@ export async function submitSettlementN(
   );
 
   const transaction = new Transaction().add(
-    memoInstruction(request.eventId, request.kind, request.memo, lamportsTotal),
+    memoInstruction(request, lamportsTotal),
   );
   let mode: SettlementMode;
   if (options.programId === undefined) {
@@ -279,17 +279,20 @@ async function send(
 }
 
 function memoInstruction(
-  eventId: string,
-  kind: string,
-  memo: string,
+  request: Pick<
+    SettlementRequestN,
+    "eventId" | "kind" | "memo" | "occurredAt" | "asset"
+  >,
   lamportsTotal: bigint,
 ): TransactionInstruction {
   const text = JSON.stringify({
     protocol: "synxed-settlement",
-    event: eventId,
-    kind,
+    event: request.eventId,
+    occurredAt: request.occurredAt,
+    kind: request.kind,
+    asset: request.asset,
     lamports: lamportsTotal.toString(),
-    memo,
+    memo: request.memo,
   });
   return new TransactionInstruction({
     programId: MEMO_PROGRAM_ID,

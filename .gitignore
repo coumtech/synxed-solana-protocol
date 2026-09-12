@@ -18,6 +18,7 @@ target/
 .verify-work/
 .anchor/
 test-ledger/
+.local/
 dist/
 *.tsbuildinfo
 

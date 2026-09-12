@@ -110,6 +110,7 @@ export type ProtocolErrorCode =
   | "ROLE_MISMATCH"
   | "SHARE_COUNT"
   | "LABEL_EMPTY"
+  | "LABEL_DUPLICATE"
   | "RECIPIENT_COUNT"
   | "EVENT_ID_EMPTY"
   | "SEED_LENGTH"

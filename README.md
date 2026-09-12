@@ -2,12 +2,12 @@
 
 An open source, Solana native **revenue settlement protocol** for gaming
 and audio: a billable event (for example an in-game audio-ad impression)
-becomes a deterministic 3-way revenue split settled on-chain, with the
+becomes a deterministic revenue split settled on-chain, with the
 transaction visible in Solana Explorer.
 
 ```
-App / game  ->  Revenue event  ->  Split (35/40/25, configurable)
-            ->  Solana settlement  ->  artist / studio / platform wallets
+App / game  ->  Revenue event  ->  Split (35/35/20/10, configurable)
+            ->  Solana settlement  ->  artist / studio / platform / rewards pool
 ```
 
 **What this is:** the public settlement rail — a Solana program, a strict
@@ -24,14 +24,15 @@ run or evaluate this repository. See
 
 ## How a settlement works
 
-An ad impression worth $0.020 with the default (placeholder, configurable)
-split:
+An ad impression worth $0.020 with the Phase 2 default (placeholder,
+configurable) split:
 
 | Role | Share | Amount |
 | --- | --- | --- |
 | Artist | 35% | $0.007 |
-| Studio | 40% | $0.008 |
-| SYNXED | 25% | $0.005 |
+| Studio | 35% | $0.007 |
+| SYNXED platform | 20% | $0.004 |
+| Listener rewards pool | 10% | $0.002 |
 
 Splits are basis points that must sum to exactly 10000; payouts are integer
 math that always sums to the gross amount (rounding dust goes to the last
@@ -41,7 +42,8 @@ are rejected — in the client and on-chain — never renormalized.
 Splits are not limited to three parties. The `SettleN` instruction settles
 one to eight configured shares under the same rules, which is how a
 listener rewards pool becomes a fourth recipient (artist 35% / studio 35% /
-SYNXED 20% / rewards pool 10%): `bun run demo:nway`.
+SYNXED 20% / rewards pool 10%). The original three-way instruction remains
+supported for backward compatibility.
 
 ## Quickstart (~10 minutes)
 
@@ -65,8 +67,8 @@ cargo test --manifest-path programs/synxed-settlement/Cargo.toml   # optional
 **2. Dry-run the demo** (no wallet, no network writes)
 
 ```bash
-bun run demo          # three-way: artist / studio / SYNXED
-bun run demo:nway     # four-way: adds a listener rewards pool share
+bun run demo            # Phase 2 four-way split with rewards pool
+bun run demo:three-way  # backward-compatible original example
 ```
 
 Prints a simulated audio-ad impression and its deterministic split.
@@ -81,8 +83,9 @@ bun run demo
 
 The demo funds the payer via devnet airdrop (or use
 https://faucet.solana.com), submits the settlement, and prints a
-`https://explorer.solana.com/tx/...?cluster=devnet` link showing the three
-payouts.
+`https://explorer.solana.com/tx/...?cluster=devnet` link showing the four
+payouts. In program mode it then waits for finality, reconciles the instruction
+and inner transfers, and writes verified ledger evidence under `.local/ledger/`.
 
 The devnet demo settles **native SOL as a stand-in asset** — no token is
 minted by this repo. Amounts are micro-dollars scaled into lamports
@@ -146,15 +149,20 @@ docs/                         architecture, protocol spec, integration guide,
   per-event idempotency record
 - Devnet settlement program with per-event idempotency
 - Strict TypeScript client and a reproducible CLI demo
+- Finalized-transaction ledger reconciliation with deterministic direct and
+  pooled entries; mismatched chain evidence is rejected
 - Tests for the happy path and every invalid-split case, plus in-process
   SVM tests of the compiled program (idempotency, pre-funded record
   defense, account validation) run in CI on every pull request
 
-**Planned next:**
+**Phase 2:**
 
-- Payout ledger: schema proposal drafted in
-  [docs/payout-ledger.md](docs/payout-ledger.md); public example types and
-  reference implementation to follow
+- Four-way reference split: artist 35%, studio 35%, platform 20%, listener
+  rewards pool 10% (`bun run demo`; the original three-way example remains
+  available as `bun run demo:three-way`)
+- Payout ledger types, rewards-pool allocation, and finalized on-chain
+  reconciliation are implemented in the public TypeScript SDK; see
+  [docs/payout-ledger.md](docs/payout-ledger.md)
 - Wallet-connect flow in the demo
 - SPL/devnet stablecoin settlement path
 

@@ -142,10 +142,19 @@ export function computeSettlement(request: SettlementRequest): SplitResult {
 
 /** Compute the payouts of an N-way settlement request. */
 export function computeSettlementN(request: SettlementRequestN): SplitResultN {
+  const labels = new Set<string>();
   request.shares.forEach((share, i) => {
-    if (share.label.trim() === "") {
+    const label = share.label.trim();
+    if (label === "") {
       throw new ProtocolError("LABEL_EMPTY", `shares[${i}] label must not be empty`);
     }
+    if (labels.has(label)) {
+      throw new ProtocolError(
+        "LABEL_DUPLICATE",
+        `shares[${i}] duplicates label "${label}"`,
+      );
+    }
+    labels.add(label);
   });
   const amounts = splitAmountAtomicShares(
     request.amountAtomic,
