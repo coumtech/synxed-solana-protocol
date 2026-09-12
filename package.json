@@ -5,19 +5,22 @@
   "license": "Apache-2.0",
   "workspaces": [
     "sdk/typescript",
-    "examples/gaming-payment-demo"
+    "examples/gaming-payment-demo",
+    "examples/wallet-connect-demo"
   ],
   "scripts": {
     "test": "bun test",
     "test:rust": "cargo test --manifest-path programs/synxed-settlement/Cargo.toml",
-    "typecheck": "bunx tsc --noEmit -p sdk/typescript/tsconfig.json && bunx tsc --noEmit -p examples/gaming-payment-demo/tsconfig.json && bunx tsc --noEmit -p tests/tsconfig.json",
+    "typecheck": "bunx tsc --noEmit -p sdk/typescript/tsconfig.json && bunx tsc --noEmit -p examples/gaming-payment-demo/tsconfig.json && bunx tsc --noEmit -p examples/wallet-connect-demo/tsconfig.json && bunx tsc --noEmit -p tests/tsconfig.json",
     "demo": "bun run examples/gaming-payment-demo/src/nway.ts",
     "demo:three-way": "bun run examples/gaming-payment-demo/src/index.ts",
     "demo:nway": "bun run examples/gaming-payment-demo/src/nway.ts",
-    "demo:keygen": "bun run examples/gaming-payment-demo/src/keygen.ts"
+    "demo:keygen": "bun run examples/gaming-payment-demo/src/keygen.ts",
+    "demo:wallet": "bun run --cwd examples/wallet-connect-demo dev",
+    "build:wallet": "bun run --cwd examples/wallet-connect-demo build"
   },
   "devDependencies": {
-    "@solana/web3.js": "^1.98.4",
+    "@solana/web3.js": "^1.99.0",
     "@types/bun": "^1.2.22",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.3"

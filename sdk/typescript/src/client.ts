@@ -20,6 +20,7 @@ import {
   TransactionInstruction,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import {
   buildSettleInstruction,
   buildSettleNInstruction,
@@ -81,6 +82,20 @@ export interface SubmitSettlementNOptions {
   request: SettlementRequestN;
   lamportsPerAtomicUnit?: bigint;
   programId?: PublicKey;
+}
+
+export interface BuildSettlementNOptions {
+  payer: PublicKey;
+  request: SettlementRequestN;
+  lamportsPerAtomicUnit?: bigint;
+  programId?: PublicKey;
+}
+
+export interface PreparedSettlementN {
+  transaction: Transaction;
+  mode: SettlementMode;
+  lamportsTotal: bigint;
+  lamportsByShare: readonly bigint[];
 }
 
 export interface SettlementSubmissionN {
@@ -167,6 +182,32 @@ export async function submitSettlement(
 export async function submitSettlementN(
   options: SubmitSettlementNOptions,
 ): Promise<SettlementSubmissionN> {
+  const prepared = buildSettlementNTransaction({
+    payer: options.payer.publicKey,
+    request: options.request,
+    ...(options.lamportsPerAtomicUnit !== undefined
+      ? { lamportsPerAtomicUnit: options.lamportsPerAtomicUnit }
+      : {}),
+    ...(options.programId !== undefined ? { programId: options.programId } : {}),
+  });
+  const signature = await send(
+    options.connection,
+    options.payer,
+    prepared.transaction,
+  );
+  return {
+    signature,
+    explorerUrl: explorerTxUrl(signature),
+    mode: prepared.mode,
+    lamportsTotal: prepared.lamportsTotal,
+    lamportsByShare: prepared.lamportsByShare,
+  };
+}
+
+/** Build an unsigned N-way transaction for a browser or hardware wallet. */
+export function buildSettlementNTransaction(
+  options: BuildSettlementNOptions,
+): PreparedSettlementN {
   const { request } = options;
   const lamportsTotal = scaledTotal(
     request.amountAtomic,
@@ -189,7 +230,7 @@ export async function submitSettlementN(
     mode = "system-transfer";
     addTransfers(
       transaction,
-      options.payer.publicKey,
+      options.payer,
       recipients,
       lamportsByShare,
     );
@@ -199,7 +240,7 @@ export async function submitSettlementN(
       buildSettleNInstruction(
         {
           programId: options.programId,
-          payer: options.payer.publicKey,
+          payer: options.payer,
           recipients,
         },
         {
@@ -211,10 +252,8 @@ export async function submitSettlementN(
     );
   }
 
-  const signature = await send(options.connection, options.payer, transaction);
   return {
-    signature,
-    explorerUrl: explorerTxUrl(signature),
+    transaction,
     mode,
     lamportsTotal,
     lamportsByShare,

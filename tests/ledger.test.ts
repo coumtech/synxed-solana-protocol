@@ -3,6 +3,7 @@ import { PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
 import {
   LedgerError,
   allocatePoolPayout,
+  assertLedgerCluster,
   eventIdSeed,
   observeProgramSettlement,
   reconcileObservedSettlementN,
@@ -77,6 +78,15 @@ function observation(): ProgramSettlementObservation {
 }
 
 describe("ledger reconciliation", () => {
+  test("checks RPC cluster identity before wallet signing", async () => {
+    await expect(
+      assertLedgerCluster({
+        getGenesisHash: async () =>
+          "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      }),
+    ).rejects.toMatchObject({ code: "CLUSTER_MISMATCH" });
+  });
+
   test("extracts the finalized reference transaction's SettleN evidence", () => {
     const signature =
       "31NVbBvwgnRrnaBN5BQAh8UpovHqBCyhFfvbDXqQi3pMv3xbMeCCpts7eh1UwUxUEQokWrfgHj9aMfKBNXYsvzra";

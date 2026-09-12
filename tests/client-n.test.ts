@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { Connection, Keypair } from "@solana/web3.js";
+import { PublicKey, type Connection, type Keypair } from "@solana/web3.js";
 import {
   ProtocolError,
+  buildSettlementNTransaction,
   submitSettlementN,
   type SettlementRequestN,
 } from "../sdk/typescript/src/index.ts";
@@ -27,6 +28,37 @@ function request(
 }
 
 describe("submitSettlementN input guards", () => {
+  test("builds an unsigned program transaction for a connected wallet", () => {
+    const programId = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
+    const payerKey = PublicKey.findProgramAddressSync(
+      [new TextEncoder().encode("browser-payer")],
+      programId,
+    )[0];
+    const browserRequest = request(20_000n);
+    browserRequest.shares = browserRequest.shares.map((share, index) => ({
+      ...share,
+      recipient: PublicKey.findProgramAddressSync(
+        [new TextEncoder().encode(`recipient-${index}`)],
+        programId,
+      )[0].toBase58(),
+    }));
+    const prepared = buildSettlementNTransaction({
+      payer: payerKey,
+      request: browserRequest,
+      lamportsPerAtomicUnit: 1_000n,
+      programId,
+    });
+    expect(prepared.mode).toBe("program");
+    expect(prepared.lamportsByShare).toEqual([
+      7_000_000n,
+      7_000_000n,
+      4_000_000n,
+      2_000_000n,
+    ]);
+    expect(prepared.transaction.instructions).toHaveLength(2);
+    expect(prepared.transaction.instructions[1].programId.equals(programId)).toBe(true);
+  });
+
   test("rejects scaled totals beyond u64", async () => {
     const oversized = submitSettlementN({
       connection,

@@ -5,15 +5,19 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./ledger": "./src/ledger.ts",
+    "./types": "./src/types.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
+    "@solana/web3.js": "^1.99.0",
     "bs58": "^6.0.0",
-    "@solana/web3.js": "^1.98.4"
+    "buffer": "^6.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

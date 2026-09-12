@@ -91,6 +91,17 @@ The devnet demo settles **native SOL as a stand-in asset** — no token is
 minted by this repo. Amounts are micro-dollars scaled into lamports
 (`LAMPORTS_PER_UNIT`, default 1000, so $0.020 settles as 0.02 SOL).
 
+**4. Use a browser wallet**
+
+```bash
+bun run demo:wallet
+```
+
+Open the local URL in a browser with a Wallet Standard-compatible Solana wallet
+set to devnet. The browser demo signs the same 35/35/20/10 `SettleN`
+transaction, waits for finality, and displays the reconciled ledger evidence.
+See [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md).
+
 ### Settlement modes
 
 - **Fallback (default):** one system transfer per nonzero share, computed
@@ -163,7 +174,8 @@ docs/                         architecture, protocol spec, integration guide,
 - Payout ledger types, rewards-pool allocation, and finalized on-chain
   reconciliation are implemented in the public TypeScript SDK; see
   [docs/payout-ledger.md](docs/payout-ledger.md)
-- Wallet-connect flow in the demo
+- Wallet Standard-compatible browser flow using the shared instruction builder;
+  see [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md)
 - SPL/devnet stablecoin settlement path
 
 **Explicitly future (not in this repository):**
