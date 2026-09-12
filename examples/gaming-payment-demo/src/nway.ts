@@ -5,13 +5,15 @@
 //
 // Dry-run by default; set SOLANA_PAYER_KEYPAIR in .env to submit.
 
-import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { Connection, Keypair } from "@solana/web3.js";
 import {
   APPROX_RENT_EXEMPT_MIN_LAMPORTS,
   DEVNET_RPC_URL,
   computeSettlementN,
   explorerAddressUrl,
+  reconcileSettlementN,
   splitAmountAtomicShares,
   submitSettlementN,
   type SettlementRequestN,
@@ -173,6 +175,39 @@ async function main(): Promise<void> {
   console.log(
     `  payer     ${explorerAddressUrl(payer.publicKey.toBase58())}`,
   );
+
+  if (programId === undefined) {
+    console.log(
+      "\nLedger reconciliation skipped: system-transfer mode has no on-chain " +
+        "idempotency record. Set SETTLEMENT_PROGRAM_ID for authoritative Phase 2 evidence.",
+    );
+    return;
+  }
+
+  console.log("\nWaiting for finalized chain evidence...");
+  const reconciliation = await reconcileSettlementN({
+    connection,
+    signature: submission.signature,
+    programId,
+    request,
+    unitsPerAtomicUnit: scale,
+    beneficiaryIds: {
+      artist: envString("ARTIST_BENEFICIARY_ID") ?? "artist:demo",
+      studio: envString("STUDIO_BENEFICIARY_ID") ?? "studio:demo",
+      synxed: envString("SYNXED_BENEFICIARY_ID") ?? "platform:synxed",
+    },
+  });
+  const ledgerPath = resolve(
+    REPO_ROOT,
+    ".local/ledger",
+    `${submission.signature}.json`,
+  );
+  mkdirSync(dirname(ledgerPath), { recursive: true });
+  writeFileSync(ledgerPath, `${JSON.stringify(reconciliation, null, 2)}\n`);
+  console.log("Ledger reconciliation: MATCH");
+  console.log(`  direct entries ${reconciliation.directEntries.length}`);
+  console.log(`  pool payouts   ${reconciliation.poolPayouts.length}`);
+  console.log(`  evidence       ${ledgerPath}`);
 }
 
 main().catch((error: unknown) => {

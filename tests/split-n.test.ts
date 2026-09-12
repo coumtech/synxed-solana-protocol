@@ -108,6 +108,16 @@ describe("computeSettlementN", () => {
     expectCode(() => computeSettlementN(blank), "LABEL_EMPTY");
   });
 
+  test("rejects duplicate labels that would collide in the ledger", () => {
+    const duplicate: SettlementRequestN = {
+      ...request,
+      shares: request.shares.map((share, index) =>
+        index === 1 ? { ...share, label: "artist" } : share,
+      ),
+    };
+    expectCode(() => computeSettlementN(duplicate), "LABEL_DUPLICATE");
+  });
+
   test("propagates invalid split errors instead of renormalizing", () => {
     const invalid: SettlementRequestN = {
       ...request,
