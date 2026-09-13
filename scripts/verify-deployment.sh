@@ -98,6 +98,7 @@ SO="$WORK/program/target/deploy/$LIBRARY.so"
 [ -f "$SO" ] || fail "the build produced no $SO"
 BUILD_HASH="$(solana-verify get-executable-hash "$SO" 2>/dev/null | tail -n 1)" || fail "could not hash the build"
 [ -n "$BUILD_HASH" ] || fail "could not hash the build"
+echo "built from src: $BUILD_HASH ($(wc -c < "$SO" | tr -d ' ') bytes, plain sha256 $(sha "$SO"))"
 if [ -n "$KEEP_SO" ]; then
   cp "$SO" "$KEEP_SO" || fail "could not copy the build to $KEEP_SO"
   echo "artifact      : $KEEP_SO"
@@ -117,7 +118,6 @@ for attempt in 1 2 3; do
 done
 [ -n "$ONCHAIN_HASH" ] || fail "could not fetch the on-chain program hash from $RPC_URL (unreachable or rate-limited)"
 
-echo "built from src: $BUILD_HASH ($(wc -c < "$SO" | tr -d ' ') bytes, plain sha256 $(sha "$SO"))"
 echo "on-chain      : $ONCHAIN_HASH ($PROGRAM_ID via $RPC_URL)"
 if [ "$BUILD_HASH" = "$ONCHAIN_HASH" ]; then
   echo "MATCH: the deployed program is the build of this source tree."
