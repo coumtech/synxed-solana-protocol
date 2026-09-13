@@ -52,10 +52,11 @@ use `verify-from-repo` below, which goes through none of it.
 CI runs the same script after every push to `main`, once a day, and in
 build-only mode on pull requests that change the program or verification
 tooling (`.github/workflows/verify-deployment.yml`). Each run retains the
-canonical `.so` as a short-lived GitHub Actions artifact. A red run on `main`
-means the deployment has not been upgraded yet, or was built from something
-else; a pull request is never marked red merely because it is newer than the
-current deployment.
+canonical `.so` as a short-lived GitHub Actions artifact. On pull requests, the
+job also loads that exact canonical binary into the in-process SVM suite before
+publishing it. A red run on `main` means the deployment has not been upgraded
+yet, or was built from something else; a pull request is never marked red
+merely because it is newer than the current deployment.
 
 To create a canonical artifact without contacting an RPC endpoint, set both
 explicit output and build-only options:
