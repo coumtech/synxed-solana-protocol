@@ -2,9 +2,9 @@ name: Verify deployment
 
 # Confirms the reference devnet program is byte-for-byte the build of `main`,
 # using the pinned reproducible build container (see docs/verified-build.md).
-# Runs after every push to main, daily, on demand, and on pull requests that
-# change the verification tooling itself (program changes legitimately lag
-# the deployment until the post-merge upgrade, so they do not trigger it).
+# Runs after every push to main, daily, on demand, and as a canonical build on
+# pull requests that change either the program or verification tooling. Pull
+# requests build without comparing against the intentionally older deployment.
 # A failure means either the deployment has not been upgraded to `main` yet,
 # or it was built from something else.
 
@@ -13,6 +13,7 @@ on:
     branches: [main]
   pull_request:
     paths:
+      - programs/synxed-settlement/**
       - scripts/verify-deployment.sh
       - .github/workflows/verify-deployment.yml
   schedule:
@@ -53,4 +54,33 @@ jobs:
         run: cargo install solana-verify --locked --version "$SOLANA_VERIFY_VERSION"
 
       - name: Build in the pinned container and compare with the on-chain program
+        env:
+          SYNXED_BUILD_ONLY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          SYNXED_KEEP_SO: /tmp/synxed_settlement.so
         run: scripts/verify-deployment.sh "$PROGRAM_ID" "$RPC_URL"
+
+      - name: Cache canonical-artifact SVM test build
+        if: github.event_name == 'pull_request'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            programs/synxed-settlement/svm-tests/target
+          key: canonical-svm-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/synxed-settlement/svm-tests/Cargo.lock') }}
+
+      - name: Run canonical artifact in an in-process SVM
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir -p programs/synxed-settlement/target/deploy
+          cp /tmp/synxed_settlement.so programs/synxed-settlement/target/deploy/
+          cargo test --manifest-path programs/synxed-settlement/svm-tests/Cargo.toml
+
+      - name: Upload canonical program artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: synxed-settlement-${{ github.sha }}
+          path: /tmp/synxed_settlement.so
+          if-no-files-found: ignore
+          retention-days: 7

@@ -15,11 +15,13 @@
     "demo": "bun run examples/gaming-payment-demo/src/nway.ts",
     "demo:three-way": "bun run examples/gaming-payment-demo/src/index.ts",
     "demo:nway": "bun run examples/gaming-payment-demo/src/nway.ts",
+    "demo:token": "bun run examples/gaming-payment-demo/src/token.ts",
     "demo:keygen": "bun run examples/gaming-payment-demo/src/keygen.ts",
     "demo:wallet": "bun run --cwd examples/wallet-connect-demo dev",
     "build:wallet": "bun run --cwd examples/wallet-connect-demo build"
   },
   "devDependencies": {
+    "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "@types/bun": "^1.2.22",
     "@types/node": "^22.15.0",

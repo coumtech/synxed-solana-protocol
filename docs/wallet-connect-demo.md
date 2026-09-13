@@ -1,6 +1,6 @@
 # Wallet-connect settlement demo
 
-The Phase 2 browser example uses Solana Wallet Adapter and automatically
+The open-source browser example uses Solana Wallet Adapter and automatically
 discovers installed Wallet Standard wallets. It does not ship a private key,
 custody funds, or request mainnet access.
 

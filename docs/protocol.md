@@ -129,6 +129,44 @@ with `NotEnoughAccountKeys`. The payer may itself be a recipient; the
 record's `amount` field always stores the gross amount, not the payer's net
 outflow.
 
+## On-chain instruction: `SettleTokenN`
+
+The token form settles one to eight shares in base units of a configured
+classic SPL Token mint. It uses the same split math and the same settlement
+record PDA as `Settle` and `SettleN`, so an event can be settled exactly once
+across all three instructions.
+
+Instruction data (little-endian, `43 + 2n` bytes):
+
+| Offset | Size | Field | Type |
+| --- | --- | --- | --- |
+| 0 | 1 | tag (`2`) | `u8` |
+| 1 | 32 | `event_id` | `[u8; 32]` |
+| 33 | 8 | `amount` (token base units) | `u64` LE |
+| 41 | 1 | mint `decimals` | `u8` |
+| 42 | 1 | `n` (share count, `1..=8`) | `u8` |
+| 43 | 2n | `bps_0 .. bps_n-1` | `u16` LE each |
+
+Accounts, in order — exactly `n + 6`:
+
+| # | Account | Signer | Writable | Purpose |
+| --- | --- | --- | --- | --- |
+| 0 | payer / token authority | yes | yes | funds record rent and authorizes token transfers |
+| 1 | source token account | no | yes | classic SPL Token account owned by the payer |
+| 2..n+1 | destination token account `i` | no | yes | receives share `i` |
+| n+2 | mint | no | no | initialized classic SPL Token mint |
+| n+3 | settlement record | no | yes | PDA, marks the event as settled |
+| n+4 | system program | no | no | creates the settlement record |
+| n+5 | classic SPL Token program | no | no | executes checked token transfers |
+
+The program checks the mint owner and initialized state, exact decimals,
+source authority and mint, every destination mint, and the exact classic token
+program ID. Transfers use `TransferChecked`. The source token account cannot
+also be a destination because a self-transfer would not prove that a payout
+occurred. Token-2022 is intentionally rejected: extensions such as transfer
+fees can make the credited amount differ from the requested amount and require
+a separate accounting contract.
+
 ## Idempotency
 
 The settlement record is a PDA derived as:
@@ -170,7 +208,14 @@ program first.
 
 ## Assets
 
-The current implementation settles **native SOL on devnet** as a stand-in
-asset. Amounts are modeled as USDC-style 6-decimal atomic units and scaled
-into lamports by a configurable factor. No token is minted by this
-repository, and an SPL stablecoin path is future work.
+The implementation supports two devnet settlement paths:
+
+- **Native SOL stand-in:** request amounts are modeled as USDC-style
+  six-decimal units and multiplied by a configurable lamport scale.
+- **Configured classic SPL Token mint:** amounts are settled in token base
+  units with the mint address and decimals included in the instruction and
+  structured memo. The reference example requires six decimals, but the wire
+  instruction supports any mint-decimal value that matches the on-chain mint.
+
+This repository does not mint, endorse, or launch a token. Integrators supply
+the devnet mint they intend to test. Mainnet assets remain out of scope.

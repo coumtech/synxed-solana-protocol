@@ -153,9 +153,60 @@ pooled share is just a recipient wallet on-chain — distribution from the
 pool to individual listeners is an off-chain, batched concern described in
 [payout-ledger.md](payout-ledger.md).
 
+## Classic SPL Token settlement
+
+Use `submitTokenSettlementN` when the settlement asset is a configured classic
+SPL Token mint. The SDK derives the payer and recipient associated token
+accounts, adds idempotent recipient-account creation instructions, and submits
+one `SettleTokenN` program instruction. The on-chain program verifies the mint,
+decimals, account ownership, and every checked transfer.
+
+```ts
+import { getMint, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { PublicKey } from "@solana/web3.js";
+import {
+  reconcileTokenSettlementN,
+  submitTokenSettlementN,
+} from "@coumtech/synxed-solana-protocol";
+
+const mint = new PublicKey(process.env.STABLECOIN_MINT!);
+const mintInfo = await getMint(connection, mint, "confirmed", TOKEN_PROGRAM_ID);
+const submission = await submitTokenSettlementN({
+  connection,
+  payer,
+  request: { ...request, asset: "SPL_STABLECOIN" },
+  mint,
+  decimals: mintInfo.decimals,
+  programId,
+  tokenBaseUnitsPerAtomicUnit: 1n,
+});
+
+const evidence = await reconcileTokenSettlementN({
+  connection,
+  signature: submission.signature,
+  request: { ...request, asset: "SPL_STABLECOIN" },
+  mint,
+  decimals: mintInfo.decimals,
+  programId,
+  tokenBaseUnitsPerAtomicUnit: 1n,
+});
+```
+
+The payer must own the source associated token account and hold enough base
+units for the gross amount. A payer cannot also be a recipient in token mode,
+because that would derive the source account as a destination. The public demo
+uses the `SPL_STABLECOIN` asset identifier for a generic configured mint. Use
+`USDC` only when your mint allowlist identifies the supplied mint as USDC.
+Mint identity is never inferred from the label and must be supplied explicitly.
+
+Only the classic SPL Token program is accepted. Token-2022 mints require a
+separate design and reconciliation path for extensions such as transfer fees.
+See [spl-stablecoin.md](spl-stablecoin.md) for the runnable devnet procedure and
+security boundary.
+
 ## Reference: the runnable example
 
-`examples/gaming-payment-demo` wires all of the above into a CLI:
+`examples/gaming-payment-demo` wires all of the above into CLIs:
 fake impression -> `SettlementRequest` -> split table -> devnet transaction
 -> Explorer link. Reading its `src/index.ts` top to bottom is the fastest
-way to see the full integration surface.
+way to see the native integration surface; `src/token.ts` shows the token path.
