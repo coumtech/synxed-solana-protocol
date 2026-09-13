@@ -2,9 +2,9 @@ name: Verify deployment
 
 # Confirms the reference devnet program is byte-for-byte the build of `main`,
 # using the pinned reproducible build container (see docs/verified-build.md).
-# Runs after every push to main, daily, on demand, and on pull requests that
-# change the verification tooling itself (program changes legitimately lag
-# the deployment until the post-merge upgrade, so they do not trigger it).
+# Runs after every push to main, daily, on demand, and as a canonical build on
+# pull requests that change either the program or verification tooling. Pull
+# requests build without comparing against the intentionally older deployment.
 # A failure means either the deployment has not been upgraded to `main` yet,
 # or it was built from something else.
 
@@ -13,6 +13,7 @@ on:
     branches: [main]
   pull_request:
     paths:
+      - programs/synxed-settlement/**
       - scripts/verify-deployment.sh
       - .github/workflows/verify-deployment.yml
   schedule:
@@ -53,4 +54,16 @@ jobs:
         run: cargo install solana-verify --locked --version "$SOLANA_VERIFY_VERSION"
 
       - name: Build in the pinned container and compare with the on-chain program
+        env:
+          SYNXED_BUILD_ONLY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          SYNXED_KEEP_SO: /tmp/synxed_settlement.so
         run: scripts/verify-deployment.sh "$PROGRAM_ID" "$RPC_URL"
+
+      - name: Upload canonical program artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: synxed-settlement-${{ github.sha }}
+          path: /tmp/synxed_settlement.so
+          if-no-files-found: ignore
+          retention-days: 7

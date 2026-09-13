@@ -1,6 +1,6 @@
 # Payout ledger and reconciliation
 
-> **Status: Phase 2 reference implementation.** The public TypeScript SDK
+> **Status: Open-source reference implementation.** The public TypeScript SDK
 > defines these records, extracts evidence from finalized `SettleN`
 > transactions, and rejects any mismatch in event seed, amount, shares,
 > recipients, memo, or inner transfers. It is an auditable reference layer,
@@ -29,12 +29,18 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 
 | Field | Type | Notes |
 | --- | --- | --- |
+| `schemaVersion` | `1` | Explicit storage contract version for future migrations |
 | `eventId` | string | Application event id; `sha256(eventId)` is the on-chain seed |
 | `signature` | string | Transaction signature (base58) |
 | `slot` | integer | Slot the transaction landed in |
 | `cluster` | `"devnet"` \| `"mainnet-beta"` | Devnet only today |
-| `mode` | `"program"` | Only program-mode transactions are authoritative ledger inputs |
-| `asset` | string | `"SOL_LAMPORTS_STANDIN"` today; SPL mint address later |
+| `programId` | string | Settlement program whose instruction was reconciled |
+| `payer` | string | Signing settlement authority and funding wallet |
+| `settlementRecord` | string | On-chain idempotency-record PDA |
+| `mode` | `"program"` \| `"program-token"` | Only program-mode transactions are authoritative ledger inputs |
+| `asset` | string | `"SOL_LAMPORTS_STANDIN"`, `"SPL_STABLECOIN"`, or `"USDC"`; token identity is also bound by `mint` |
+| `mint` | string \| null | Classic SPL Token mint for token settlements; `null` for native SOL |
+| `decimals` | integer \| null | Mint decimals checked by the program; `null` for native SOL |
 | `amountAtomic` | string (u64) | Gross amount as requested, in the request's atomic units (micro-dollars in the demo) |
 | `unitsPerAtomicUnit` | string (u64) | Asset-unit scaling applied at settlement; on-chain total = `amountAtomic × unitsPerAtomicUnit` |
 | `payouts` | `PayoutLine[]` | Exactly one per configured share, in share order |
@@ -49,6 +55,7 @@ One row per recipient per settlement.
 | --- | --- | --- |
 | `role` | string | `artist`, `studio`, `platform`, `rewards_pool`, … (the SDK's `synxed` role maps to `platform`) |
 | `recipient` | string | Wallet that received the funds on-chain |
+| `destinationAccount` | string | Recipient wallet for native SOL; associated token account for SPL Token payouts |
 | `bps` | integer | Share in basis points at settlement time |
 | `amountOnChain` | string (u64) | Exact on-chain amount in on-chain units (lamports on devnet), floor / remainder rule applied |
 | `beneficiaryId` | string \| null | Stable ledger identity; `null` when the recipient is a pool awaiting allocation |
@@ -116,8 +123,8 @@ once a listener's balance clears the claim threshold (proposed default: the
 rent-exempt minimum for a system account plus one distribution fee), and a
 `ClaimBatch` pays many listeners in one transaction.
 
-Pool distributions are paid in the same asset as settlements (SOL on
-devnet, an SPL stablecoin later). There is no reward token and this
+Pool distributions are paid in the same asset as settlements (SOL or the
+configured classic SPL Token mint on devnet). There is no reward token and this
 proposal does not introduce one.
 
 ## Reconciliation
@@ -133,13 +140,14 @@ a fold over chain data:
    wallet's on-chain inflows minus executed `ClaimBatch` totals; the
    difference is the pool's undistributed balance and must be non-negative.
 
-The SDK's `reconcileSettlementN` waits for finality, decodes the instruction,
+The SDK's `reconcileSettlementN` and `reconcileTokenSettlementN` wait for
+finality, decode the instruction,
 derives its settlement-record PDA, validates the structured memo, and compares
 the exact multiset of inner system transfers. Record-account rent transfers are
 identified separately and never counted as payouts. `allocatePoolPayout`
 requires unique beneficiary IDs, positive amounts, and exact conservation.
 
-## Phase 2 policy decisions
+## Public ledger policy decisions
 
 - Claim thresholds are configurable per pool and asset; no global hard-coded
   amount can remain correct across SOL and tokens with different decimals.

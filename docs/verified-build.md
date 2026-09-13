@@ -46,13 +46,25 @@ and never claims either. The first run pulls the image; on Apple Silicon it
 is `linux/amd64` and runs under emulation, so expect 15–30 minutes the first
 time.
 
-It is an 85-line script written by the maintainers — read it, or skip it
-entirely and use `verify-from-repo` below, which goes through none of it.
+The script is written by the maintainers — read it, or skip it entirely and
+use `verify-from-repo` below, which goes through none of it.
 
-CI runs the same script after every push to `main`, once a day, and on pull
-requests that change the script or the workflow
-(`.github/workflows/verify-deployment.yml`). A red run means the deployment
-has not been upgraded to `main` yet, or was built from something else.
+CI runs the same script after every push to `main`, once a day, and in
+build-only mode on pull requests that change the program or verification
+tooling (`.github/workflows/verify-deployment.yml`). Each run retains the
+canonical `.so` as a short-lived GitHub Actions artifact. A red run on `main`
+means the deployment has not been upgraded yet, or was built from something
+else; a pull request is never marked red merely because it is newer than the
+current deployment.
+
+To create a canonical artifact without contacting an RPC endpoint, set both
+explicit output and build-only options:
+
+```bash
+SYNXED_BUILD_ONLY=1 \
+SYNXED_KEEP_SO=/tmp/synxed_settlement.so \
+scripts/verify-deployment.sh
+```
 
 Trust boundary: the on-chain hash comes from whatever RPC you point at.
 Use an RPC you trust, or cross-check with a second one.
@@ -95,15 +107,17 @@ comparison, performed against whatever `main` currently is.
 ## Maintainer procedure for an upgrade
 
 1. Merge the change to `main` (after CI and the adversarial review).
-2. Build the release artifact in the pinned image via the script's isolated
-   copy — never with a native toolchain, and never into the working tree's
-   shared `target/`:
+2. Download the canonical artifact produced by the pull-request check, or
+   build it in the pinned image via the script's isolated copy — never with a
+   native toolchain, and never into the working tree's shared `target/`:
    ```bash
-   SYNXED_KEEP_SO=/tmp/synxed_settlement.so scripts/verify-deployment.sh
+   SYNXED_BUILD_ONLY=1 \
+   SYNXED_KEEP_SO=/tmp/synxed_settlement.so \
+   scripts/verify-deployment.sh
    ```
-   The run reports `DRIFT` (the chain still has the old program); the
-   artifact at `/tmp/synxed_settlement.so` is the canonical build of your
-   checkout.
+   The artifact at `/tmp/synxed_settlement.so` is the canonical build of your
+   checkout. Before deployment, confirm its executable hash matches the hash
+   printed by the exact pull-request check.
 3. If the new binary is larger than the program-data account (`solana
    program show <id>` prints the data length), extend it first:
    ```bash

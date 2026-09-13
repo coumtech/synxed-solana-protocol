@@ -5,9 +5,11 @@ use solana_program::program_error::ProgramError;
 
 pub const SETTLE_TAG: u8 = 0;
 pub const SETTLE_N_TAG: u8 = 1;
+pub const SETTLE_TOKEN_N_TAG: u8 = 2;
 
 /// `SettleN` payload before the bps list: event_id + amount + share count.
 const SETTLE_N_HEADER_LEN: usize = 32 + 8 + 1;
+const SETTLE_TOKEN_N_HEADER_LEN: usize = 32 + 8 + 1 + 1;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SettlementInstruction {
@@ -29,6 +31,17 @@ pub enum SettlementInstruction {
     SettleN {
         event_id: [u8; 32],
         amount: u64,
+        bps: Vec<u16>,
+    },
+    /// Settle an N-way split in classic SPL Token base units.
+    ///
+    /// Accounts: payer/authority (signer, writable), source token account,
+    /// one writable destination token account per share, mint, settlement
+    /// record PDA, system program, classic SPL Token program.
+    SettleTokenN {
+        event_id: [u8; 32],
+        amount: u64,
+        decimals: u8,
         bps: Vec<u16>,
     },
 }
@@ -61,6 +74,23 @@ impl SettlementInstruction {
                 out.push(SETTLE_N_TAG);
                 out.extend_from_slice(event_id);
                 out.extend_from_slice(&amount.to_le_bytes());
+                out.push(bps.len() as u8);
+                for share in bps {
+                    out.extend_from_slice(&share.to_le_bytes());
+                }
+                out
+            }
+            SettlementInstruction::SettleTokenN {
+                event_id,
+                amount,
+                decimals,
+                bps,
+            } => {
+                let mut out = Vec::with_capacity(1 + SETTLE_TOKEN_N_HEADER_LEN + 2 * bps.len());
+                out.push(SETTLE_TOKEN_N_TAG);
+                out.extend_from_slice(event_id);
+                out.extend_from_slice(&amount.to_le_bytes());
+                out.push(*decimals);
                 out.push(bps.len() as u8);
                 for share in bps {
                     out.extend_from_slice(&share.to_le_bytes());
@@ -108,6 +138,32 @@ impl SettlementInstruction {
                 Ok(SettlementInstruction::SettleN {
                     event_id,
                     amount,
+                    bps,
+                })
+            }
+            &SETTLE_TOKEN_N_TAG => {
+                if rest.len() < SETTLE_TOKEN_N_HEADER_LEN {
+                    return Err(ProgramError::InvalidInstructionData);
+                }
+                let count = usize::from(rest[41]);
+                if count == 0
+                    || count > MAX_SHARES
+                    || rest.len() != SETTLE_TOKEN_N_HEADER_LEN + 2 * count
+                {
+                    return Err(ProgramError::InvalidInstructionData);
+                }
+                let event_id = read_event_id(rest);
+                let amount = read_u64(&rest[32..40])?;
+                let decimals = rest[40];
+                let mut bps = Vec::with_capacity(count);
+                for i in 0..count {
+                    let start = SETTLE_TOKEN_N_HEADER_LEN + 2 * i;
+                    bps.push(read_u16(&rest[start..start + 2])?);
+                }
+                Ok(SettlementInstruction::SettleTokenN {
+                    event_id,
+                    amount,
+                    decimals,
                     bps,
                 })
             }
@@ -168,6 +224,15 @@ mod tests {
         }
     }
 
+    fn sample_token_n() -> SettlementInstruction {
+        SettlementInstruction::SettleTokenN {
+            event_id: seed(),
+            amount: 20_000,
+            decimals: 6,
+            bps: vec![3_500, 3_500, 2_000, 1_000],
+        }
+    }
+
     /// Golden bytes shared with the TypeScript codec test
     /// (`tests/instruction.test.ts`). If this vector changes, both sides
     /// must change together.
@@ -199,6 +264,18 @@ mod tests {
     }
 
     #[test]
+    fn pack_token_n_matches_shared_golden_bytes() {
+        let mut expected = vec![SETTLE_TOKEN_N_TAG];
+        expected.extend((0u8..32).collect::<Vec<u8>>());
+        expected.extend([0x20, 0x4e, 0, 0, 0, 0, 0, 0]);
+        expected.push(6);
+        expected.push(4);
+        expected.extend([0xac, 0x0d, 0xac, 0x0d, 0xd0, 0x07, 0xe8, 0x03]);
+        assert_eq!(sample_token_n().pack(), expected);
+        assert_eq!(expected.len(), 51);
+    }
+
+    #[test]
     fn unpack_round_trips_pack() {
         assert_eq!(
             SettlementInstruction::unpack(&sample().pack()).unwrap(),
@@ -207,6 +284,10 @@ mod tests {
         assert_eq!(
             SettlementInstruction::unpack(&sample_n().pack()).unwrap(),
             sample_n()
+        );
+        assert_eq!(
+            SettlementInstruction::unpack(&sample_token_n().pack()).unwrap(),
+            sample_token_n()
         );
     }
 

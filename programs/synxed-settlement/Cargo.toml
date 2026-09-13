@@ -14,10 +14,11 @@ crate-type = ["cdylib", "lib"]
 default = []
 # Enable when the Solana BPF toolchain is installed:
 #   cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain
-onchain = ["dep:solana-program"]
+onchain = ["dep:solana-program", "dep:spl-token"]
 
 [dependencies]
 solana-program = { version = "2.2", optional = true }
+spl-token = { version = "8.0.0", features = ["no-entrypoint"], optional = true }
 
 [dev-dependencies]
 

@@ -9,7 +9,8 @@
 //    memo. Works with no deployed program, so the demo runs end-to-end on a
 //    fresh clone.
 //
-// Both modes settle native SOL on devnet as a stand-in asset.
+// Native and classic SPL Token paths are separate and reject requests for the
+// wrong asset mode before signing.
 
 import {
   Connection,
@@ -22,8 +23,14 @@ import {
 } from "@solana/web3.js";
 import { Buffer } from "buffer";
 import {
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
+import {
   buildSettleInstruction,
   buildSettleNInstruction,
+  buildSettleTokenNInstruction,
   eventIdSeed,
   U64_MAX,
 } from "./instruction.ts";
@@ -51,7 +58,7 @@ export const MEMO_PROGRAM_ID = new PublicKey(
  */
 export const APPROX_RENT_EXEMPT_MIN_LAMPORTS = 890_880n;
 
-export type SettlementMode = "program" | "system-transfer";
+export type SettlementMode = "program" | "program-token" | "system-transfer";
 
 export interface SubmitSettlementOptions {
   connection: Connection;
@@ -107,6 +114,38 @@ export interface SettlementSubmissionN {
   lamportsByShare: readonly bigint[];
 }
 
+export interface BuildTokenSettlementNOptions {
+  payer: PublicKey;
+  request: SettlementRequestN;
+  mint: PublicKey;
+  decimals: number;
+  programId: PublicKey;
+  tokenBaseUnitsPerAtomicUnit?: bigint;
+  /** Include idempotent ATA creation for recipient wallets. Defaults true. */
+  createRecipientAccounts?: boolean;
+}
+
+export interface SubmitTokenSettlementNOptions
+  extends Omit<BuildTokenSettlementNOptions, "payer"> {
+  connection: Connection;
+  payer: Keypair;
+}
+
+export interface PreparedTokenSettlementN {
+  transaction: Transaction;
+  mode: "program-token";
+  tokenAmountTotal: bigint;
+  tokenAmountsByShare: readonly bigint[];
+  sourceTokenAccount: PublicKey;
+  recipientTokenAccounts: readonly PublicKey[];
+}
+
+export interface TokenSettlementSubmissionN
+  extends Omit<PreparedTokenSettlementN, "transaction"> {
+  signature: string;
+  explorerUrl: string;
+}
+
 export function explorerTxUrl(signature: string, cluster = "devnet"): string {
   return `https://explorer.solana.com/tx/${signature}?cluster=${cluster}`;
 }
@@ -123,6 +162,7 @@ export async function submitSettlement(
   options: SubmitSettlementOptions,
 ): Promise<SettlementSubmission> {
   const { request } = options;
+  assertNativeAsset(request.asset);
   const lamportsTotal = scaledTotal(
     request.amountAtomic,
     options.lamportsPerAtomicUnit,
@@ -209,6 +249,7 @@ export function buildSettlementNTransaction(
   options: BuildSettlementNOptions,
 ): PreparedSettlementN {
   const { request } = options;
+  assertNativeAsset(request.asset);
   const lamportsTotal = scaledTotal(
     request.amountAtomic,
     options.lamportsPerAtomicUnit,
@@ -260,6 +301,115 @@ export function buildSettlementNTransaction(
   };
 }
 
+/** Build an unsigned classic SPL Token settlement for wallet or CLI signing. */
+export function buildTokenSettlementNTransaction(
+  options: BuildTokenSettlementNOptions,
+): PreparedTokenSettlementN {
+  if (!isTokenAsset(options.request.asset)) {
+    throw new ProtocolError(
+      "TOKEN_ASSET",
+      "SettleTokenN requires SPL_STABLECOIN or USDC; mint identity is verified separately",
+    );
+  }
+  computeSettlementN(options.request);
+  const tokenAmountTotal = scaledTokenTotal(
+    options.request.amountAtomic,
+    options.tokenBaseUnitsPerAtomicUnit,
+  );
+  const bps = options.request.shares.map((share) => share.bps);
+  const tokenAmountsByShare = splitAmountAtomicShares(tokenAmountTotal, bps);
+  const recipientWallets = options.request.shares.map((share) =>
+    parseRecipient(share.label, share.recipient),
+  );
+  const sourceTokenAccount = getAssociatedTokenAddressSync(
+    options.mint,
+    options.payer,
+    false,
+    TOKEN_PROGRAM_ID,
+  );
+  const recipientTokenAccounts = recipientWallets.map((owner) =>
+    getAssociatedTokenAddressSync(options.mint, owner, true, TOKEN_PROGRAM_ID),
+  );
+  const transaction = new Transaction().add(
+    tokenMemoInstruction(
+      options.request,
+      tokenAmountTotal,
+      options.mint,
+      options.decimals,
+    ),
+  );
+  if (options.createRecipientAccounts ?? true) {
+    const seen = new Set<string>();
+    recipientTokenAccounts.forEach((tokenAccount, index) => {
+      const address = tokenAccount.toBase58();
+      if (seen.has(address)) return;
+      seen.add(address);
+      transaction.add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          options.payer,
+          tokenAccount,
+          recipientWallets[index],
+          options.mint,
+          TOKEN_PROGRAM_ID,
+        ),
+      );
+    });
+  }
+  transaction.add(
+    buildSettleTokenNInstruction(
+      {
+        programId: options.programId,
+        payer: options.payer,
+        sourceTokenAccount,
+        recipientTokenAccounts,
+        mint: options.mint,
+      },
+      {
+        eventSeed: eventIdSeed(options.request.eventId),
+        amount: tokenAmountTotal,
+        decimals: options.decimals,
+        bps,
+      },
+    ),
+  );
+  return {
+    transaction,
+    mode: "program-token",
+    tokenAmountTotal,
+    tokenAmountsByShare,
+    sourceTokenAccount,
+    recipientTokenAccounts,
+  };
+}
+
+export async function submitTokenSettlementN(
+  options: SubmitTokenSettlementNOptions,
+): Promise<TokenSettlementSubmissionN> {
+  const prepared = buildTokenSettlementNTransaction({
+    payer: options.payer.publicKey,
+    request: options.request,
+    mint: options.mint,
+    decimals: options.decimals,
+    programId: options.programId,
+    ...(options.tokenBaseUnitsPerAtomicUnit !== undefined
+      ? { tokenBaseUnitsPerAtomicUnit: options.tokenBaseUnitsPerAtomicUnit }
+      : {}),
+    ...(options.createRecipientAccounts !== undefined
+      ? { createRecipientAccounts: options.createRecipientAccounts }
+      : {}),
+  });
+  const signature = await send(options.connection, options.payer, prepared.transaction);
+  return {
+    signature,
+    explorerUrl: explorerTxUrl(signature),
+    mode: prepared.mode,
+    tokenAmountTotal: prepared.tokenAmountTotal,
+    tokenAmountsByShare: prepared.tokenAmountsByShare,
+    sourceTokenAccount: prepared.sourceTokenAccount,
+    recipientTokenAccounts: prepared.recipientTokenAccounts,
+  };
+}
+
 function scaledTotal(amountAtomic: bigint, scale: bigint | undefined): bigint {
   const factor = scale ?? 1n;
   if (factor <= 0n) {
@@ -275,6 +425,37 @@ function scaledTotal(amountAtomic: bigint, scale: bigint | undefined): bigint {
     throw new ProtocolError(
       "AMOUNT_U64",
       `scaled total ${total} lamports exceeds u64`,
+    );
+  }
+  return total;
+}
+
+function assertNativeAsset(asset: SettlementRequestN["asset"]): void {
+  if (asset !== "SOL_LAMPORTS_STANDIN") {
+    throw new ProtocolError(
+      "ASSET_MODE",
+      "native settlement requires SOL_LAMPORTS_STANDIN",
+    );
+  }
+}
+
+function isTokenAsset(asset: SettlementRequestN["asset"]): boolean {
+  return asset === "SPL_STABLECOIN" || asset === "USDC";
+}
+
+function scaledTokenTotal(amountAtomic: bigint, scale: bigint | undefined): bigint {
+  const factor = scale ?? 1n;
+  if (factor <= 0n) {
+    throw new ProtocolError(
+      "SCALE_RANGE",
+      "tokenBaseUnitsPerAtomicUnit must be a positive bigint",
+    );
+  }
+  const total = amountAtomic * factor;
+  if (total > U64_MAX) {
+    throw new ProtocolError(
+      "AMOUNT_U64",
+      `scaled total ${total} token base units exceeds u64`,
     );
   }
   return total;
@@ -331,6 +512,33 @@ function memoInstruction(
     kind: request.kind,
     asset: request.asset,
     lamports: lamportsTotal.toString(),
+    memo: request.memo,
+  });
+  return new TransactionInstruction({
+    programId: MEMO_PROGRAM_ID,
+    keys: [],
+    data: Buffer.from(text, "utf8"),
+  });
+}
+
+function tokenMemoInstruction(
+  request: Pick<
+    SettlementRequestN,
+    "eventId" | "kind" | "memo" | "occurredAt" | "asset"
+  >,
+  tokenAmount: bigint,
+  mint: PublicKey,
+  decimals: number,
+): TransactionInstruction {
+  const text = JSON.stringify({
+    protocol: "synxed-settlement",
+    event: request.eventId,
+    occurredAt: request.occurredAt,
+    kind: request.kind,
+    asset: request.asset,
+    tokenAmount: tokenAmount.toString(),
+    mint: mint.toBase58(),
+    decimals,
     memo: request.memo,
   });
   return new TransactionInstruction({

@@ -7,7 +7,7 @@ export const DEFAULT_ARTIST_BPS = 3_500;
 export const DEFAULT_STUDIO_BPS = 4_000;
 export const DEFAULT_SYNXED_BPS = 2_500;
 
-/** $0.020 at 6 decimal places (USDC atomic units). */
+/** $0.020 at 6 decimal places (stablecoin-style atomic units). */
 export const DEFAULT_AMOUNT_ATOMIC = 20_000n;
 
 export const SETTLEMENT_ROLES = ["artist", "studio", "synxed"] as const;
@@ -15,7 +15,10 @@ export type SettlementRole = (typeof SETTLEMENT_ROLES)[number];
 
 export type SettlementKind = "audio_ad_impression";
 
-export type SettlementAsset = "SOL_LAMPORTS_STANDIN" | "USDC";
+export type SettlementAsset =
+  | "SOL_LAMPORTS_STANDIN"
+  | "SPL_STABLECOIN"
+  | "USDC";
 
 export interface SplitShare {
   role: SettlementRole;
@@ -31,12 +34,9 @@ export interface SettlementRequest {
   eventId: string;
   occurredAt: string;
   kind: SettlementKind;
-  /** Gross amount in atomic units (USDC 6-decimals, or SOL lamports in the demo). */
+  /** Gross amount in atomic units (six-decimal currency units in the demos). */
   amountAtomic: bigint;
-  /**
-   * Demo settlements on devnet use native SOL as a stand-in.
-   * An SPL stablecoin path is planned; this repo does not mint a token.
-   */
+  /** Native SOL stand-in, a configured stablecoin mint, or explicitly USDC. */
   asset: SettlementAsset;
   splits: readonly [SplitShare, SplitShare, SplitShare];
   memo: string;
@@ -117,4 +117,9 @@ export type ProtocolErrorCode =
   | "AMOUNT_U64"
   | "SCALE_RANGE"
   | "RECIPIENT_PUBKEY"
-  | "RECIPIENT_IS_RECORD";
+  | "RECIPIENT_IS_RECORD"
+  | "TOKEN_DECIMALS"
+  | "TOKEN_PROGRAM"
+  | "TOKEN_SOURCE_RECIPIENT"
+  | "TOKEN_ASSET"
+  | "ASSET_MODE";

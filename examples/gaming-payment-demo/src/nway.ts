@@ -179,7 +179,7 @@ async function main(): Promise<void> {
   if (programId === undefined) {
     console.log(
       "\nLedger reconciliation skipped: system-transfer mode has no on-chain " +
-        "idempotency record. Set SETTLEMENT_PROGRAM_ID for authoritative Phase 2 evidence.",
+        "idempotency record. Set SETTLEMENT_PROGRAM_ID for authoritative ledger evidence.",
     );
     return;
   }
