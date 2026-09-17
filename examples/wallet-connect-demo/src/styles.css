@@ -107,3 +107,4 @@ pre { max-height: 260px; overflow: auto; padding: 14px; border-radius: 10px; bac
 .status { overflow-wrap: anywhere; }
 .wallet-notice { margin: 18px 0 0; padding: 12px 14px; border-radius: 12px; font-size: 14px; line-height: 1.45; background: #2a2314; color: #ffd48a; border: 1px solid #5a4a2a; overflow-wrap: anywhere; }
 .wallet-notice a { color: inherit; text-decoration: underline; }
+.wallet-notice button { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-decoration: underline; cursor: pointer; }

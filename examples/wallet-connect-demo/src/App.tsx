@@ -198,9 +198,12 @@ export function App(): React.JSX.Element {
           {mobileHandoffAvailable ? (
             <>
               {uninstalledWallet.name} cannot be reached as a browser extension on
-              this phone. Choose <strong>Mobile Wallet Adapter</strong> in the
-              picker to hand off to a wallet app installed here, or open this page
-              inside the wallet app's own browser.
+              this phone. Choose <strong>Mobile Wallet Adapter</strong> in the{" "}
+              <button type="button" onClick={() => openWalletPicker(true)}>
+                wallet picker
+              </button>{" "}
+              to hand off to a wallet app installed here, or open this page inside
+              the wallet app's own browser.
             </>
           ) : (
             <>
@@ -209,7 +212,7 @@ export function App(): React.JSX.Element {
               <a href={uninstalledWallet.url} target="_blank" rel="noreferrer">
                 {uninstalledWallet.url.replace(/^https?:\/\//, "")}
               </a>
-              , install it, then reload this page.
+              , install it, then reload this page and pick {uninstalledWallet.name} again.
             </>
           )}
         </p>
@@ -235,10 +238,11 @@ export function App(): React.JSX.Element {
         <p className="eyebrow">Try it in three steps</p>
         <ol>
           <li>
-            Install any Wallet Standard browser wallet, for example{" "}
-            <a href="https://solana.com/wallets" target="_blank" rel="noreferrer">Phantom or Solflare</a>,
-            and switch it to <strong>devnet</strong> (Phantom: Settings → Developer Settings →
-            Testnet Mode, then choose Solana Devnet).
+            Install a Solana browser wallet, for example{" "}
+            <a href="https://solana.com/wallets" target="_blank" rel="noreferrer">Phantom or Solflare</a>{" "}
+            (Solflare also works as a web wallet without an extension), and switch it to{" "}
+            <strong>devnet</strong> (Phantom: Settings → Developer Settings → Testnet Mode, then
+            choose Solana Devnet).
           </li>
           <li>
             Fund that wallet with free devnet SOL at{" "}

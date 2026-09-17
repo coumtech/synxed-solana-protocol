@@ -16,9 +16,11 @@ import "./styles.css";
 //
 // The fallbacks exist for visitors with no wallet installed. Without them the
 // wallet picker renders only its title and no way forward. With them:
-// - Phantom is listed as "not detected". Choosing it turns the header button
-//   into Connect, and pressing Connect opens phantom.app (the provider's
-//   default reaction to a wallet that is not ready); App.tsx explains this.
+// - Phantom is listed with readyState NotDetected. Choosing it turns the
+//   header button into Connect, and pressing Connect opens phantom.app (the
+//   provider's default reaction to a wallet that is not ready); App.tsx
+//   explains this. On iOS Safari both entries are Loadable instead and
+//   redirect to the wallet app's in-app browser.
 // - Solflare is "loadable" without an extension: choosing it opens Solflare's
 //   hosted web wallet in the page. The network must be pinned to devnet or the
 //   hosted wallet defaults to mainnet and cannot sign the demo's devnet
