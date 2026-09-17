@@ -9,11 +9,13 @@ custody funds, or request mainnet access.
 A build of `main` is hosted at
 <https://synxed-solana-protocol-wallet-conne.vercel.app/>. It targets the
 reference devnet program and the public devnet RPC; nothing in the bundle is
-secret. To use it you need a Solana browser wallet switched to **devnet** and
-funded from <https://faucet.solana.com> (about 0.022 SOL is spent per
-settlement). On a phone, open the page inside your wallet app's built-in
-browser. Evidence of a successful settlement stays in your browser's local
-storage only.
+secret. To use it you need a Wallet Standard browser wallet (Phantom, Solflare,
+and others) switched to **devnet** (Phantom: Settings → Developer Settings →
+Testnet Mode) and funded from <https://faucet.solana.com> (about 0.022 SOL is
+spent per settlement). On an iPhone, open the page inside your wallet app's
+built-in browser; on Android, Chrome hands off to an installed wallet app
+through Mobile Wallet Adapter. Evidence of a successful settlement stays in
+your browser's local storage only.
 
 The site is a Vercel project imported from this repository with **Root
 Directory** set to `examples/wallet-connect-demo` and the Vite preset; the
@@ -25,7 +27,9 @@ this repository get preview deployments (fork PRs need a maintainer to
 authorize). The two `VITE_*` variables are optional: without them the build
 targets the reference devnet program and the public devnet RPC. A one-off
 manual deploy without the Git integration is
-`scripts/deploy-wallet-demo.sh <team-scope>`.
+`scripts/deploy-wallet-demo.sh <team-scope> [project-name]`; pass the Git
+project's name as the second argument to update the hosted URL, otherwise the
+script targets its own default project.
 
 ## Run locally
 
