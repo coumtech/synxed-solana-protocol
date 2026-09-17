@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import {
   WalletMultiButton,
@@ -48,6 +48,7 @@ const INITIAL_RECIPIENTS: RecipientFields = {
 
 type RunState =
   | { status: "idle" }
+  | { status: "needs-wallet"; message: string }
   | { status: "working"; message: string }
   | { status: "error"; message: string }
   | {
@@ -65,14 +66,22 @@ export function App(): React.JSX.Element {
   const [run, setRun] = useState<RunState>({ status: "idle" });
   const connectedAddress = publicKey?.toBase58() ?? null;
 
+  // The "connect a wallet first" prompt must disappear the moment a wallet
+  // connects, otherwise the page contradicts itself.
+  useEffect(() => {
+    if (publicKey !== null && run.status === "needs-wallet") {
+      setRun({ status: "idle" });
+    }
+  }, [publicKey, run.status]);
+
   async function settle(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (publicKey === null) {
       // Never leave a click unanswered: explain and open the wallet picker.
       setRun({
-        status: "error",
+        status: "needs-wallet",
         message:
-          "No wallet connected yet. Pick a Solana wallet, switch it to devnet, and fund it from the faucet, then try again.",
+          "No wallet connected yet. Pick a Solana wallet in the picker, make sure it is on devnet, and fund it from the faucet, then try again.",
       });
       openWalletPicker(true);
       return;
@@ -112,7 +121,7 @@ export function App(): React.JSX.Element {
       const required = prepared.lamportsTotal + FUNDING_OVERHEAD;
       if (balance < required) {
         throw new Error(
-          `Wallet needs at least ${required} lamports on devnet; current balance is ${balance}.`,
+          `Wallet needs at least ${formatSol(required)} SOL on devnet; current balance is ${formatSol(balance)} SOL. Fund it at faucet.solana.com.`,
         );
       }
 
@@ -140,10 +149,20 @@ export function App(): React.JSX.Element {
       persistEvidence(signature, reconciliation);
       setRun({ status: "matched", signature, reconciliation });
     } catch (error: unknown) {
-      setRun({
-        status: "error",
-        message: error instanceof Error ? error.message : "Settlement failed.",
-      });
+      // Some wallets throw errors with an empty message (for example a chain
+      // mismatch); never show an empty red box.
+      const message =
+        error instanceof Error && error.message ? error.message : "Settlement failed.";
+      // A wallet still set to mainnet cannot act on a devnet blockhash; the
+      // wallet's own error wording varies, so add the likely cause. Program
+      // and preflight rejections mention the instruction and are not this.
+      const wrongNetwork =
+        /blockhash|expired|block height exceeded/i.test(message) &&
+        !/custom program error|Error processing Instruction/i.test(message);
+      const hint = wrongNetwork
+        ? " Check that your wallet is on devnet (Phantom: Settings → Developer Settings → Testnet Mode, then choose Solana Devnet)."
+        : "";
+      setRun({ status: "error", message: `${message}${hint}` });
     }
   }
 
@@ -177,9 +196,10 @@ export function App(): React.JSX.Element {
         <p className="eyebrow">Try it in three steps</p>
         <ol>
           <li>
-            Install a Solana browser wallet (for example{" "}
-            <a href="https://phantom.com/download" target="_blank" rel="noreferrer">Phantom</a>)
-            and switch it to <strong>Devnet</strong> in its settings.
+            Install any Wallet Standard browser wallet, for example{" "}
+            <a href="https://solana.com/wallets" target="_blank" rel="noreferrer">Phantom or Solflare</a>,
+            and switch it to <strong>devnet</strong> (Phantom: Settings → Developer Settings →
+            Testnet Mode, then choose Solana Devnet).
           </li>
           <li>
             Fund that wallet with free devnet SOL at{" "}
@@ -192,8 +212,8 @@ export function App(): React.JSX.Element {
           </li>
         </ol>
         <p className="howto-note">
-          On a phone, open this page inside your wallet app's built-in browser; mobile
-          browsers cannot reach a wallet extension.
+          On an iPhone, open this page inside your wallet app's built-in browser. On
+          Android, Chrome can hand off to an installed wallet app.
         </p>
       </section>
 
@@ -261,11 +281,15 @@ export function App(): React.JSX.Element {
                   : "Sign & settle 0.02 SOL"}
             </button>
           </div>
-          {run.status === "working" || run.status === "error" ? (
-            <p className={`status inline ${run.status}`} role="status">{run.message}</p>
+          {run.status === "needs-wallet" ||
+          run.status === "working" ||
+          run.status === "error" ? (
+            <p className={`status inline ${run.status === "working" ? "working" : "error"}`}>
+              {run.message}
+            </p>
           ) : null}
           {run.status === "matched" ? (
-            <p className="status inline matched" role="status">
+            <p className="status inline matched">
               Settled and reconciled: MATCH.{" "}
               <a href={explorerTxUrl(run.signature)} target="_blank" rel="noreferrer">
                 Open transaction in Explorer ↗
@@ -284,7 +308,9 @@ export function App(): React.JSX.Element {
             </p>
           ) : null}
           {run.status === "working" ? <p className="status working">{run.message}</p> : null}
-          {run.status === "error" ? <p className="status error">{run.message}</p> : null}
+          {run.status === "error" || run.status === "needs-wallet" ? (
+            <p className="status error">{run.message}</p>
+          ) : null}
           {run.status === "matched" ? (
             <div className="match-result">
               <div className="match-badge"><i aria-hidden="true" /> MATCH</div>
@@ -330,6 +356,12 @@ function persistEvidence(
   } catch {
     // Display remains authoritative even when private browsing blocks storage.
   }
+}
+
+function formatSol(lamports: bigint): string {
+  const whole = lamports / 1_000_000_000n;
+  const fraction = (lamports % 1_000_000_000n).toString().padStart(9, "0").slice(0, 4);
+  return `${whole}.${fraction}`;
 }
 
 function shorten(address: string): string {

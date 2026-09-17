@@ -95,12 +95,13 @@ pre { max-height: 260px; overflow: auto; padding: 14px; border-radius: 10px; bac
 }
 
 /* Onboarding strip and inline feedback under the settle button */
-.howto { margin: 28px 0 8px; padding: 22px 26px; border: 1px solid #2b2e2a; border-radius: 22px; background: #0d100d; }
+.howto { margin: 28px 0 18px; padding: 22px 26px; border: 1px solid #2b2e2a; border-radius: 22px; background: #0d100d; }
 .howto ol { margin: 10px 0 0; padding-left: 22px; display: grid; gap: 8px; color: #c9cec4; font-size: 15px; line-height: 1.5; }
-.howto a { color: #9fe870; }
+.howto a { color: #b8ff38; }
 .howto-note { margin: 14px 0 0; color: #8b918a; font-size: 13px; }
 .status.inline { margin: 14px 0 0; padding: 12px 14px; border-radius: 12px; font-size: 14px; line-height: 1.45; }
 .status.inline.error { background: #2a1414; color: #ffb4a8; border: 1px solid #5a2a2a; }
-.status.inline.working { background: #14201a; color: #c9cec4; border: 1px solid #2b3e33; }
-.status.inline.matched { background: #12241a; color: #9fe870; border: 1px solid #2f5a3a; }
+.status.inline.working { background: #20281a; color: #cde9a0; border: 1px solid #2b3e33; }
+.status.inline.matched { background: #12241a; color: #b8ff38; border: 1px solid #2f5a3a; }
 .status.inline a { color: inherit; text-decoration: underline; }
+.status { overflow-wrap: anywhere; }
