@@ -31,3 +31,6 @@ dist/
 # Logs
 *.log
 npm-debug.log*
+
+# Vercel local project link (hosted wallet demo)
+.vercel/
