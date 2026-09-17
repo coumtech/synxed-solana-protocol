@@ -24,7 +24,7 @@ run or evaluate this repository. See
 
 ## How a settlement works
 
-An ad impression worth $0.020 with the Phase 2 default (placeholder,
+An ad impression worth $0.020 with the public reference split (placeholder,
 configurable) split:
 
 | Role | Share | Amount |
@@ -67,7 +67,7 @@ cargo test --manifest-path programs/synxed-settlement/Cargo.toml   # optional
 **2. Dry-run the demo** (no wallet, no network writes)
 
 ```bash
-bun run demo            # Phase 2 four-way split with rewards pool
+bun run demo            # four-way split with rewards pool
 bun run demo:three-way  # backward-compatible original example
 ```
 
@@ -87,9 +87,10 @@ https://faucet.solana.com), submits the settlement, and prints a
 payouts. In program mode it then waits for finality, reconciles the instruction
 and inner transfers, and writes verified ledger evidence under `.local/ledger/`.
 
-The devnet demo settles **native SOL as a stand-in asset** — no token is
-minted by this repo. Amounts are micro-dollars scaled into lamports
-(`LAMPORTS_PER_UNIT`, default 1000, so $0.020 settles as 0.02 SOL).
+The default devnet demo settles **native SOL as a stand-in asset**. A separate
+classic SPL Token example settles a configured six-decimal stablecoin mint;
+the repository never creates a production token or assumes a particular mint.
+See [docs/spl-stablecoin.md](docs/spl-stablecoin.md).
 
 **4. Use a browser wallet**
 
@@ -101,6 +102,18 @@ Open the local URL in a browser with a Wallet Standard-compatible Solana wallet
 set to devnet. The browser demo signs the same 35/35/20/10 `SettleN`
 transaction, waits for finality, and displays the reconciled ledger evidence.
 See [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md).
+
+**5. Settle a configured stablecoin mint**
+
+```bash
+STABLECOIN_MINT=<devnet-classic-spl-mint> bun run demo:token
+```
+
+This program-only path uses checked classic SPL Token transfers, creates
+recipient associated token accounts idempotently, waits for finalized evidence,
+and reconciles the exact mint, decimals, accounts, memo, totals, and transfers.
+The payer's token account must already hold the example's 20,000 base units.
+See [docs/spl-stablecoin.md](docs/spl-stablecoin.md).
 
 ### Settlement modes
 
@@ -166,7 +179,7 @@ docs/                         architecture, protocol spec, integration guide,
   SVM tests of the compiled program (idempotency, pre-funded record
   defense, account validation) run in CI on every pull request
 
-**Phase 2:**
+**Current open-source extensions:**
 
 - Four-way reference split: artist 35%, studio 35%, platform 20%, listener
   rewards pool 10% (`bun run demo`; the original three-way example remains
@@ -176,7 +189,8 @@ docs/                         architecture, protocol spec, integration guide,
   [docs/payout-ledger.md](docs/payout-ledger.md)
 - Wallet Standard-compatible browser flow using the shared instruction builder;
   see [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md)
-- SPL/devnet stablecoin settlement path
+- Classic SPL Token settlement for a configured six-decimal stablecoin mint,
+  with checked transfers and finalized ledger reconciliation
 
 **Explicitly future (not in this repository):**
 

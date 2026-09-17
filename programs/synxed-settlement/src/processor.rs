@@ -9,10 +9,12 @@ use solana_program::account_info::AccountInfo;
 use solana_program::entrypoint::ProgramResult;
 use solana_program::program::{invoke, invoke_signed};
 use solana_program::program_error::ProgramError;
+use solana_program::program_pack::Pack;
 use solana_program::pubkey::Pubkey;
 use solana_program::rent::Rent;
 use solana_program::system_instruction;
 use solana_program::sysvar::Sysvar;
+use spl_token::state::{Account as TokenAccount, Mint};
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -46,6 +48,28 @@ pub fn process_instruction(
                 .map_err(|_| ProgramError::InvalidArgument)?;
             settle(program_id, accounts, event_id, amount, &payouts[..count])
         }
+        SettlementInstruction::SettleTokenN {
+            event_id,
+            amount,
+            decimals,
+            bps,
+        } => {
+            let count = bps.len();
+            if count == 0 || count > MAX_SHARES {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            let mut payouts = [0u64; MAX_SHARES];
+            split_shares(amount, &bps, &mut payouts[..count])
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            settle_token(
+                program_id,
+                accounts,
+                event_id,
+                amount,
+                decimals,
+                &payouts[..count],
+            )
+        }
     }
 }
 
@@ -69,24 +93,8 @@ fn settle(
     let record = &accounts[1 + count];
     let system_program = &accounts[2 + count];
 
-    if !payer.is_signer {
-        return Err(ProgramError::MissingRequiredSignature);
-    }
-    if !payer.is_writable || !record.is_writable {
-        return Err(ProgramError::InvalidAccountData);
-    }
     if recipients.iter().any(|recipient| !recipient.is_writable) {
         return Err(ProgramError::InvalidAccountData);
-    }
-    // Defense-in-depth: the system_instruction builders hard-code the real
-    // system program id, but reject a wrong account explicitly and early.
-    if *system_program.key != solana_program::system_program::ID {
-        return Err(ProgramError::IncorrectProgramId);
-    }
-
-    let (pda, bump) = settlement_pda(program_id, &event_id);
-    if record.key != &pda {
-        return Err(ProgramError::InvalidSeeds);
     }
     // A payout sent to a settlement record — this event's or any other
     // event's — could never be recovered: nothing can debit a record once it
@@ -96,6 +104,118 @@ fn settle(
         .any(|recipient| recipient.key == record.key || recipient.owner == program_id)
     {
         return Err(ProgramError::InvalidArgument);
+    }
+    create_record(program_id, payer, record, system_program, &event_id, amount)?;
+
+    for (recipient, &lamports) in recipients.iter().zip(payouts) {
+        transfer(payer, recipient, lamports, system_program)?;
+    }
+    Ok(())
+}
+
+/// Classic SPL Token settlement via TransferChecked. Token-2022 is rejected
+/// explicitly because extensions can change credited amounts and accounts.
+fn settle_token(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    event_id: [u8; 32],
+    amount: u64,
+    decimals: u8,
+    payouts: &[u64],
+) -> ProgramResult {
+    let count = payouts.len();
+    if accounts.len() != count + 6 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let payer = &accounts[0];
+    let source = &accounts[1];
+    let recipients = &accounts[2..2 + count];
+    let mint = &accounts[2 + count];
+    let record = &accounts[3 + count];
+    let system_program = &accounts[4 + count];
+    let token_program = &accounts[5 + count];
+
+    if *token_program.key != spl_token::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    if !source.is_writable || recipients.iter().any(|recipient| !recipient.is_writable) {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if source.owner != token_program.key
+        || mint.owner != token_program.key
+        || recipients
+            .iter()
+            .any(|recipient| recipient.owner != token_program.key)
+    {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let mint_state = Mint::unpack(&mint.try_borrow_data()?)?;
+    if !mint_state.is_initialized || mint_state.decimals != decimals {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let source_state = TokenAccount::unpack(&source.try_borrow_data()?)?;
+    if source_state.mint != *mint.key || source_state.owner != *payer.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    for recipient in recipients {
+        if recipient.key == source.key || recipient.key == record.key {
+            return Err(ProgramError::InvalidArgument);
+        }
+        let recipient_state = TokenAccount::unpack(&recipient.try_borrow_data()?)?;
+        if recipient_state.mint != *mint.key {
+            return Err(ProgramError::InvalidAccountData);
+        }
+    }
+
+    create_record(program_id, payer, record, system_program, &event_id, amount)?;
+    for (recipient, &tokens) in recipients.iter().zip(payouts) {
+        if tokens == 0 {
+            continue;
+        }
+        let instruction = spl_token::instruction::transfer_checked(
+            token_program.key,
+            source.key,
+            mint.key,
+            recipient.key,
+            payer.key,
+            &[],
+            tokens,
+            decimals,
+        )?;
+        invoke(
+            &instruction,
+            &[
+                source.clone(),
+                mint.clone(),
+                recipient.clone(),
+                payer.clone(),
+                token_program.clone(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn create_record<'a>(
+    program_id: &Pubkey,
+    payer: &AccountInfo<'a>,
+    record: &AccountInfo<'a>,
+    system_program: &AccountInfo<'a>,
+    event_id: &[u8; 32],
+    amount: u64,
+) -> ProgramResult {
+    if !payer.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if !payer.is_writable || !record.is_writable {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if *system_program.key != solana_program::system_program::ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    let (pda, bump) = settlement_pda(program_id, event_id);
+    if record.key != &pda {
+        return Err(ProgramError::InvalidSeeds);
     }
     // Idempotency is keyed on ownership, not lamports: a record this program
     // already owns (or that carries data) means the event was settled.
@@ -113,7 +233,7 @@ fn settle(
     // lamports, which let anyone block an event id by pre-funding its PDA.
     // This path tolerates pre-funded accounts: the payer only tops up
     // whatever is missing toward rent exemption.
-    let seeds: &[&[u8]] = &[SETTLEMENT_SEED, &event_id, &[bump]];
+    let seeds: &[&[u8]] = &[SETTLEMENT_SEED, event_id, &[bump]];
     let required = Rent::get()?.minimum_balance(SETTLEMENT_RECORD_SIZE);
     let shortfall = required.saturating_sub(record.lamports());
     if shortfall > 0 {
@@ -136,12 +256,8 @@ fn settle(
     {
         let mut data = record.try_borrow_mut_data()?;
         data[0] = SETTLEMENT_RECORD_DISCRIMINATOR;
-        data[1..33].copy_from_slice(&event_id);
+        data[1..33].copy_from_slice(event_id);
         data[33..41].copy_from_slice(&amount.to_le_bytes());
-    }
-
-    for (recipient, &lamports) in recipients.iter().zip(payouts) {
-        transfer(payer, recipient, lamports, system_program)?;
     }
     Ok(())
 }

@@ -22,7 +22,7 @@ const RECIPIENTS = [
 ] as const;
 const BPS = [3_500, 3_500, 2_000, 1_000] as const;
 const AMOUNTS = [7_000_000n, 7_000_000n, 4_000_000n, 2_000_000n] as const;
-const EVENT_ID = "evt_phase2_ledger";
+const EVENT_ID = "evt_ledger_reconciliation";
 const PROGRAM_ID = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
 
 function toHex(bytes: Uint8Array): string {
@@ -42,15 +42,16 @@ function request(): SettlementRequestN {
       { label: "synxed", recipient: RECIPIENTS[2], bps: BPS[2] },
       { label: "rewards_pool", recipient: RECIPIENTS[3], bps: BPS[3] },
     ],
-    memo: "phase 2 ledger test",
+    memo: "ledger reconciliation test",
   };
 }
 
 function observation(): ProgramSettlementObservation {
   return {
-    signature: "phase2-test-signature",
+    signature: "ledger-test-signature",
     slot: 500_000_000,
     blockTime: 1_789_200_000,
+    programId: PROGRAM_ID.toBase58(),
     payer: PAYER,
     record: RECORD,
     eventSeedHex: toHex(eventIdSeed(EVENT_ID)),
@@ -72,7 +73,7 @@ function observation(): ProgramSettlementObservation {
       kind: "audio_ad_impression",
       asset: "SOL_LAMPORTS_STANDIN",
       lamports: "20000000",
-      memo: "phase 2 ledger test",
+      memo: "ledger reconciliation test",
     },
   };
 }
@@ -172,6 +173,10 @@ describe("ledger reconciliation", () => {
       "4000000",
       "2000000",
     ]);
+    expect(result.record.schemaVersion).toBe(1);
+    expect(result.record.programId).toBe(PROGRAM_ID.toBase58());
+    expect(result.record.payer).toBe(PAYER);
+    expect(result.record.settlementRecord).toBe(RECORD);
     expect(result.record.payouts.map((line) => line.role)).toEqual([
       "artist",
       "studio",

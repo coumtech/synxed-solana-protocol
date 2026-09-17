@@ -18,6 +18,8 @@
 #   SYNXED_BUILD_IMAGE  override the build image (testing only)
 #   SYNXED_KEEP_SO      copy the built .so to this path before cleanup
 #                       (used by the maintainer upgrade procedure)
+#   SYNXED_BUILD_ONLY   set to 1 to build and retain the canonical artifact
+#                       without comparing it with an existing deployment
 #
 # Exit codes:
 #   0  MATCH — the on-chain program is the build of this source tree
@@ -30,6 +32,7 @@ PROGRAM_ID="${1:-HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT}"
 RPC_URL="${2:-https://api.devnet.solana.com}"
 BASE_IMAGE="${SYNXED_BUILD_IMAGE:-solanafoundation/solana-verifiable-build@sha256:588d0c6f45c2faa4456c7b8279897d8af8c6cd17e9613bb8ddf622a820039eb2}"
 KEEP_SO="${SYNXED_KEEP_SO:-}"
+BUILD_ONLY="${SYNXED_BUILD_ONLY:-0}"
 LIBRARY="synxed_settlement"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # A fixed location under the repository (gitignored) rather than $TMPDIR, so
@@ -47,6 +50,8 @@ command -v docker >/dev/null 2>&1 || fail "docker is required (https://docs.dock
 docker info >/dev/null 2>&1 || fail "the docker daemon is not running"
 command -v solana-verify >/dev/null 2>&1 || fail "solana-verify is required: cargo install solana-verify --locked --version 0.5.1"
 command -v rsync >/dev/null 2>&1 || fail "rsync is required"
+[ "$BUILD_ONLY" = "0" ] || [ "$BUILD_ONLY" = "1" ] \
+  || fail "SYNXED_BUILD_ONLY must be 0 or 1"
 
 sha() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -93,9 +98,14 @@ SO="$WORK/program/target/deploy/$LIBRARY.so"
 [ -f "$SO" ] || fail "the build produced no $SO"
 BUILD_HASH="$(solana-verify get-executable-hash "$SO" 2>/dev/null | tail -n 1)" || fail "could not hash the build"
 [ -n "$BUILD_HASH" ] || fail "could not hash the build"
+echo "built from src: $BUILD_HASH ($(wc -c < "$SO" | tr -d ' ') bytes, plain sha256 $(sha "$SO"))"
 if [ -n "$KEEP_SO" ]; then
   cp "$SO" "$KEEP_SO" || fail "could not copy the build to $KEEP_SO"
   echo "artifact      : $KEEP_SO"
+fi
+if [ "$BUILD_ONLY" = "1" ]; then
+  echo "BUILD ONLY: canonical artifact produced; deployment comparison skipped."
+  exit 0
 fi
 
 ONCHAIN_HASH=""
@@ -108,7 +118,6 @@ for attempt in 1 2 3; do
 done
 [ -n "$ONCHAIN_HASH" ] || fail "could not fetch the on-chain program hash from $RPC_URL (unreachable or rate-limited)"
 
-echo "built from src: $BUILD_HASH ($(wc -c < "$SO" | tr -d ' ') bytes, plain sha256 $(sha "$SO"))"
 echo "on-chain      : $ONCHAIN_HASH ($PROGRAM_ID via $RPC_URL)"
 if [ "$BUILD_HASH" = "$ONCHAIN_HASH" ]; then
   echo "MATCH: the deployed program is the build of this source tree."
