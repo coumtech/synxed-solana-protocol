@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { WalletReadyState } from "@solana/wallet-adapter-base";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import {
   WalletMultiButton,
@@ -16,6 +17,9 @@ const DEFAULT_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
 const AMOUNT_ATOMIC = 20_000n;
 const UNITS_PER_ATOMIC = 1_000n;
 const FUNDING_OVERHEAD = 1_200_000n;
+// Name the wallet-adapter provider gives the Mobile Wallet Adapter entry it adds
+// on Android mobile web (from @solana-mobile/wallet-adapter-mobile).
+const MOBILE_WALLET_ADAPTER_NAME = "Mobile Wallet Adapter";
 
 export const DEVNET_ENDPOINT =
   import.meta.env.VITE_SOLANA_RPC_URL?.trim() || DEFAULT_RPC;
@@ -59,12 +63,25 @@ type RunState =
 
 export function App(): React.JSX.Element {
   const { connection } = useConnection();
-  const { publicKey, sendTransaction } = useWallet();
+  const { publicKey, sendTransaction, wallet, wallets } = useWallet();
   const { setVisible: openWalletPicker } = useWalletModal();
   const [recipients, setRecipients] =
     useState<RecipientFields>(INITIAL_RECIPIENTS);
   const [run, setRun] = useState<RunState>({ status: "idle" });
   const connectedAddress = publicKey?.toBase58() ?? null;
+  // The picker lists Phantom even when it is not installed. Choosing it turns
+  // the header button into "Connect", and pressing that opens phantom.app; say
+  // so instead of leaving the button unexplained. On Android mobile web no
+  // extension can ever be detected, so the advice there is the Mobile Wallet
+  // Adapter entry (a hand-off to an installed wallet app) instead of "install
+  // and reload".
+  const uninstalledWallet =
+    wallet !== null && wallet.readyState === WalletReadyState.NotDetected
+      ? wallet.adapter
+      : null;
+  const mobileHandoffAvailable = wallets.some(
+    (entry) => entry.adapter.name === MOBILE_WALLET_ADAPTER_NAME,
+  );
 
   // The "connect a wallet first" prompt must disappear the moment a wallet
   // connects, otherwise the page contradicts itself.
@@ -176,6 +193,31 @@ export function App(): React.JSX.Element {
         <WalletMultiButton />
       </header>
 
+      {uninstalledWallet !== null ? (
+        <p className="wallet-notice" role="status">
+          {mobileHandoffAvailable ? (
+            <>
+              {uninstalledWallet.name} cannot be reached as a browser extension on
+              this phone. Choose <strong>Mobile Wallet Adapter</strong> in the{" "}
+              <button type="button" onClick={() => openWalletPicker(true)}>
+                wallet picker
+              </button>{" "}
+              to hand off to a wallet app installed here, or open this page inside
+              the wallet app's own browser.
+            </>
+          ) : (
+            <>
+              {uninstalledWallet.name} is not installed in this browser. Press{" "}
+              <strong>Connect</strong> to open{" "}
+              <a href={uninstalledWallet.url} target="_blank" rel="noreferrer">
+                {uninstalledWallet.url.replace(/^https?:\/\//, "")}
+              </a>
+              , install it, then reload this page and pick {uninstalledWallet.name} again.
+            </>
+          )}
+        </p>
+      ) : null}
+
       <section className="hero" aria-labelledby="page-title">
         <div>
           <p className="eyebrow">Open-source protocol · Solana devnet</p>
@@ -196,10 +238,11 @@ export function App(): React.JSX.Element {
         <p className="eyebrow">Try it in three steps</p>
         <ol>
           <li>
-            Install any Wallet Standard browser wallet, for example{" "}
-            <a href="https://solana.com/wallets" target="_blank" rel="noreferrer">Phantom or Solflare</a>,
-            and switch it to <strong>devnet</strong> (Phantom: Settings → Developer Settings →
-            Testnet Mode, then choose Solana Devnet).
+            Install a Solana browser wallet, for example{" "}
+            <a href="https://solana.com/wallets" target="_blank" rel="noreferrer">Phantom or Solflare</a>{" "}
+            (Solflare also works as a web wallet without an extension), and switch it to{" "}
+            <strong>devnet</strong> (Phantom: Settings → Developer Settings → Testnet Mode, then
+            choose Solana Devnet).
           </li>
           <li>
             Fund that wallet with free devnet SOL at{" "}
