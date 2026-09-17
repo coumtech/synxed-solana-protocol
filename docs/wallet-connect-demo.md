@@ -15,10 +15,17 @@ settlement). On a phone, open the page inside your wallet app's built-in
 browser. Evidence of a successful settlement stays in your browser's local
 storage only.
 
-The site is a Vercel project imported from this repository; every merge to
-`main` redeploys it. The root `vercel.json` carries the install, build, and
-output settings for an import at the repository root. A one-off manual deploy
-is `scripts/deploy-wallet-demo.sh <team-scope>`.
+The site is a Vercel project imported from this repository with **Root
+Directory** set to `examples/wallet-connect-demo` and the Vite preset; the
+small `vercel.json` in that directory only pins `bun install
+--frozen-lockfile` so production builds match the committed lockfile (Bun
+installs the whole workspace from the member directory). Pushes to `main`
+redeploy production through Vercel's Git integration, and pull requests from
+this repository get preview deployments (fork PRs need a maintainer to
+authorize). The two `VITE_*` variables are optional: without them the build
+targets the reference devnet program and the public devnet RPC. A one-off
+manual deploy without the Git integration is
+`scripts/deploy-wallet-demo.sh <team-scope>`.
 
 ## Run locally
 
