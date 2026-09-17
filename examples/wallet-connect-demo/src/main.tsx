@@ -19,7 +19,7 @@ import "./styles.css";
 // - Phantom is listed with readyState NotDetected. Choosing it turns the
 //   header button into Connect, and pressing Connect opens phantom.app (the
 //   provider's default reaction to a wallet that is not ready); App.tsx
-//   explains this. On iOS Safari both entries are Loadable instead and
+//   explains this. In an iPhone browser both entries are Loadable instead and
 //   redirect to the wallet app's in-app browser.
 // - Solflare is "loadable" without an extension: choosing it opens Solflare's
 //   hosted web wallet in the page. The network must be pinned to devnet or the

@@ -6,8 +6,9 @@ registered as fallback entries so the picker is never empty. In a desktop
 browser with no wallet installed it still lists both: choosing Phantom turns
 the header button into **Connect**, and pressing it opens phantom.app (the
 page says so); choosing Solflare opens Solflare's hosted web wallet, pinned to
-devnet. On iOS Safari choosing either entry redirects to that wallet app's
-in-app browser through a universal link. On Android mobile web the picker also
+devnet. On an iPhone (any iOS browser outside a wallet's in-app browser)
+choosing either entry redirects to that wallet app's in-app browser through a
+universal link. On Android mobile web the picker also
 offers Mobile Wallet Adapter, which hands off to an installed wallet app. An
 installed wallet of the same name replaces its fallback entry. The example
 does not ship a private key, custody funds, or request mainnet access.
