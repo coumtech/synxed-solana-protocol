@@ -2,12 +2,14 @@
 
 The open-source browser example uses Solana Wallet Adapter and automatically
 discovers installed Wallet Standard wallets. Phantom and Solflare are also
-registered as fallback entries so the picker is never empty: with no wallet
-installed it still lists both, choosing an uninstalled wallet turns the header
-button into **Connect** and pressing it opens that wallet's website (the page
-says so), and Solflare can open its web wallet directly. An installed wallet of
-the same name replaces its fallback entry. The example does not ship a private
-key, custody funds, or request mainnet access.
+registered as fallback entries so the picker is never empty. With no wallet
+installed it still lists both: choosing Phantom turns the header button into
+**Connect**, and pressing it opens phantom.app (the page says so); choosing
+Solflare opens Solflare's hosted web wallet inside the page, pinned to devnet.
+On Android mobile web the picker also offers Mobile Wallet Adapter, which hands
+off to an installed wallet app. An installed wallet of the same name replaces
+its fallback entry. The example does not ship a private key, custody funds, or
+request mainnet access.
 
 ## Hosted demo
 
@@ -80,6 +82,10 @@ only and can be cleared through normal browser storage controls.
 - Recipient addresses are validated by the shared SDK before wallet approval.
 - The demo defaults to the public devnet program and checks the RPC genesis
   hash before wallet approval as well as during reconciliation.
+- Choosing Solflare without its extension embeds Solflare's hosted wallet UI
+  (connect.solflare.com) in the page. It appears only after you pick it, is
+  configured for devnet, and signs inside Solflare's own frame; the demo never
+  sees key material.
 - System-transfer mode is not available in the browser example because it does
   not provide the program's idempotency record.
 - This is a public protocol demonstration, not SYNXED's private attribution,

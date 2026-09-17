@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Adapter } from "@solana/wallet-adapter-base";
+import { WalletAdapterNetwork, type Adapter } from "@solana/wallet-adapter-base";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react";
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
@@ -11,12 +11,22 @@ import "./styles.css";
 
 // Installed Wallet Standard wallets are discovered automatically and take
 // precedence: the provider drops a fallback adapter whose name matches a
-// detected wallet, so nothing is listed twice. The fallbacks exist for visitors
-// with no wallet installed. Without them the wallet picker renders only its
-// title and no way forward; with them it offers install links for Phantom and
-// Solflare (the picker opens the wallet's website when an undetected entry is
-// chosen).
-const FALLBACK_WALLETS: Adapter[] = [new PhantomWalletAdapter(), new SolflareWalletAdapter()];
+// detected wallet (logging a console warning that the adapter "can be
+// removed"; that warning is expected), so nothing is listed twice.
+//
+// The fallbacks exist for visitors with no wallet installed. Without them the
+// wallet picker renders only its title and no way forward. With them:
+// - Phantom is listed as "not detected". Choosing it turns the header button
+//   into Connect, and pressing Connect opens phantom.app (the provider's
+//   default reaction to a wallet that is not ready); App.tsx explains this.
+// - Solflare is "loadable" without an extension: choosing it opens Solflare's
+//   hosted web wallet in the page. The network must be pinned to devnet or the
+//   hosted wallet defaults to mainnet and cannot sign the demo's devnet
+//   transaction. The app enforces devnet for every RPC anyway.
+const FALLBACK_WALLETS: Adapter[] = [
+  new PhantomWalletAdapter(),
+  new SolflareWalletAdapter({ network: WalletAdapterNetwork.Devnet }),
+];
 
 const root = document.getElementById("root");
 if (root === null) {
