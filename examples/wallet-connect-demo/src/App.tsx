@@ -149,11 +149,18 @@ export function App(): React.JSX.Element {
       persistEvidence(signature, reconciliation);
       setRun({ status: "matched", signature, reconciliation });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Settlement failed.";
+      // Some wallets throw errors with an empty message (for example a chain
+      // mismatch); never show an empty red box.
+      const message =
+        error instanceof Error && error.message ? error.message : "Settlement failed.";
       // A wallet still set to mainnet cannot act on a devnet blockhash; the
-      // wallet's own error wording varies, so add the likely cause.
-      const hint = /expired|blockhash|simulat/i.test(message)
-        ? " Check that your wallet is on devnet (Phantom: Settings → Developer Settings → Testnet Mode)."
+      // wallet's own error wording varies, so add the likely cause. Program
+      // and preflight rejections mention the instruction and are not this.
+      const wrongNetwork =
+        /blockhash|expired|block height exceeded/i.test(message) &&
+        !/custom program error|Error processing Instruction/i.test(message);
+      const hint = wrongNetwork
+        ? " Check that your wallet is on devnet (Phantom: Settings → Developer Settings → Testnet Mode, then choose Solana Devnet)."
         : "";
       setRun({ status: "error", message: `${message}${hint}` });
     }
@@ -192,7 +199,7 @@ export function App(): React.JSX.Element {
             Install any Wallet Standard browser wallet, for example{" "}
             <a href="https://solana.com/wallets" target="_blank" rel="noreferrer">Phantom or Solflare</a>,
             and switch it to <strong>devnet</strong> (Phantom: Settings → Developer Settings →
-            Testnet Mode).
+            Testnet Mode, then choose Solana Devnet).
           </li>
           <li>
             Fund that wallet with free devnet SOL at{" "}

@@ -11,7 +11,7 @@ A build of `main` is hosted at
 reference devnet program and the public devnet RPC; nothing in the bundle is
 secret. To use it you need a Wallet Standard browser wallet (Phantom, Solflare,
 and others) switched to **devnet** (Phantom: Settings → Developer Settings →
-Testnet Mode) and funded from <https://faucet.solana.com> (about 0.022 SOL is
+Testnet Mode, then choose Solana Devnet) and funded from <https://faucet.solana.com> (about 0.022 SOL is
 spent per settlement). On an iPhone, open the page inside your wallet app's
 built-in browser; on Android, Chrome hands off to an installed wallet app
 through Mobile Wallet Adapter. Evidence of a successful settlement stays in
