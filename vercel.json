@@ -3,6 +3,5 @@
   "framework": null,
   "installCommand": "bun install --frozen-lockfile",
   "buildCommand": "bun run --cwd examples/wallet-connect-demo build",
-  "outputDirectory": "examples/wallet-connect-demo/dist",
-  "github": { "silent": true }
+  "outputDirectory": "examples/wallet-connect-demo/dist"
 }

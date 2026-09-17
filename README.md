@@ -188,7 +188,9 @@ docs/                         architecture, protocol spec, integration guide,
   reconciliation are implemented in the public TypeScript SDK; see
   [docs/payout-ledger.md](docs/payout-ledger.md)
 - Wallet Standard-compatible browser flow using the shared instruction builder;
-  see [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md)
+  try it live at <https://synxed-solana-protocol-wallet-conne.vercel.app/>
+  (devnet wallet + faucet SOL required), see
+  [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md)
 - Classic SPL Token settlement for a configured six-decimal stablecoin mint,
   with checked transfers and finalized ledger reconciliation
 

@@ -4,6 +4,10 @@
 # bundle is secret (program id + public devnet RPC only) and the demo never
 # touches the private SYNXED product or its repository.
 #
+# The normal path is the Git-connected Vercel project (imported from this
+# repository; see docs/wallet-connect-demo.md). This script is the manual
+# alternative for a one-off deploy or a team without the Git integration.
+#
 # Usage:
 #   scripts/deploy-wallet-demo.sh <vercel-team-scope> [project-name]
 # Example:
@@ -24,18 +28,25 @@ DEMO="$ROOT/examples/wallet-connect-demo"
 command -v bun >/dev/null 2>&1 || { echo "error: bun is required" >&2; exit 2; }
 command -v vercel >/dev/null 2>&1 || { echo "error: vercel CLI is required (npm i -g vercel)" >&2; exit 2; }
 
+# The RPC URL is inlined into a public bundle. Refuse anything that looks
+# like a keyed endpoint unless the maintainer explicitly opts in.
+case "$RPC_URL" in
+  *\?*|*api-key*|*api_key*|*apikey*)
+    if [ "${ALLOW_CUSTOM_RPC:-0}" != "1" ]; then
+      echo "error: VITE_SOLANA_RPC_URL looks like a keyed endpoint and would be published; set ALLOW_CUSTOM_RPC=1 to override" >&2
+      exit 2
+    fi
+    ;;
+esac
+
 echo "building demo for program $PROGRAM_ID via $RPC_URL..."
 (cd "$ROOT" && bun install --frozen-lockfile >/dev/null)
 (cd "$DEMO" && VITE_SETTLEMENT_PROGRAM_ID="$PROGRAM_ID" VITE_SOLANA_RPC_URL="$RPC_URL" bun run build >/dev/null)
 grep -q "$PROGRAM_ID" "$DEMO"/dist/assets/*.js || { echo "error: built bundle does not contain the program id" >&2; exit 2; }
 
-cd "$DEMO"
-if [ ! -f .vercel/project.json ]; then
-  vercel project add "$PROJECT" --scope "$SCOPE" >/dev/null 2>&1 || true
-  vercel link --yes --scope "$SCOPE" --project "$PROJECT"
-fi
-# Deploy the prebuilt static output; the link is copied alongside it so the
-# CLI targets the linked project rather than creating one named "dist".
-rm -rf dist/.vercel && cp -R .vercel dist/.vercel
-trap 'rm -rf "$DEMO/dist/.vercel"' EXIT
-vercel deploy dist --prod --yes --scope "$SCOPE"
+# `project add` exits 0 when the project already exists; any other failure
+# (auth, permissions, quota) must stop the script rather than fall through.
+vercel project add "$PROJECT" --scope "$SCOPE"
+# Deploy the prebuilt static output straight to the named project; no local
+# link file is created and no framework build runs on Vercel.
+vercel deploy "$DEMO/dist" --prod --yes --scope "$SCOPE" --project "$PROJECT"
