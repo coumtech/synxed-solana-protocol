@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import {
+  WalletMultiButton,
+  useWalletModal,
+} from "@solana/wallet-adapter-react-ui";
 import { PublicKey } from "@solana/web3.js";
 import type { SettlementReconciliation } from "@coumtech/synxed-solana-protocol/ledger";
 import type {
@@ -56,6 +59,7 @@ type RunState =
 export function App(): React.JSX.Element {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
+  const { setVisible: openWalletPicker } = useWalletModal();
   const [recipients, setRecipients] =
     useState<RecipientFields>(INITIAL_RECIPIENTS);
   const [run, setRun] = useState<RunState>({ status: "idle" });
@@ -64,7 +68,13 @@ export function App(): React.JSX.Element {
   async function settle(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (publicKey === null) {
-      setRun({ status: "error", message: "Connect a devnet wallet first." });
+      // Never leave a click unanswered: explain and open the wallet picker.
+      setRun({
+        status: "error",
+        message:
+          "No wallet connected yet. Pick a Solana wallet, switch it to devnet, and fund it from the faucet, then try again.",
+      });
+      openWalletPicker(true);
       return;
     }
 
@@ -163,6 +173,30 @@ export function App(): React.JSX.Element {
         </div>
       </section>
 
+      <section className="howto" aria-label="How to try the demo">
+        <p className="eyebrow">Try it in three steps</p>
+        <ol>
+          <li>
+            Install a Solana browser wallet (for example{" "}
+            <a href="https://phantom.com/download" target="_blank" rel="noreferrer">Phantom</a>)
+            and switch it to <strong>Devnet</strong> in its settings.
+          </li>
+          <li>
+            Fund that wallet with free devnet SOL at{" "}
+            <a href="https://faucet.solana.com" target="_blank" rel="noreferrer">faucet.solana.com</a>{" "}
+            (0.05 SOL is plenty; the settlement uses about 0.022).
+          </li>
+          <li>
+            Press <strong>Select Wallet</strong>, then <strong>Sign &amp; settle</strong>. The
+            transaction and its reconciliation appear below.
+          </li>
+        </ol>
+        <p className="howto-note">
+          On a phone, open this page inside your wallet app's built-in browser; mobile
+          browsers cannot reach a wallet extension.
+        </p>
+      </section>
+
       <section className="split-grid" aria-label="Default revenue split">
         {SHARE_CONFIG.map((share, index) => (
           <article className="share-card" key={share.label}>
@@ -218,11 +252,26 @@ export function App(): React.JSX.Element {
             <button
               className="settle-button"
               type="submit"
-              disabled={connectedAddress === null || run.status === "working"}
+              disabled={run.status === "working"}
             >
-              {run.status === "working" ? "Working…" : "Sign & settle 0.02 SOL"}
+              {run.status === "working"
+                ? "Working…"
+                : connectedAddress === null
+                  ? "Connect a wallet to settle"
+                  : "Sign & settle 0.02 SOL"}
             </button>
           </div>
+          {run.status === "working" || run.status === "error" ? (
+            <p className={`status inline ${run.status}`} role="status">{run.message}</p>
+          ) : null}
+          {run.status === "matched" ? (
+            <p className="status inline matched" role="status">
+              Settled and reconciled: MATCH.{" "}
+              <a href={explorerTxUrl(run.signature)} target="_blank" rel="noreferrer">
+                Open transaction in Explorer ↗
+              </a>
+            </p>
+          ) : null}
         </form>
 
         <aside className="evidence-panel" aria-live="polite">

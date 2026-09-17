@@ -4,6 +4,22 @@ The open-source browser example uses Solana Wallet Adapter and automatically
 discovers installed Wallet Standard wallets. It does not ship a private key,
 custody funds, or request mainnet access.
 
+## Hosted demo
+
+A build of `main` is hosted at
+<https://synxed-solana-protocol-wallet-conne.vercel.app/>. It targets the
+reference devnet program and the public devnet RPC; nothing in the bundle is
+secret. To use it you need a Solana browser wallet switched to **devnet** and
+funded from <https://faucet.solana.com> (about 0.022 SOL is spent per
+settlement). On a phone, open the page inside your wallet app's built-in
+browser. Evidence of a successful settlement stays in your browser's local
+storage only.
+
+The site is a Vercel project imported from this repository; every merge to
+`main` redeploys it. The root `vercel.json` carries the install, build, and
+output settings for an import at the repository root. A one-off manual deploy
+is `scripts/deploy-wallet-demo.sh <team-scope>`.
+
 ## Run locally
 
 ```bash
