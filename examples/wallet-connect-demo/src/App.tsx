@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { WalletReadyState } from "@solana/wallet-adapter-base";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import {
   WalletMultiButton,
@@ -59,12 +60,20 @@ type RunState =
 
 export function App(): React.JSX.Element {
   const { connection } = useConnection();
-  const { publicKey, sendTransaction } = useWallet();
+  const { publicKey, sendTransaction, wallet } = useWallet();
   const { setVisible: openWalletPicker } = useWalletModal();
   const [recipients, setRecipients] =
     useState<RecipientFields>(INITIAL_RECIPIENTS);
   const [run, setRun] = useState<RunState>({ status: "idle" });
   const connectedAddress = publicKey?.toBase58() ?? null;
+  // The picker lists Phantom and Solflare even when they are not installed.
+  // Choosing an uninstalled wallet turns the header button into "Connect", and
+  // pressing it opens the wallet's website; say so instead of leaving that
+  // button unexplained.
+  const uninstalledWallet =
+    wallet !== null && wallet.readyState === WalletReadyState.NotDetected
+      ? wallet.adapter
+      : null;
 
   // The "connect a wallet first" prompt must disappear the moment a wallet
   // connects, otherwise the page contradicts itself.
@@ -175,6 +184,17 @@ export function App(): React.JSX.Element {
         </a>
         <WalletMultiButton />
       </header>
+
+      {uninstalledWallet !== null ? (
+        <p className="wallet-notice">
+          {uninstalledWallet.name} is not installed in this browser. Press{" "}
+          <strong>Connect</strong> to open{" "}
+          <a href={uninstalledWallet.url} target="_blank" rel="noreferrer">
+            {uninstalledWallet.url.replace(/^https?:\/\//, "")}
+          </a>
+          , install it, then reload this page.
+        </p>
+      ) : null}
 
       <section className="hero" aria-labelledby="page-title">
         <div>

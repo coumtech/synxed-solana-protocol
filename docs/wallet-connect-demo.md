@@ -1,8 +1,13 @@
 # Wallet-connect settlement demo
 
 The open-source browser example uses Solana Wallet Adapter and automatically
-discovers installed Wallet Standard wallets. It does not ship a private key,
-custody funds, or request mainnet access.
+discovers installed Wallet Standard wallets. Phantom and Solflare are also
+registered as fallback entries so the picker is never empty: with no wallet
+installed it still lists both, choosing an uninstalled wallet turns the header
+button into **Connect** and pressing it opens that wallet's website (the page
+says so), and Solflare can open its web wallet directly. An installed wallet of
+the same name replaces its fallback entry. The example does not ship a private
+key, custody funds, or request mainnet access.
 
 ## Hosted demo
 
