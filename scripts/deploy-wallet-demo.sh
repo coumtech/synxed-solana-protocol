@@ -5,7 +5,8 @@
 # touches the private SYNXED product or its repository.
 #
 # The normal path is the Git-connected Vercel project (imported from this
-# repository; see docs/wallet-connect-demo.md). This script is the manual
+# repository with Root Directory examples/wallet-connect-demo; see
+# docs/wallet-connect-demo.md). This script is the manual
 # alternative for a one-off deploy or a team without the Git integration.
 #
 # Usage:
