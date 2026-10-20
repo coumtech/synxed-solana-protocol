@@ -27,6 +27,8 @@ dist/
 .idea/
 .vscode/
 *.swp
+# Editor multi-root workspace files can list unrelated local folders
+*.code-workspace
 
 # Logs
 *.log
