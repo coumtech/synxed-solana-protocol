@@ -16,9 +16,12 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -47,12 +50,13 @@ jobs:
       - name: Build wallet-connect demo
         run: bun run build:wallet
 
-      # The npm package must work under plain Node, the minimum supported
-      # version, not only under Bun.
+      # The npm package must work under plain Node, not only under Bun. This
+      # pins the minimum the package declares (engines.node in
+      # sdk/typescript/package.json); the publish workflow tests Node 24.
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "22.12.0"
 
       - name: Build and smoke-test the npm package
         run: bun run smoke:sdk

@@ -1,6 +1,6 @@
 # @coumtech/synxed-solana-protocol
 
-TypeScript client for the SYNXED Solana settlement protocol: an Open source,
+TypeScript client for the SYNXED Solana settlement protocol: an open source,
 Solana native revenue settlement rail for gaming and audio. A billable event,
 for example an in-game audio-ad impression, becomes a deterministic revenue
 split that is settled on chain in one atomic, idempotent instruction and then
@@ -14,13 +14,14 @@ reconciled against finalized chain evidence.
 npm install @coumtech/synxed-solana-protocol @solana/web3.js
 ```
 
-`@solana/web3.js` 1.x is a peer dependency, so the client shares your
-application's copy. The package is an ES module and needs Node 22 or later
-(or a modern bundler).
+`@solana/web3.js` (1.99 or later in the 1.x line) is a peer dependency, so the
+client shares your application's copy. The package is an ES module and needs
+Node 22.12 or later (or a modern bundler).
 
 ## Settle and reconcile one event
 
 ```ts
+import { readFileSync } from "node:fs";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import {
   DEVNET_RPC_URL,
@@ -33,7 +34,10 @@ import { assertLedgerCluster, reconcileSettlementN } from "@coumtech/synxed-sola
 // Reference devnet deployment. Deploy your own copy to trust exact bytecode.
 const programId = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
 const connection = new Connection(DEVNET_RPC_URL, "confirmed");
-const payer = Keypair.generate(); // fund it on devnet first
+// A funded devnet keypair, loaded from a file you keep out of version control.
+const payer = Keypair.fromSecretKey(
+  Uint8Array.from(JSON.parse(readFileSync("payer.json", "utf8")) as number[]),
+);
 
 const request: SettlementRequestN = {
   eventId: "impression-0001", // one id per billable event; the chain settles it once
@@ -57,7 +61,7 @@ const submission = await submitSettlementN({
   connection,
   payer,
   request,
-  programId, // omit for the system-transfer fallback without idempotency
+  programId, // program mode: on-chain split check and per-event idempotency
   lamportsPerAtomicUnit: 1_000n, // native SOL stand-in: 20_000 units = 0.02 SOL
 });
 
@@ -80,8 +84,8 @@ instead of producing a ledger entry.
 
 | Import | Contents |
 | --- | --- |
-| `@coumtech/synxed-solana-protocol` | Everything below, re-exported |
-| `@coumtech/synxed-solana-protocol/types` | Request and result types, `ProtocolError` |
+| `@coumtech/synxed-solana-protocol` | Everything below, plus the split math and instruction codec (`computeSettlementN`, `encodeSettleNData`, `buildSettleNInstruction`, `eventIdSeed`, `findSettlementRecordPda`) |
+| `@coumtech/synxed-solana-protocol/types` | Request and result types, protocol constants, `ProtocolError` |
 | `@coumtech/synxed-solana-protocol/client` | Transaction builders and submitters, including SPL Token settlement |
 | `@coumtech/synxed-solana-protocol/ledger` | Payout ledger types, reconciliation, pool allocation |
 
@@ -94,8 +98,8 @@ for a browser or hardware wallet to sign.
   to the gross amount. Invalid splits are rejected, never renormalized.
 - **Per-event idempotency.** In program mode the chain refuses to settle the
   same event id twice.
-- **Atomic settlement.** One instruction pays every share or the whole
-  transaction reverts.
+- **Atomic settlement.** In program mode one instruction pays every share or
+  the whole transaction reverts.
 
 ## Documentation
 

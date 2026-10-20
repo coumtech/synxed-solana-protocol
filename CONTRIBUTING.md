@@ -43,32 +43,49 @@ sources for the tests and examples in this repository and stays
 `bun run build:sdk` compiles it into `sdk/typescript/dist/package` with a
 generated manifest, and `bun run smoke:sdk` packs that directory, installs the
 tarball into a fresh Node project, runs it, and type-checks a consumer and the
-package README example. CI runs the smoke test on every pull request.
+package README example. CI runs the smoke test on every pull request on Node
+22.12.0, the minimum the package declares. The smoke test resolves the
+consumer's dependencies fresh from the registry on purpose, to test what users
+get, so an upstream release can break it without a change in this repository.
+
+The **Publish SDK** workflow has three jobs. `package` builds and packs the
+tarball from the lockfile with lifecycle scripts disabled and refuses a
+version that is already on npm. `verify` runs the typecheck, the TypeScript
+tests, and the smoke test against that exact tarball. `publish` checks the
+tarball's sha256 and manifest and publishes it through npm trusted publishing
+with a provenance attestation. No npm token is stored in GitHub.
+
+One-time setup, in repository and npm settings, before the first release:
+
+1. Create the GitHub environment `npm-publish` (Settings, Environments) with
+   deployment branches limited to `main` and a required reviewer. Do this
+   before the workflow first runs: a run that names a missing environment
+   creates it without protection. The check for `main` inside the workflow
+   file only catches mistakes, because a branch can edit its own copy.
+2. Publish the first version by hand. Trusted publishing is configured from
+   the package's settings page, so the package must exist first. Run the
+   workflow as a dry run, download its `sdk-tarball` artifact, compare its
+   sha256 with the run summary, then on a maintainer machine run `npm login`
+   and `npm publish --access public <tarball>`. This one version carries no
+   provenance.
+3. On npmjs.com, add a trusted publisher to the package: GitHub Actions,
+   repository `coumtech/synxed-solana-protocol`, workflow `publish-sdk.yml`,
+   environment `npm-publish`. Then set the package's publishing access to
+   require two-factor authentication and disallow tokens.
+
+Each later release:
 
 1. Bump `version` in `sdk/typescript/package.json` in a pull request. While the
    version is 0.x, a minor bump may change the API. Merge it after review.
-2. Run the **Publish SDK** workflow from `main` with *publish* unchecked. It
-   repeats the checks, refuses a version that is already on npm, and runs
-   `npm publish --dry-run`.
-3. Run it again with *publish* checked. The package is published with an npm
-   provenance attestation that links it to the workflow run and the commit.
-
-Publish through the workflow, not from a local machine, so every version
-carries provenance.
-
-Authentication: the workflow uses npm trusted publishing when it is
-configured on npmjs.com for this repository, the workflow file
-`publish-sdk.yml`, and the environment `npm-publish`. Trusted publishing is
-set up from the package's settings page, so the first release instead uses an
-`NPM_TOKEN` secret stored in the `npm-publish` GitHub environment: a granular
-npm access token with read and write access to `@coumtech` packages. Once
-trusted publishing is configured, delete the secret and revoke the token.
+2. Run **Publish SDK** from `main` with *publish* unchecked, a dry run.
+3. Run it again with *publish* checked and approve the `npm-publish`
+   deployment.
 
 ## Secrets
 
 - Never commit `.env`, keypairs, or program deploy keys. Use `.env.example`.
 - Demo keypairs stay in `.keys/` on your machine (gitignored).
-- CI must not hold production or mainnet keys. The current release targets **devnet only**.
+- CI must not hold Solana production or mainnet keys, and stores no npm token: SDK releases use npm trusted publishing. The current release targets **devnet only**.
 
 ## Code standards
 

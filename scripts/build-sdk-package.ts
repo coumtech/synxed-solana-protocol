@@ -6,9 +6,9 @@
  * sources so the tests and examples in this repository run the code directly.
  * It is marked private so it can never be published as it is. This script
  * compiles the sources to ES modules with type declarations and writes a
- * generated manifest whose exports point at the compiled files. Every other
- * manifest field is copied from the workspace package, which stays the single
- * source of truth for the name, version, and dependencies.
+ * generated manifest: COPIED_FIELDS, the dependency maps, and publishConfig
+ * come from the workspace package after validation; main, types, exports, and
+ * files are generated; private, scripts, and devDependencies are dropped.
  *
  * Usage: bun run build:sdk
  */
@@ -26,6 +26,9 @@ import { join, relative, resolve } from "node:path";
 export const REPO_ROOT = resolve(import.meta.dir, "..");
 export const SDK_DIR = join(REPO_ROOT, "sdk", "typescript");
 export const PACKAGE_DIR = join(SDK_DIR, "dist", "package");
+
+/** The only package this repository publishes. The publish workflow checks it too. */
+export const PACKAGE_NAME = "@coumtech/synxed-solana-protocol";
 
 /** Files allowed in the published package. Anything else fails the build. */
 export const ALLOWED_PACKAGE_FILE =
@@ -48,9 +51,18 @@ const COPIED_FIELDS = [
 ] as const;
 
 const EXPORT_SOURCE = /^\.\/src\/([a-z][a-z0-9-]*)\.ts$/;
-const LOCAL_SPEC = /^(?:workspace|file|link|portal):/;
+/** Release versions only: no prerelease tags or build metadata. */
+const RELEASE_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+/**
+ * Dependency specs must be plain registry ranges: exact, caret, or tilde on a
+ * full version. Git, URL, path, alias, workspace, and catalog specs are
+ * rejected because they bypass the registry or cannot be resolved by npm.
+ */
+const REGISTRY_RANGE = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const EXPECTED_PUBLISH_CONFIG = JSON.stringify({ access: "public", provenance: true });
 
 type Manifest = Record<string, unknown>;
+type ExportEntry = { types: string; default: string } | string;
 
 function fail(message: string): never {
   throw new Error(`build-sdk-package: ${message}`);
@@ -66,11 +78,10 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
 function dependencyMap(value: unknown, what: string): Record<string, string> {
   const map: Record<string, string> = {};
   for (const [name, spec] of Object.entries(asRecord(value, what))) {
-    if (typeof spec !== "string" || spec === "") {
-      fail(`${what}.${name} must be a version range`);
-    }
-    if (LOCAL_SPEC.test(spec)) {
-      fail(`${what}.${name} uses a local protocol (${spec}) that npm cannot resolve`);
+    if (typeof spec !== "string" || !REGISTRY_RANGE.test(spec)) {
+      fail(
+        `${what}.${name} must be a registry version range such as ^1.2.3, got ${JSON.stringify(spec)}`,
+      );
     }
     map[name] = spec;
   }
@@ -94,6 +105,12 @@ export function publishManifest(source: Manifest): Manifest {
   if (source.type !== "module") {
     fail('the package must be "type": "module"');
   }
+  if (source.name !== PACKAGE_NAME) {
+    fail(`the package name must be ${PACKAGE_NAME}, got ${JSON.stringify(source.name)}`);
+  }
+  if (typeof source.version !== "string" || !RELEASE_VERSION.test(source.version)) {
+    fail(`the version must be a release version such as 1.2.3, got ${JSON.stringify(source.version)}`);
+  }
 
   const manifest: Manifest = {};
   for (const field of COPIED_FIELDS) {
@@ -103,7 +120,7 @@ export function publishManifest(source: Manifest): Manifest {
     manifest[field] = source[field];
   }
 
-  const exportsOut: Record<string, unknown> = {};
+  const exportsOut: Record<string, ExportEntry> = {};
   for (const [subpath, target] of Object.entries(asRecord(source.exports, "exports"))) {
     const match = typeof target === "string" ? EXPORT_SOURCE.exec(target) : null;
     const module = match?.[1];
@@ -112,7 +129,8 @@ export function publishManifest(source: Manifest): Manifest {
     }
     exportsOut[subpath] = { types: `./${module}.d.ts`, default: `./${module}.js` };
   }
-  if (exportsOut["."] === undefined) {
+  const root = exportsOut["."];
+  if (root === undefined || typeof root === "string") {
     fail('exports must include "."');
   }
   exportsOut["./package.json"] = "./package.json";
@@ -124,15 +142,30 @@ export function publishManifest(source: Manifest): Manifest {
       fail(`${name} is both a dependency and a peer dependency`);
     }
   }
+  const publishConfig = asRecord(source.publishConfig, "publishConfig");
+  if (JSON.stringify(publishConfig) !== EXPECTED_PUBLISH_CONFIG) {
+    fail(`publishConfig must be exactly ${EXPECTED_PUBLISH_CONFIG}`);
+  }
 
-  manifest.main = "./index.js";
-  manifest.types = "./index.d.ts";
+  manifest.main = root.default;
+  manifest.types = root.types;
   manifest.exports = exportsOut;
   manifest.files = ["*.js", "*.js.map", "*.d.ts", "README.md", "LICENSE"];
   manifest.dependencies = dependencies;
   manifest.peerDependencies = peerDependencies;
-  manifest.publishConfig = asRecord(source.publishConfig, "publishConfig");
+  manifest.publishConfig = publishConfig;
   return manifest;
+}
+
+/** Every path the manifest points at: main, types, and each export target. */
+function manifestTargets(manifest: Manifest): string[] {
+  const targets: unknown[] = [manifest.main, manifest.types];
+  for (const entry of Object.values(asRecord(manifest.exports, "exports"))) {
+    targets.push(...(typeof entry === "string" ? [entry] : Object.values(asRecord(entry, "export"))));
+  }
+  return targets.map((target) =>
+    typeof target === "string" ? target : fail(`manifest target ${String(target)} is not a path`),
+  );
 }
 
 /** Compile, assemble, and check sdk/typescript/dist/package. */
@@ -146,7 +179,7 @@ export function buildSdkPackage(): Manifest {
     { cwd: REPO_ROOT, stdio: "inherit" },
   );
   if (tsc.status !== 0) {
-    fail(`tsc exited with ${tsc.status ?? tsc.signal ?? "an unknown status"}`);
+    fail(`tsc failed: ${tsc.error?.message ?? `exit ${tsc.status ?? tsc.signal ?? "unknown"}`}`);
   }
 
   copyFileSync(join(SDK_DIR, "README.md"), join(PACKAGE_DIR, "README.md"));
@@ -156,17 +189,14 @@ export function buildSdkPackage(): Manifest {
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
 
-  for (const entry of Object.values(asRecord(manifest.exports, "exports"))) {
-    const targets = typeof entry === "string" ? [entry] : Object.values(asRecord(entry, "export"));
-    for (const target of targets) {
-      if (typeof target !== "string" || !existsSync(join(PACKAGE_DIR, target))) {
-        fail(`export target ${String(target)} was not produced`);
-      }
+  for (const target of manifestTargets(manifest)) {
+    if (!existsSync(join(PACKAGE_DIR, target))) {
+      fail(`manifest target ${target} was not produced`);
     }
   }
-  for (const file of readdirSync(PACKAGE_DIR)) {
-    if (!ALLOWED_PACKAGE_FILE.test(file)) {
-      fail(`unexpected file in the package: ${file}`);
+  for (const entry of readdirSync(PACKAGE_DIR, { withFileTypes: true })) {
+    if (!entry.isFile() || !ALLOWED_PACKAGE_FILE.test(entry.name)) {
+      fail(`unexpected ${entry.isFile() ? "file" : "entry"} in the package: ${entry.name}`);
     }
   }
   return manifest;
