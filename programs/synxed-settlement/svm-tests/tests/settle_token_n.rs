@@ -1,9 +1,7 @@
 //! End-to-end classic SPL Token settlement against the compiled program.
 
-use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::rent::Rent;
 use solana_sdk::signature::Signer;
 use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
 use synxed_settlement_svm_tests::{event, Fixture, TOKEN_PROGRAM_ID};
@@ -147,31 +145,95 @@ fn rejects_token_2022_and_any_other_token_program() {
 
 #[test]
 fn rejects_token_accounts_not_owned_by_the_token_program() {
+    // Each account keeps a valid token layout but is re-owned by the system
+    // program, so only the program's owner check can reject it.
+    for target in ["source", "mint", "destination"] {
+        let (mut fixture, mint, source, recipients) = token_fixture();
+        let forged = match target {
+            "source" => source,
+            "mint" => mint,
+            _ => recipients[0],
+        };
+        let mut account = fixture.svm.get_account(&forged).expect("account exists");
+        account.owner = SYSTEM_PROGRAM_ID;
+        fixture
+            .svm
+            .set_account(forged, account)
+            .expect("re-own the account");
+        let err = fixture
+            .settle_token_n(event(66), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
+            .expect_err("an account outside the token program must fail");
+        assert!(err.contains("IllegalOwner"), "{target}: got {err}");
+    }
+}
+
+#[test]
+fn rejects_a_wrong_token_account_count() {
     let (mut fixture, mint, source, recipients) = token_fixture();
-    // A destination with a valid token-account layout but owned by the system
-    // program is not a token account the token program would honour.
-    let mut data = vec![0u8; 165];
-    data[0..32].copy_from_slice(mint.as_ref());
-    data[32..64].copy_from_slice(Pubkey::new_unique().as_ref());
-    data[108] = 1;
-    fixture
-        .svm
-        .set_account(
-            recipients[0],
-            Account {
-                lamports: Rent::default().minimum_balance(data.len()),
-                data,
-                owner: SYSTEM_PROGRAM_ID,
-                executable: false,
-                rent_epoch: 0,
-            },
-        )
-        .expect("inject a forged destination");
+    let payer = fixture.payer.insecure_clone();
+
+    let mut extra = fixture.settle_token_n_instruction(
+        event(69),
+        AMOUNT,
+        DECIMALS,
+        &BPS,
+        source,
+        &recipients,
+        mint,
+    );
+    extra
+        .accounts
+        .push(AccountMeta::new(Pubkey::new_unique(), false));
     let err = fixture
-        .settle_token_n(event(66), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
-        .expect_err("a destination outside the token program must fail");
+        .send(&[extra], &[&payer], &payer.pubkey())
+        .expect_err("an extra trailing account must fail");
+    assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+
+    let missing = fixture.settle_token_n_instruction(
+        event(69),
+        AMOUNT,
+        DECIMALS,
+        &BPS,
+        source,
+        &recipients[..3],
+        mint,
+    );
+    let err = fixture
+        .send(&[missing], &[&payer], &payer.pubkey())
+        .expect_err("a missing destination must fail");
+    assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+}
+
+#[test]
+fn rejects_a_read_only_token_destination() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let mut ix = fixture.settle_token_n_instruction(
+        event(70),
+        AMOUNT,
+        DECIMALS,
+        &BPS,
+        source,
+        &recipients,
+        mint,
+    );
+    ix.accounts[2].is_writable = false;
+    let payer = fixture.payer.insecure_clone();
+    let err = fixture
+        .send(&[ix], &[&payer], &payer.pubkey())
+        .expect_err("a read-only destination must fail");
+    assert!(err.contains("InvalidAccountData"), "got {err}");
+}
+
+#[test]
+fn rejects_the_record_as_a_token_destination() {
+    // The record is not a token account, so the owner check rejects it before
+    // the program's explicit record comparison is reached.
+    let (mut fixture, mint, source, mut recipients) = token_fixture();
+    recipients[0] = fixture.record_pda(&event(71));
+    let err = fixture
+        .settle_token_n(event(71), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
+        .expect_err("the record cannot be a destination");
     assert!(err.contains("IllegalOwner"), "got {err}");
-    assert_eq!(fixture.token_balance(&source), 100_000, "nothing moved");
 }
 
 #[test]

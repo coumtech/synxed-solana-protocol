@@ -198,7 +198,7 @@ fn skips_zero_lamport_shares_without_touching_new_accounts() {
 }
 
 #[test]
-fn rejects_a_zero_amount_before_paying_anyone() {
+fn rejects_a_zero_amount() {
     let mut f = Fixture::new();
     let recipients = four_recipients(&f);
     let err = f

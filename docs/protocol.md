@@ -185,8 +185,8 @@ cannot be settled twice.
 The record is created as transfer + allocate + assign rather than a single
 `create_account`. `create_account` fails when the target address already
 holds lamports, which would let anyone permanently block an `event_id` by
-parking a small deposit (the rent floor for an empty account, about 0.0009
-SOL) on its PDA before settlement. With the three-step
+parking a small deposit (the rent floor for an empty account, 0.00065024 SOL
+on devnet on 20 October 2026) on its PDA before settlement. With the three-step
 creation, a pre-funded PDA is simply topped up to rent exemption (the payer
 pays only the shortfall), then allocated and assigned under the program's
 signer seeds. Because only the system program can allocate or assign a

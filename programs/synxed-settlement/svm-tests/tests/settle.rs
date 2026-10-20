@@ -209,7 +209,7 @@ fn rejects_a_read_only_record() {
     let record = f.record_pda(&event(11));
     let mut ix = f.settle_instruction(event(11), AMOUNT, BPS, record, true);
     let record_index = ix.accounts.len() - 2;
-    ix.accounts[record_index] = solana_sdk::instruction::AccountMeta::new_readonly(record, false);
+    ix.accounts[record_index].is_writable = false;
     let payer = f.payer.insecure_clone();
     let err = f
         .send(&[ix], &[&payer], &payer.pubkey())

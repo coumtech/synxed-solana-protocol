@@ -72,8 +72,10 @@ console.log(submission.explorerUrl);
 
 - **Scaling:** amounts are modeled as 6-decimal micro-dollars but settled in
   SOL lamports on devnet. `lamportsPerAtomicUnit` (default `1`) converts
-  between the two. Keep each recipient's share above the ~`890880` lamport
-  rent-exempt minimum or transfers to brand-new accounts will fail.
+  between the two. Keep each recipient's share above the rent-exempt
+  minimum for an empty account (0.00065024 SOL on devnet on 20 October 2026;
+  query `getMinimumBalanceForRentExemption(0)`) or transfers to brand-new
+  accounts will fail.
 - **Fallback mode (default):** one `SystemProgram` transfer per nonzero share plus a memo.
   No deployment needed.
 - **Program mode:** pass `programId` and the client sends a single `Settle`
@@ -109,6 +111,10 @@ keys are yours; never commit them.
 
 - Use one `eventId` per billable event. In program mode the chain rejects a
   second settlement of the same id (`AccountAlreadyInitialized`).
+- A duplicate error does not prove that you paid the event: anyone who learns
+  an unsettled event id can settle it first. Before marking the event settled
+  or settling it again, follow the procedure under known limitation 1 in
+  [security-model.md](security-model.md).
 - Recipients are plain system accounts (wallet pubkeys). They do not need
   to sign.
 - Fund the payer with devnet SOL: the demo attempts an RPC airdrop, and

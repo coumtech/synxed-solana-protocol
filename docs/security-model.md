@@ -10,55 +10,63 @@ Report vulnerabilities privately, as described in [SECURITY.md](../SECURITY.md).
 
 ## What is protected
 
-- **Payer funds move only as the split says.** One instruction validates the
-  split and pays every listed recipient, or the whole transaction reverts.
+- **Payer funds move only as the split says.** In program mode one
+  instruction validates the split and pays every listed recipient, or the
+  whole transaction reverts.
 - **One settlement per event id.** A settlement record account marks each
-  event id as settled; the program refuses a second settlement of it.
+  event id as settled; the program refuses a second settlement of it,
+  whichever of its three instructions is used.
 - **Ledger entries come only from matching chain evidence.** The SDK's
-  reconciliation writes a ledger entry only after the transaction is
-  finalized and every instruction field and inner transfer matches the
-  request.
+  `reconcileSettlementN` and `reconcileTokenSettlementN` build ledger entries
+  only from a finalized `SettleN` or `SettleTokenN` transaction that succeeded
+  and whose fields and inner transfers match the request.
 
 ## Actors and what each is trusted with
 
-| Actor | Trusted for | Not trusted for |
+| Actor | Trusted for | Limits |
 | --- | --- | --- |
-| Payer (the integrator's settlement key) | Signing and funding settlements; submitting truthful events, amounts, and recipients | Nothing else: the program verifies the split, not the event |
+| Payer (the integrator's settlement key) | Signing and funding settlements; submitting truthful events, amounts, and recipients | The program verifies the split, not the event |
 | Attribution layer (off-chain, outside this repository) | Deciding which events are billable and who the beneficiaries are | Not involved on chain |
 | Recipients | Nothing; they do not sign | |
-| Any other Solana account holder | Nothing | Can call the program with their own funds (see known limitation 1) |
-| RPC provider | Availability and truthful chain data for submission and reconciliation | See known limitation 5 |
-| Program upgrade authority | Everything: it can replace the program | See known limitation 3 |
-| Browser wallet (wallet demo) | Holding keys and signing | The demo never receives key material |
+| Any other Solana account holder | Nothing | Can call the program with their own funds (known limitation 1) |
+| RPC provider | Availability and truthful chain data for submission and reconciliation | Known limitation 5 |
+| Program upgrade authority | Everything: it can replace the program | Known limitation 3 |
+| Browser wallet (wallet demo) | Holding keys and signing | The demo never receives key material. The reconciled evidence it keeps in the browser's local storage is a convenience copy that the page and the user can edit; reconcile again before relying on it |
 
 ## What the program enforces
 
-Every rule below is checked on chain by `programs/synxed-settlement`. The
-last column names the test in `programs/synxed-settlement/svm-tests/tests`
-that runs the compiled program against it; CI runs the suite on every pull
-request.
+Every rule in the table below is checked on chain by
+`programs/synxed-settlement`. The last column names the test in
+`programs/synxed-settlement/svm-tests/tests` that runs the compiled program
+against it; CI runs the suite on every pull request.
 
 | Rule | Failure | Compiled-program test |
 | --- | --- | --- |
 | 1 to 8 shares | `InvalidInstructionData` | `settle_n.rs`: `rejects_nine_shares_and_zero_shares` |
 | Each share at most 10000 bps and the shares sum to exactly 10000 | `InvalidArgument` | `settle.rs`: `rejects_an_invalid_split_before_paying_anyone`; `settle_n.rs`: `rejects_an_invalid_n_way_split` |
-| Amount greater than zero | `InvalidArgument` | `settle_n.rs`: `rejects_a_zero_amount_before_paying_anyone` |
-| Integer split: floor per share, remainder to the last share, total always equals the amount | Not reachable by construction | `settle.rs` and `settle_n.rs` settlement tests check every payout; host tests in `src/split.rs` cover the arithmetic over a range of amounts up to `u64::MAX`, which uses 128-bit intermediates in a release profile that keeps overflow checks |
-| Exact account list: n + 3 accounts for native settlement, n + 6 for token settlement | `NotEnoughAccountKeys` | `settle.rs`: `rejects_extra_trailing_accounts`; `settle_n.rs`: `rejects_a_recipient_count_that_does_not_match_the_shares` |
+| Amount greater than zero | `InvalidArgument` | `settle_n.rs`: `rejects_a_zero_amount` |
+| Integer split: floor per share, remainder to the last share, total always equals the amount | Not reachable by construction | The settlement tests check every payout; host tests in `src/split.rs` cover amounts up to `u64::MAX`. The per-share product is computed in 128 bits, and the release profile keeps overflow checks on |
+| Exact account list: n + 3 accounts for native settlement, n + 6 for token settlement | `NotEnoughAccountKeys` | `settle.rs`: `rejects_extra_trailing_accounts`; `settle_n.rs`: `rejects_a_recipient_count_that_does_not_match_the_shares`; `settle_token_n.rs`: `rejects_a_wrong_token_account_count` |
 | The payer signs | `MissingRequiredSignature` | `settle.rs`: `rejects_a_payer_that_did_not_sign` |
-| Every recipient and the record are writable | `InvalidAccountData` | `settle_n.rs`: `rejects_a_read_only_recipient_and_a_wrong_system_program`; `settle.rs`: `rejects_a_read_only_record` |
+| Every native recipient, every token destination, and the record are writable | `InvalidAccountData` | `settle_n.rs`: `rejects_a_read_only_recipient_and_a_wrong_system_program`; `settle_token_n.rs`: `rejects_a_read_only_token_destination`; `settle.rs`: `rejects_a_read_only_record` |
 | The system program is the real system program | `IncorrectProgramId` | `settle_n.rs`: `rejects_a_read_only_recipient_and_a_wrong_system_program` |
 | The token program is classic SPL Token; Token-2022 and anything else are rejected | `IncorrectProgramId` | `settle_token_n.rs`: `rejects_token_2022_and_any_other_token_program` |
 | The record is the PDA `["settlement", event_id]` for this program | `InvalidSeeds` | `settle.rs`: `rejects_a_wrong_record_address` |
-| A record this program owns, or any account with data at the record address, means the event is settled | `AccountAlreadyInitialized` | `settle.rs`: `rejects_settling_the_same_event_twice`; `settle_n.rs`: `shares_idempotency_with_the_three_way_instruction` |
+| A record this program owns means the event is settled | `AccountAlreadyInitialized` | `settle.rs`: `rejects_settling_the_same_event_twice`; `settle_n.rs`: `shares_idempotency_with_the_three_way_instruction` |
 | A data-less account at the record address owned by another program is refused | `InvalidAccountData` | `settle.rs`: `rejects_a_record_address_owned_by_another_program` |
 | A pre-funded system account at the record address is topped up to rent exemption instead of blocking the event | Settles normally | `settle.rs`: `survives_a_prefunded_record_address`, `keeps_excess_lamports_on_an_overfunded_record` |
-| No payout to a settlement record, of this event or any other, because nothing could ever withdraw it | `InvalidArgument` | `settle.rs`: `rejects_a_recipient_equal_to_the_record`; `settle_n.rs`: `rejects_the_record_as_any_recipient`, `rejects_another_events_record_as_a_recipient` |
-| Token settlement: the source, the mint, and every destination are owned by the token program | `IllegalOwner` | `settle_token_n.rs`: `rejects_token_accounts_not_owned_by_the_token_program` |
-| Token settlement: the mint is initialized and has the stated decimals | `UninitializedAccount`, `InvalidAccountData` | `settle_token_n.rs`: `rejects_an_uninitialized_mint`, `rejects_wrong_mint_decimals_and_source_as_recipient` |
+| No payout to this event's record or to any record this program already owns, because nothing could ever withdraw it | `InvalidArgument` (native); `IllegalOwner` (token, from the owner check) | `settle.rs`: `rejects_a_recipient_equal_to_the_record`; `settle_n.rs`: `rejects_the_record_as_any_recipient`, `rejects_another_events_record_as_a_recipient`; `settle_token_n.rs`: `rejects_the_record_as_a_token_destination` |
+| Token settlement: the source, the mint, and every destination are owned by the token program | `IllegalOwner` | `settle_token_n.rs`: `rejects_token_accounts_not_owned_by_the_token_program` (each of the three) |
+| Token settlement: the mint is initialized and has the stated decimals | `UninitializedAccount` (from the mint decoder), `InvalidAccountData` | `settle_token_n.rs`: `rejects_an_uninitialized_mint`, `rejects_wrong_mint_decimals_and_source_as_recipient` |
 | Token settlement: the source holds the mint and its owner is the payer | `InvalidAccountData` | `settle_token_n.rs`: `rejects_a_source_that_holds_another_mint`, `rejects_wrong_destination_mint_and_source_authority` |
 | Token settlement: every destination holds the mint and is not the source | `InvalidAccountData`, `InvalidArgument` | `settle_token_n.rs`: `rejects_wrong_destination_mint_and_source_authority`, `rejects_wrong_mint_decimals_and_source_as_recipient` |
-| Token settlement uses `TransferChecked`, so the token program re-checks mint and decimals on every transfer | Reverts the whole settlement | `settle_token_n.rs`: `settles_four_way_token_split_and_writes_shared_record` |
+| Token transfers use `TransferChecked` | Not reached in practice: the program's own mint and decimals checks run first | `settle_token_n.rs`: `settles_four_way_token_split_and_writes_shared_record` |
+
+The program also requires the payer and the token source to be writable
+(`InvalidAccountData`); those two checks have no dedicated test. Its explicit
+`is_initialized` check on the mint and its comparison of token destinations
+with the record are unreachable, because the mint decoder and the owner check
+reject those cases first.
 
 The [protocol specification](protocol.md) gives the byte layouts and the
 complete error table.
@@ -76,56 +84,88 @@ as noted.
    recipients from your own beneficiary registry; reconciliation then checks
    the chain against the request you built.
 3. **Who may settle.** The program is permissionless: any signer can be the
-   payer. Known limitation 1 is a consequence.
-4. **Recipient account types in native mode.** Any writable account the
-   program does not own can receive lamports, including token accounts and
-   other programs' accounts, whose owners may not be able to spend them as
-   SOL. Pay system-owned wallet addresses.
-5. **Who owns each token destination.** The program checks each
+   payer, and the payer may also be a recipient. Duplicate recipients are
+   allowed and receive the sum of their shares. Known limitation 1 is a
+   consequence.
+4. **Addresses nobody can spend from.** In native mode any writable account
+   the program does not already own can receive lamports, including token
+   accounts, other programs' accounts, and the record address of an event
+   that has not settled yet. Lamports sent to that address end up locked in
+   its record once the event settles
+   (`known_limitations.rs`: `a_payout_to_an_unsettled_events_record_address_is_locked_forever`).
+   Pay system-owned wallets whose keys someone holds.
+5. **Which mint.** Token settlement accepts any initialized classic SPL Token
+   mint with the stated decimals, including one the payer created a moment
+   ago. Only token reconciliation pins the mint you expect; keep an allowlist
+   of the mints you settle.
+6. **Who owns each token destination.** The program checks each
    destination's mint, not its owner. The SDK derives associated token
    accounts for the intended wallets, and token reconciliation checks the
    exact accounts.
-6. **Freeze authority.** If the mint's freeze authority freezes the source or
-   a destination token account, the token settlement fails and reverts as a
-   whole. Nothing is paid partially.
+7. **The memo.** The program never reads the memo instruction. It is
+   payer-authored text with no on-chain meaning, and the SDK's memo carries
+   the application event id in clear. Trust a memo only after reconciliation
+   has compared it with the instruction.
+8. **Freeze authority.** If the mint's freeze authority freezes the source or
+   a destination that is owed a nonzero share, the token settlement fails and
+   reverts as a whole. Zero-token shares are skipped.
 
 ## Known limitations
 
 ### 1. Anyone can claim an unsettled event id
 
-The record address depends only on the event id, not on who pays. Any account
-holder who learns a 32-byte event id before it settles can settle it first,
-with the smallest valid amount, to wallets of their choosing. The legitimate
-settlement then fails with `AccountAlreadyInitialized` and pays nobody.
-`any_payer_can_claim_an_unsettled_event_id_first` in
-`programs/synxed-settlement/svm-tests/tests/event_namespace.rs` reproduces
-this against the compiled program.
+The record address depends only on the event id, not on who pays, and all
+three instructions share it. Any account holder who learns a 32-byte event id
+before it settles can settle it first, to wallets of their choosing,
+including their own. The legitimate settlement then fails with
+`AccountAlreadyInitialized` and pays nobody. A native claim blocks a planned
+token settlement of the same event id, and the reverse.
+
+The record stores only the event id and the amount, so a claimant can make it
+byte-identical to a genuine record by copying the amount and paying itself;
+the claim costs only the record's rent and a fee. Nothing can be inferred
+from record data. `known_limitations.rs` reproduces both against the compiled
+program (`any_payer_can_claim_an_unsettled_event_id_first`,
+`a_claimed_record_can_match_a_genuine_one_exactly`).
 
 The event id travels in the instruction data of the pending transaction, so
 anyone who sees the transaction before it lands can learn it: the RPC
 provider, the block leader, or anyone the transaction is forwarded to. A
 transaction that expired without landing has also exposed its event id.
 
-Impact: no funds are taken from the payer, and the claimant pays for the
-record. The real risk is an integrator that treats `AccountAlreadyInitialized`
-as "already paid": the event would be marked settled while its beneficiaries
-received nothing.
+Impact: the claimant pays for the claim; the legitimate payer loses only the
+failed transaction's fee. The real risk is an integrator that treats
+`AccountAlreadyInitialized` as "already paid": the event would be marked
+settled while its beneficiaries received nothing. The opposite mistake is as
+bad: settling again when the event was in fact paid by you pays it twice.
 
-Mitigations available now:
+On `AccountAlreadyInitialized`, decide only from the creating transaction:
 
-- **Never treat a duplicate as success without evidence.** On
-  `AccountAlreadyInitialized`, find the transaction that created the record
-  (`getSignaturesForAddress` on the record address returns it) and reconcile
-  it against your request. If it does not match, the event id was claimed by
-  someone else: settle again under a new event id, keep the mapping from your
-  internal event to every on-chain event id you tried, and treat the
-  incident as an alert.
-- **Use event ids nobody can guess.** Derive the application event id from a
-  secret, for example an HMAC of your internal event id, or use a random
-  128-bit id. This stops guessing and enumeration. It does not stop an
-  observer of the pending transaction.
-- **Prefer a private or trusted submission path** (your own RPC node or a
-  provider you trust) to narrow who sees transactions before they land.
+1. List the record address's transactions with `getSignaturesForAddress`,
+   paging until the end. The call returns every transaction that referenced
+   the address, newest first, including failed attempts (your own retry among
+   them) and plain transfers.
+2. The creating transaction is the oldest successful one (`err` is null)
+   whose top-level instruction is this program's `Settle`, `SettleN`, or
+   `SettleTokenN` for this event id.
+3. If its payer is your settlement key, you settled this event, for example
+   with a send that timed out but landed. Reconcile that transaction and
+   never settle the event again. `reconcileSettlementN` and
+   `reconcileTokenSettlementN` decode `SettleN` and `SettleTokenN`; compare a
+   three-way `Settle` by hand.
+4. Only if its payer is a key you do not control was the event id claimed by
+   someone else. Settle again under a new event id, keep the mapping from your
+   internal event to every on-chain event id you tried, and raise an alert.
+5. Anything else is unresolved: the creating transaction is not finalized
+   yet, cannot be found, or the RPC fails. Retry later; do not settle again.
+
+Also use event ids nobody can guess. Derive the application event id from a
+secret, for example an HMAC of your internal event id, or use a random
+128-bit id. The memo of every settlement publishes its application event id,
+so a guessable scheme is exposed by the first settlement. This stops guessing
+and enumeration; it does not stop an observer of the pending transaction, so
+prefer a private or trusted submission path (your own RPC node or a provider
+you trust).
 
 Planned fix, before any mainnet deployment: bind each record to an integrator
 namespace whose authority must sign, for example a record derived from
@@ -157,18 +197,40 @@ deployment needs a multisig or timelocked authority, or an immutable program.
 
 Without a program id the client sends plain system transfers plus a memo. The
 amounts come from the same split function, but nothing re-validates them on
-chain and there is no settlement record, so there is no idempotency. The
-fallback exists so a fresh clone can produce a real devnet transaction; use
-program mode for anything else.
+chain and there is no settlement record, so there is no idempotency: a retry
+with a fresh blockhash pays again. The fallback exists so a fresh clone can
+produce a real devnet transaction; use program mode for anything else.
 
 ### 5. Reconciliation trusts the RPC endpoint
 
 Reconciliation checks the endpoint's genesis hash against the expected
-cluster, waits for finalized commitment, and compares every field and inner
-transfer. It does not verify transaction signatures or prove that a
-transaction is in a block, so a dishonest RPC endpoint could return
-fabricated data. Reconcile against an endpoint you operate or trust, and
-cross-check with a second provider when the amounts matter.
+cluster, waits for finalized commitment, requires the transaction to have
+succeeded, and compares every field and inner transfer. It does not verify
+transaction signatures or prove that a transaction is in a block, and for
+versioned transactions it relies on the endpoint to resolve accounts loaded
+from address lookup tables. A dishonest RPC endpoint could return fabricated
+data. Reconcile against an endpoint you operate or trust, and cross-check
+with a second provider when the amounts matter.
+
+### 6. One failing recipient fails the whole settlement
+
+Atomicity cuts both ways: if any single share cannot be paid, nobody is paid.
+In native mode a share smaller than the rent-exempt minimum sent to a
+brand-new account fails with `InsufficientFundsForRent` (that minimum was
+0.00065024 SOL on devnet on 20 October 2026). In token mode a destination that
+is missing, closed, or frozen fails the settlement. Check recipients before
+settling, keep shares above the rent-exempt minimum, and drop or replace a
+recipient that keeps failing.
+
+### 7. Token settlements that create accounts fit six shares
+
+`buildTokenSettlementNTransaction` creates missing recipient token accounts in
+the same transaction by default. With that account creation, seven and eight
+shares exceed Solana's 1,232-byte transaction limit (measured: 1,237 and
+1,314 bytes with a short memo); six shares fit at 1,160 bytes. Without it,
+eight shares fit (946 bytes). For seven or eight token shares, create the
+recipient token accounts in a separate transaction first and build the
+settlement with `createRecipientAccounts: false`.
 
 ## Operating a payer key
 
@@ -184,26 +246,30 @@ cross-check with a second provider when the amounts matter.
 
 ## Repository and supply chain controls
 
-- `main` is protected: pull requests, required `ci` and `program` checks, and
-  an adversarial review before every merge ([CONTRIBUTING.md](../CONTRIBUTING.md)).
+- Changes land through pull requests with required `ci` and `program`
+  checks. Administrators can bypass branch protection; the adversarial review
+  before every merge is a process rule ([CONTRIBUTING.md](../CONTRIBUTING.md)),
+  not a GitHub setting.
 - GitHub Actions are pinned to full commit SHAs; Dependabot proposes updates.
 - Secret scanning with push protection and private vulnerability reporting
   are enabled.
 - JavaScript dependencies install from the committed lockfile
   (`bun install --frozen-lockfile`) in CI and in the hosted demo build.
 - Program builds are reproducible in a pinned container, and the deployment
-  is compared with `main` after every push and daily.
+  is compared with `main` after every push to `main` and daily.
 
 ## Before mainnet: audit scope
 
 An independent audit should cover at least:
 
 1. Instruction decoding and every account check in the processor, including
-   the namespaced record that fixes known limitation 1.
-2. The token path: `TransferChecked`, the classic SPL Token restriction, and
-   an explicit Token-2022 policy.
+   the namespaced record that fixes known limitation 1 and payouts to
+   addresses nobody can spend from.
+2. The token path: `TransferChecked`, the classic SPL Token restriction, mint
+   allowlisting, and an explicit Token-2022 policy.
 3. Upgrade authority: multisig, timelock, or immutability.
-4. The TypeScript client's transaction construction and reconciliation,
-   including RPC trust.
-5. Key management and operational runbooks for the payer.
+4. The TypeScript client's transaction construction, including transaction
+   size limits, and reconciliation, including RPC trust.
+5. Key management and operational runbooks for the payer, including the
+   duplicate-event procedure above.
 6. The economics of record rent and fees at the expected settlement volume.
