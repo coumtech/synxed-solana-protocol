@@ -34,6 +34,36 @@ procedure in [docs/verified-build.md](docs/verified-build.md) right after
 merging, then confirm with `scripts/verify-deployment.sh`. The *Verify
 deployment* workflow runs the same check daily and fails on drift.
 
+## Releasing the TypeScript SDK
+
+The SDK in `sdk/typescript` is published to npm as
+`@coumtech/synxed-solana-protocol`. The workspace package exports TypeScript
+sources for the tests and examples in this repository and stays
+`"private": true`, so it can never be published as it is.
+`bun run build:sdk` compiles it into `sdk/typescript/dist/package` with a
+generated manifest, and `bun run smoke:sdk` packs that directory, installs the
+tarball into a fresh Node project, runs it, and type-checks a consumer and the
+package README example. CI runs the smoke test on every pull request.
+
+1. Bump `version` in `sdk/typescript/package.json` in a pull request. While the
+   version is 0.x, a minor bump may change the API. Merge it after review.
+2. Run the **Publish SDK** workflow from `main` with *publish* unchecked. It
+   repeats the checks, refuses a version that is already on npm, and runs
+   `npm publish --dry-run`.
+3. Run it again with *publish* checked. The package is published with an npm
+   provenance attestation that links it to the workflow run and the commit.
+
+Publish through the workflow, not from a local machine, so every version
+carries provenance.
+
+Authentication: the workflow uses npm trusted publishing when it is
+configured on npmjs.com for this repository, the workflow file
+`publish-sdk.yml`, and the environment `npm-publish`. Trusted publishing is
+set up from the package's settings page, so the first release instead uses an
+`NPM_TOKEN` secret stored in the `npm-publish` GitHub environment: a granular
+npm access token with read and write access to `@coumtech` packages. Once
+trusted publishing is configured, delete the secret and revoke the token.
+
 ## Secrets
 
 - Never commit `.env`, keypairs, or program deploy keys. Use `.env.example`.
