@@ -196,3 +196,17 @@ fn skips_zero_lamport_shares_without_touching_new_accounts() {
         "no transfer to a 0 bps share"
     );
 }
+
+#[test]
+fn rejects_a_zero_amount_before_paying_anyone() {
+    let mut f = Fixture::new();
+    let recipients = four_recipients(&f);
+    let err = f
+        .settle_n(event(48), 0, &REWARDS_BPS, &recipients)
+        .expect_err("a zero amount must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
+    assert!(
+        f.svm.get_account(&f.record_pda(&event(48))).is_none(),
+        "no record"
+    );
+}

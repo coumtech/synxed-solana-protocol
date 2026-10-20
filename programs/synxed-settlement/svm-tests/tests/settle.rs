@@ -202,3 +202,18 @@ fn rejects_extra_trailing_accounts() {
         .expect_err("account list must be exact");
     assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
 }
+
+#[test]
+fn rejects_a_read_only_record() {
+    let mut f = Fixture::new();
+    let record = f.record_pda(&event(11));
+    let mut ix = f.settle_instruction(event(11), AMOUNT, BPS, record, true);
+    let record_index = ix.accounts.len() - 2;
+    ix.accounts[record_index] = solana_sdk::instruction::AccountMeta::new_readonly(record, false);
+    let payer = f.payer.insecure_clone();
+    let err = f
+        .send(&[ix], &[&payer], &payer.pubkey())
+        .expect_err("a read-only record must fail");
+    assert!(err.contains("InvalidAccountData"), "got {err}");
+    assert_eq!(f.balance(&f.artist), 0, "nothing paid");
+}

@@ -1,8 +1,15 @@
 //! End-to-end classic SPL Token settlement against the compiled program.
 
+use solana_sdk::account::Account;
+use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::rent::Rent;
 use solana_sdk::signature::Signer;
-use synxed_settlement_svm_tests::{event, Fixture};
+use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
+use synxed_settlement_svm_tests::{event, Fixture, TOKEN_PROGRAM_ID};
+
+const TOKEN_2022_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
 const BPS: [u16; 4] = [3_500, 3_500, 2_000, 1_000];
 const AMOUNT: u64 = 20_000;
@@ -108,4 +115,105 @@ fn rejects_wrong_mint_decimals_and_source_as_recipient() {
         )
         .expect_err("source cannot be a recipient");
     assert!(err.contains("InvalidArgument"), "got {err}");
+}
+
+#[test]
+fn rejects_token_2022_and_any_other_token_program() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    for token_program in [TOKEN_2022_PROGRAM_ID, Pubkey::new_unique()] {
+        let mut ix = fixture.settle_token_n_instruction(
+            event(65),
+            AMOUNT,
+            DECIMALS,
+            &BPS,
+            source,
+            &recipients,
+            mint,
+        );
+        let last = ix.accounts.len() - 1;
+        ix.accounts[last] = AccountMeta::new_readonly(token_program, false);
+        let payer = fixture.payer.insecure_clone();
+        let err = fixture
+            .send(&[ix], &[&payer], &payer.pubkey())
+            .expect_err("only classic SPL Token is accepted");
+        assert!(err.contains("IncorrectProgramId"), "got {err}");
+    }
+    assert_eq!(fixture.token_balance(&source), 100_000, "nothing moved");
+    assert!(fixture
+        .svm
+        .get_account(&fixture.record_pda(&event(65)))
+        .is_none());
+}
+
+#[test]
+fn rejects_token_accounts_not_owned_by_the_token_program() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    // A destination with a valid token-account layout but owned by the system
+    // program is not a token account the token program would honour.
+    let mut data = vec![0u8; 165];
+    data[0..32].copy_from_slice(mint.as_ref());
+    data[32..64].copy_from_slice(Pubkey::new_unique().as_ref());
+    data[108] = 1;
+    fixture
+        .svm
+        .set_account(
+            recipients[0],
+            Account {
+                lamports: Rent::default().minimum_balance(data.len()),
+                data,
+                owner: SYSTEM_PROGRAM_ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .expect("inject a forged destination");
+    let err = fixture
+        .settle_token_n(event(66), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
+        .expect_err("a destination outside the token program must fail");
+    assert!(err.contains("IllegalOwner"), "got {err}");
+    assert_eq!(fixture.token_balance(&source), 100_000, "nothing moved");
+}
+
+#[test]
+fn rejects_an_uninitialized_mint() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let mut account = fixture.svm.get_account(&mint).expect("mint exists");
+    account.data[45] = 0; // is_initialized
+    assert_eq!(account.owner, TOKEN_PROGRAM_ID);
+    fixture
+        .svm
+        .set_account(mint, account)
+        .expect("inject uninitialized mint");
+    let err = fixture
+        .settle_token_n(event(67), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
+        .expect_err("an uninitialized mint must fail");
+    assert!(err.contains("UninitializedAccount"), "got {err}");
+    assert_eq!(fixture.token_balance(&source), 100_000, "nothing moved");
+}
+
+#[test]
+fn rejects_a_source_that_holds_another_mint() {
+    let (mut fixture, mint, _source, recipients) = token_fixture();
+    let other_mint = Pubkey::new_unique();
+    fixture.set_mint(other_mint, DECIMALS);
+    let foreign_source = Pubkey::new_unique();
+    let payer = fixture.payer.pubkey();
+    fixture.set_token_account(foreign_source, other_mint, payer, 100_000);
+    let err = fixture
+        .settle_token_n(
+            event(68),
+            AMOUNT,
+            DECIMALS,
+            &BPS,
+            foreign_source,
+            &recipients,
+            mint,
+        )
+        .expect_err("the source must hold the settled mint");
+    assert!(err.contains("InvalidAccountData"), "got {err}");
+    assert_eq!(
+        fixture.token_balance(&foreign_source),
+        100_000,
+        "nothing moved"
+    );
 }

@@ -205,6 +205,8 @@ docs/                         architecture, protocol spec, integration guide,
   standards
 - [SECURITY.md](SECURITY.md) — private vulnerability reporting; never
   commit keypairs or `.env`
+- [docs/security-model.md](docs/security-model.md): what the program
+  enforces, what integrators must check, and known limitations
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## License
