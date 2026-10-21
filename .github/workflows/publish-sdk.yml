@@ -19,7 +19,8 @@ name: Publish SDK
 #   code, but it cannot change the uploaded tarball or its recorded sha256.
 # - publish: holds the npm-publish environment and id-token: write, checks out
 #   no code and installs no dependencies, checks the sha256, every file name,
-#   and the whole manifest inside the tarball, and stages it.
+#   and the whole manifest inside the tarball, read both by GNU tar and by the
+#   tar library npm itself uses, and stages it.
 on:
   workflow_dispatch:
     inputs:
@@ -236,11 +237,13 @@ jobs:
           fi
           # --ignore-zeros reads past a lone zero block, as npm's own tar reader
           # does, so entries hidden behind one are seen (and refused) here too.
+          # The check script then reads the tarball again with npm's own tar
+          # library, which must see exactly the same entries and manifest.
           tar --ignore-zeros -tzf "$TARBALL" > "$RUNNER_TEMP/entries.txt"
           tar --ignore-zeros -tvzf "$TARBALL" | cut -c1 > "$RUNNER_TEMP/types.txt"
           cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'
           const fs = require("node:fs");
-          const [entriesFile, typesFile, tarball] = process.argv.slice(2);
+          const [entriesFile, typesFile, tarball, npmTarPath] = process.argv.slice(2);
           const problems = [];
           const allowedFile = /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
           const registryRange = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
@@ -254,7 +257,24 @@ jobs:
             if (!entry.startsWith("package/") || !allowedFile.test(entry.slice(8))) problems.push("unexpected tarball entry " + entry);
           }
           if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
+          // npm stages and installs what its own tar library reads, and that can
+          // differ from GNU tar on a malformed header: node-tar rejects a signed
+          // checksum and reads the entry's data as further entries. Read the
+          // tarball again with the library this npm bundles, strictly, so any
+          // header it would warn about fails, and require the same entries.
+          const npmTar = require(npmTarPath);
+          const npmEntries = [];
+          const npmManifest = [];
+          try {
+            npmTar.t({ file: tarball, sync: true, strict: true, onentry: (entry) => {
+              npmEntries.push(entry.type + " " + entry.path);
+              if (entry.path === "package/package.json") entry.on("data", (chunk) => npmManifest.push(chunk));
+            } });
+          } catch (error) { problems.push("npm's tar reader refuses the tarball: " + error.message); }
+          if (problems.length === 0 && JSON.stringify(npmEntries) !== JSON.stringify(entries.map((entry) => "File " + entry))) problems.push("npm's tar reader sees different entries: " + npmEntries.join(", "));
+          if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
           const manifestText = require("node:child_process").execFileSync("tar", ["--ignore-zeros", "-xzOf", tarball, "package/package.json"], { encoding: "utf8" });
+          if (manifestText !== Buffer.concat(npmManifest).toString("utf8")) problems.push("npm's tar reader sees a different package.json");
           const m = JSON.parse(manifestText);
           if (JSON.stringify(Object.keys(m).sort()) !== JSON.stringify(expectedKeys)) problems.push("unexpected manifest keys " + Object.keys(m).sort().join(","));
           if (m.name !== process.env.PACKAGE_NAME) problems.push("name is " + m.name);
@@ -273,7 +293,7 @@ jobs:
           if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
           console.log(m.name + "@" + m.version + ": " + entries.length + " files checked");
           CHECK
-          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/types.txt" "$TARBALL"
+          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/types.txt" "$TARBALL" "$(npm root -g)/npm/node_modules/tar"
 
       # Needs a trusted publisher on npmjs.com for this repository, this
       # workflow file, and the npm-publish environment, allowed to stage. There

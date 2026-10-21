@@ -180,8 +180,15 @@ describe("ALLOWED_PACKAGE_FILE", () => {
 });
 
 // A minimal ustar writer, so a test can build tarballs `tar` itself would
-// never produce: entries hidden behind a lone zero block, and links.
-const ustarHeader = (name: string, size: number, type: string, linkname = ""): Buffer => {
+// never produce: entries hidden behind a lone zero block, links, and headers
+// with a signed checksum.
+const ustarHeader = (
+  name: string,
+  size: number,
+  type: string,
+  linkname = "",
+  signedChecksum = false,
+): Buffer => {
   const header = Buffer.alloc(512);
   const field = (value: string, offset: number, length: number): void => {
     header.write(value, offset, Math.min(Buffer.byteLength(value), length), "ascii");
@@ -198,7 +205,15 @@ const ustarHeader = (name: string, size: number, type: string, linkname = ""): B
   field(linkname, 157, 100);
   field("ustar\0", 257, 6);
   field("00", 263, 2);
-  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  // GNU tar and bsdtar also accept a checksum summed over signed bytes; npm's
+  // tar reader does not. A high byte in the padding makes the two sums differ.
+  if (signedChecksum) {
+    header[511] = 0xff;
+  }
+  const checksum = header.reduce(
+    (sum, byte) => sum + (signedChecksum && byte > 127 ? byte - 256 : byte),
+    0,
+  );
   field(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8);
   return header;
 };
@@ -207,6 +222,17 @@ const ustarFile = (name: string, contents: string): Buffer => {
   const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
   return Buffer.concat([ustarHeader(name, data.length, "0"), data, padding]);
 };
+// An allowlisted file whose header has a signed checksum, so GNU tar reads
+// `hidden` as its data while npm's tar reader reads `hidden` as entries.
+const signedChecksumFile = (name: string, hidden: Buffer): Buffer =>
+  Buffer.concat([ustarHeader(name, hidden.length, "0", "", true), hidden]);
+// The tar library bundled with the npm on PATH, which the publish job uses.
+const npmTarLibrary = join(
+  spawnSync("npm", ["root", "-g"], { encoding: "utf8" }).stdout.trim(),
+  "npm",
+  "node_modules",
+  "tar",
+);
 const writeGzip = (parts: Buffer[]): { dir: string; tarball: string } => {
   const dir = mkdtempSync(join(tmpdir(), "synxed-sdk-tarball-test-"));
   const tarball = join(dir, "crafted.tgz");
@@ -238,8 +264,16 @@ describe("release configuration stays consistent", () => {
     const keys = Object.keys(publishManifest(workspace)).sort();
     expect(publish).toContain(`const expectedKeys = ${JSON.stringify(keys)};`);
     expect(publish).toMatch(/^ {8}run: npm stage publish --provenance --access public "\$TARBALL"$/m);
-    expect(publish).toContain('tar --ignore-zeros -tzf "$TARBALL"');
     expect(publish).toContain('types.some((type) => type !== "-")');
+    // The listings the check reads, and the line that runs it with npm's own
+    // tar library: without that line the step would pass without checking.
+    expect(publish).toMatch(/^ {10}tar --ignore-zeros -tzf "\$TARBALL" > "\$RUNNER_TEMP\/entries\.txt"$/m);
+    expect(publish).toMatch(
+      /^ {10}tar --ignore-zeros -tvzf "\$TARBALL" \| cut -c1 > "\$RUNNER_TEMP\/types\.txt"$/m,
+    );
+    expect(publish).toMatch(
+      /^ {10}node "\$RUNNER_TEMP\/check\.cjs" "\$RUNNER_TEMP\/entries\.txt" "\$RUNNER_TEMP\/types\.txt" "\$TARBALL" "\$\(npm root -g\)\/npm\/node_modules\/tar"$/m,
+    );
   });
 
   test("CI tests the minimum Node version the package declares", () => {
@@ -289,7 +323,11 @@ describe("smoke test against a given tarball", () => {
     if (extraFile !== undefined) {
       entries.push(`package/${extraFile}`);
     }
-    const tar = spawnSync("tar", ["-czf", tarball, "-C", dir, ...entries]);
+    // COPYFILE_DISABLE stops macOS tar from adding "._" metadata entries,
+    // which its own listing hides but npm's tar reader sees as files.
+    const tar = spawnSync("tar", ["-czf", tarball, "-C", dir, ...entries], {
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+    });
     expect(tar.status).toBe(0);
     return { dir, tarball };
   };
@@ -325,6 +363,39 @@ describe("smoke test against a given tarball", () => {
       const result = smoke({ SYNXED_SDK_TARBALL: tarball });
       expect(result.status).not.toBe(0);
       expect(result.output).toContain("duplicate entries");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses a manifest hidden behind a signed checksum, which only npm reads", () => {
+    const hidden = ustarFile(
+      "package/package.json",
+      JSON.stringify({ name: PACKAGE_NAME, version: workspace.version, scripts: { postinstall: "evil" } }),
+    );
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", manifest),
+      signedChecksumFile("package/zz.js", hidden),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("npm's tar reader refuses the tarball");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses an entry after the end-of-archive marker, which npm never reads", () => {
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", manifest),
+      Buffer.alloc(1024),
+      ustarFile("package/zz.js", "export {};\n"),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("npm's tar reader sees different entries");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -416,6 +487,7 @@ describe("publish job tarball check", () => {
   const runCheck = (
     manifestOverride: Record<string, unknown>,
     extra: Buffer[] = [],
+    npmTar = npmTarLibrary,
   ): { status: number | null; output: string } => {
     const dir = mkdtempSync(join(tmpdir(), "synxed-publish-check-test-"));
     try {
@@ -440,7 +512,7 @@ describe("publish job tarball check", () => {
       writeFileSync(join(dir, "check.cjs"), checkScript());
       const result = spawnSync(
         "node",
-        [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball],
+        [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball, npmTar],
         {
           encoding: "utf8",
           env: { ...process.env, PACKAGE_NAME, VERSION: String(workspace.version) },
@@ -474,6 +546,18 @@ describe("publish job tarball check", () => {
       "duplicate tarball entries",
     ],
     ["a symbolic link", {}, [ustarHeader("package/evil.js", 0, "2", "/etc/passwd")], "not regular files"],
+    [
+      "a manifest hidden behind a signed checksum",
+      {},
+      [signedChecksumFile("package/zz.js", ustarFile("package/package.json", JSON.stringify({ ...valid, scripts: { postinstall: "evil" } })))],
+      "npm's tar reader refuses the tarball",
+    ],
+    [
+      "an entry after the end-of-archive marker",
+      {},
+      [Buffer.alloc(1024), ustarFile("package/zz.js", "x\n")],
+      "npm's tar reader sees different entries",
+    ],
   ];
   for (const [name, override, extra, message] of refused) {
     test(`refuses ${name}`, () => {
@@ -482,4 +566,36 @@ describe("publish job tarball check", () => {
       expect(result.output).toContain(message);
     });
   }
+
+  // A stand-in for npm's tar library that sees the same entries as GNU tar
+  // but one extra byte of package.json, for a difference the fixtures above
+  // cannot produce.
+  test("refuses when npm's tar reader sees a different package.json", () => {
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-tar-stand-in-"));
+    try {
+      const standIn = join(dir, "tar.cjs");
+      writeFileSync(
+        standIn,
+        `const real = require(${JSON.stringify(npmTarLibrary)});
+exports.t = (options) => real.t({ ...options, onentry: (entry) => {
+  if (entry.path !== "package/package.json") return options.onentry(entry);
+  const listeners = [];
+  options.onentry({ type: entry.type, path: entry.path, on: (event, fn) => { if (event === "data") listeners.push(fn); } });
+  entry.on("data", (chunk) => listeners.forEach((fn) => fn(Buffer.concat([chunk, Buffer.from(" ")]))));
+} });
+`,
+      );
+      const result = runCheck({}, [], standIn);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("npm's tar reader sees a different package.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when npm's tar library cannot be loaded", () => {
+    const result = runCheck({}, [], join(tmpdir(), "no-such-npm", "node_modules", "tar"));
+    expect(result.status).not.toBe(0);
+    expect(result.output).not.toContain("files checked");
+  });
 });

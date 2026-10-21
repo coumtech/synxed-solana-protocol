@@ -52,8 +52,9 @@ The **Publish SDK** workflow has three jobs. `package` builds and packs the
 tarball from the lockfile with lifecycle scripts disabled and refuses a
 version that is already on npm. `verify` runs the typecheck and the TypeScript
 tests on the checkout, and the smoke test against that exact tarball.
-`publish` checks the tarball's sha256, file names, and manifest, then stages it
-on npm through trusted publishing with a provenance attestation. A staged
+`publish` checks the tarball's sha256, file names, and manifest, which GNU tar
+and npm's own tar library must read identically, then stages it on npm
+through trusted publishing with a provenance attestation. A staged
 version stays private until a maintainer approves it on npmjs.com with
 two-factor authentication. With the trusted publisher limited to staging (step
 3 below), no workflow run can make a version public on its own. No npm token
