@@ -4,7 +4,7 @@
 
 The SYNXED settlement protocol settles a single revenue event (for example
 an in-game audio-ad impression) into a deterministic payout across
-configured shares — three by default, up to eight with `SettleN`:
+configured shares: three by default, up to eight with `SettleN`:
 
 ```
 gross amount -> [artist, studio, synxed]
@@ -19,7 +19,7 @@ Given `amount` (a positive integer of atomic units) and `n` shares
 `[bps_0, ..., bps_n-1]` with `1 <= n <= 8`:
 
 1. Every share must be an integer in `0..=10000`.
-2. The shares must sum to exactly `10000`. Anything else is rejected —
+2. The shares must sum to exactly `10000`. Anything else is rejected,
    never renormalized.
 3. `amount` must be greater than zero.
 4. The first `n - 1` payouts are floor divisions:
@@ -81,8 +81,8 @@ Accounts, in order:
 
 The program validates the split with the same rules as above and fails the
 whole transaction on any violation. Split violations, and a payout
-recipient that is a settlement record (this event's or any other's — such
-funds could never be recovered), return `InvalidArgument`; a missing
+recipient that is an existing settlement record (this event's, or another
+event's that has already settled; such funds could never be recovered), return `InvalidArgument`; a missing
 payer signature returns `MissingRequiredSignature`; a non-writable payer,
 payout, or record account returns `InvalidAccountData`; a wrong record
 address `InvalidSeeds`; a wrong system program account
@@ -106,7 +106,7 @@ Instruction data (little-endian, `42 + 2n` bytes):
 | 41 | 1 | `n` (share count, `1..=8`) | `u8` |
 | 42 | 2n | `bps_0 .. bps_n-1` | `u16` LE each |
 
-Accounts, in order — exactly `n + 3`:
+Accounts, in order, exactly `n + 3`:
 
 | # | Account | Signer | Writable | Purpose |
 | --- | --- | --- | --- | --- |
@@ -147,7 +147,7 @@ Instruction data (little-endian, `43 + 2n` bytes):
 | 42 | 1 | `n` (share count, `1..=8`) | `u8` |
 | 43 | 2n | `bps_0 .. bps_n-1` | `u16` LE each |
 
-Accounts, in order — exactly `n + 6`:
+Accounts, in order, exactly `n + 6`:
 
 | # | Account | Signer | Writable | Purpose |
 | --- | --- | --- | --- | --- |

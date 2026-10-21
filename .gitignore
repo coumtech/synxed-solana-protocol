@@ -6,7 +6,7 @@ node_modules/
 .env.*
 !.env.example
 
-# Solana / program keypairs — local only
+# Solana / program keypairs: local only
 .keys/
 **/id.json
 **/*keypair*.json

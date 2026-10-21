@@ -1,7 +1,7 @@
 // Fake in-game audio-ad impression generator.
 //
 // This is a stand-in for whatever platform emits billable events. It exists
-// so the demo runs with zero proprietary dependencies — any real integration
+// so the demo runs with zero proprietary dependencies. Any real integration
 // would construct the same `SettlementRequest` from its own event source.
 
 import { randomUUID } from "node:crypto";
