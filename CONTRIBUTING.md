@@ -73,7 +73,9 @@ One-time setup, in repository and npm settings, before the first release:
    added to a package that exists. Run the workflow as a dry run and, within
    seven days (the artifact's retention), download its `sdk-tarball` artifact.
    It arrives as a zip; extract the `.tgz` and compare its sha256 with the one
-   in the run summary. Then, from the folder that holds the `.tgz`, on a
+   in the run summary. The dry run's `verify` job has already run the publish
+   job's tarball check on that exact file, inside the smoke test, so this
+   version meets the same rules as a staged one. Then, from the folder that holds the `.tgz`, on a
    machine logged in (`npm login`) to an npm account that is a member of the
    `@coumtech` organization with permission to create packages, run
    `npm publish --provenance=false ./<tarball file>`. The override is needed

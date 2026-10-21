@@ -30,6 +30,43 @@ export const PACKAGE_DIR = join(SDK_DIR, "dist", "package");
 /** The only package this repository publishes. The publish workflow checks it too. */
 export const PACKAGE_NAME = "@coumtech/synxed-solana-protocol";
 
+/**
+ * The publish job's tarball check, `check.cjs`, exactly as the job writes it:
+ * the heredoc body in .github/workflows/publish-sdk.yml with its indentation
+ * removed. The smoke test runs it on the tarball it tests, and the tests run
+ * it on crafted tarballs.
+ */
+export function publishCheckScript(): string {
+  const workflow = readFileSync(
+    join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"),
+    "utf8",
+  );
+  const body = workflow
+    .split(`cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'\n`)[1]
+    ?.split("\n          CHECK\n")[0];
+  if (body === undefined || body === "") {
+    throw new Error("publish-sdk.yml has no check.cjs heredoc");
+  }
+  return body
+    .split("\n")
+    .map((line) => (line.startsWith(" ".repeat(10)) ? line.slice(10) : line))
+    .join("\n");
+}
+
+/**
+ * True when npm's tar reader listed exactly GNU tar's entries, each a regular
+ * file, in the same order.
+ */
+export function sameTarballEntries(
+  gnuEntries: readonly string[],
+  npmEntries: readonly string[],
+): boolean {
+  return (
+    npmEntries.length === gnuEntries.length &&
+    npmEntries.every((entry, index) => entry === `File ${gnuEntries[index]}`)
+  );
+}
+
 /** Files allowed in the published package. Anything else fails the build. */
 export const ALLOWED_PACKAGE_FILE =
   /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;

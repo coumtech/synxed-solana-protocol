@@ -35,6 +35,9 @@ import { ledgerEntryId } from "../sdk/typescript/src/ledger.ts";
 import {
   ALLOWED_PACKAGE_FILE,
   PACKAGE_DIR,
+  PACKAGE_NAME,
+  publishCheckScript,
+  sameTarballEntries,
   REPO_ROOT,
   buildSdkPackage,
   readWorkspaceManifest,
@@ -246,11 +249,12 @@ function tsconfig(module: string, moduleResolution: string): string {
   )}\n`;
 }
 
-// Lists a tarball with npm's own tar library (argv: library path, tarball),
-// strictly, so a header it would only warn about fails instead.
+// Lists a tarball with the tar library npm's pacote resolves (argv: npm's
+// directory, tarball), strictly, so a header it would only warn about fails.
 const NPM_TAR_LIST = `
 const seen = [];
-require(process.argv[1]).t({
+const pacoteDir = require("node:path").join(process.argv[1], "node_modules", "pacote");
+require(require.resolve("tar", { paths: [pacoteDir] })).t({
   file: process.argv[2], sync: true, strict: true,
   onentry: (entry) => seen.push(entry.type + " " + entry.path),
 });
@@ -263,14 +267,16 @@ console.log(JSON.stringify(seen));
  * rejects a signed checksum and reads that entry's data as further entries.
  */
 function npmTarEntries(tarball: string): string[] {
-  const library = join(run("npm", ["root", "-g"], REPO_ROOT).trim(), "npm", "node_modules", "tar");
-  const result = spawnSync("node", ["-e", NPM_TAR_LIST, library, tarball], {
+  const result = spawnSync("node", ["-e", NPM_TAR_LIST, npmDirectory(), tarball], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     timeout: COMMAND_TIMEOUT_MS,
   });
   if (result.status !== 0) {
-    const reason = result.stderr.split("\n").find((line) => line.includes("Error")) ?? `exit ${result.status ?? result.signal ?? "unknown"}`;
+    const reason =
+      result.error?.message ??
+      (result.stderr ?? "").split("\n").find((line) => line.includes("Error")) ??
+      `exit ${result.status ?? result.signal ?? "unknown"}`;
     fail(`npm's tar reader refuses the tarball: ${reason}`);
   }
   const parsed: unknown = JSON.parse(result.stdout);
@@ -280,13 +286,18 @@ function npmTarEntries(tarball: string): string[] {
   return parsed.map(String);
 }
 
+/** The directory of the npm on PATH, whose tar library reads the tarball. */
+function npmDirectory(): string {
+  return join(run("npm", ["root", "-g"], REPO_ROOT).trim(), "npm");
+}
+
 /**
  * Paths inside a tarball, without npm's leading "package/" directory. Reads
  * past a lone zero block (--ignore-zeros), as npm's own tar reader does, and
- * refuses anything tar does not list as a regular file (directories, links;
- * bsdtar, on macOS, also lists contiguous and unknown entry types as regular
- * files, which GNU tar in CI refuses). npm's own tar reader must then see
- * exactly the same regular files.
+ * refuses anything tar does not list as a regular file (directories and
+ * links; GNU tar, in CI, lists contiguous and unknown entry types as `C` and
+ * `?`, while bsdtar, on macOS, lists them as regular files). npm's own tar
+ * reader must then see exactly the same regular files, in the same order.
  */
 function tarballFiles(tarball: string): string[] {
   const types = run("tar", ["--ignore-zeros", "-tvzf", tarball], REPO_ROOT)
@@ -300,7 +311,7 @@ function tarballFiles(tarball: string): string[] {
     .split("\n")
     .filter((line) => line !== "");
   const npmEntries = npmTarEntries(tarball);
-  if (JSON.stringify(npmEntries) !== JSON.stringify(entries.map((entry) => `File ${entry}`))) {
+  if (!sameTarballEntries(entries, npmEntries)) {
     fail(`npm's tar reader sees different entries: ${npmEntries.join(", ")}`);
   }
   return entries.map((line) => (line.startsWith("package/") ? line.slice("package/".length) : fail(`unexpected tarball entry ${line}`)));
@@ -312,6 +323,41 @@ function tarballManifest(tarball: string): { name: string; version: string } {
     name: stringField(parsed, "name", "the tarball manifest"),
     version: stringField(parsed, "version", "the tarball manifest"),
   };
+}
+
+/**
+ * Run the publish job's own check (`check.cjs` from publish-sdk.yml) on the
+ * tarball, with the same GNU tar listings, so a version published by hand
+ * from a dry run meets the same rules as a staged one: the file allowlist,
+ * the exact manifest keys, registry-only dependencies, and the comparison
+ * with npm's tar reader.
+ */
+function runPublishCheck(tarball: string, work: string, version: string): void {
+  const dir = join(work, "publish-check");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "entries.txt"), run("tar", ["--ignore-zeros", "-tzf", tarball], REPO_ROOT));
+  const types = run("tar", ["--ignore-zeros", "-tvzf", tarball], REPO_ROOT)
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => line.charAt(0));
+  writeFileSync(join(dir, "types.txt"), `${types.join("\n")}\n`);
+  writeFileSync(join(dir, "check.cjs"), publishCheckScript());
+  const result = spawnSync(
+    "node",
+    [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball, npmDirectory()],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: COMMAND_TIMEOUT_MS,
+      env: { ...process.env, PACKAGE_NAME, VERSION: version },
+    },
+  );
+  if (result.status !== 0) {
+    const reason =
+      result.error?.message ?? ((result.stderr ?? "").trim() || `exit ${result.status ?? result.signal ?? "unknown"}`);
+    fail(`the publish job's check refuses the tarball: ${reason}`);
+  }
+  process.stdout.write(result.stdout);
 }
 
 /** Build and pack, or take SYNXED_SDK_TARBALL. Returns the tarball path. */
@@ -371,6 +417,7 @@ function main(): void {
         fail(`tarball is missing ${file}`);
       }
     }
+    runPublishCheck(tarball, work, version);
     console.log(`checked ${name}@${version}: ${files.length} files`);
 
     // 3. Install into a fresh consumer project.
