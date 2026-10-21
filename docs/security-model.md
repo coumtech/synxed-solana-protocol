@@ -220,12 +220,12 @@ paid. Events first attempted after the upgrade need no such check.
 
 Every settlement creates a 41-byte record that is never closed, so its
 rent-exempt balance stays locked (0.00085852 SOL on devnet on
-20 October 2026). Opening a namespace locks rent for 98 bytes once
-(0.00114808 SOL on devnet on 21 October 2026). That is comparable to, or larger than, the value of a
+20 October 2026). That is comparable to, or larger than, the value of a
 single audio-ad impression. Settle aggregated amounts, for example one
 settlement per beneficiary set per period, rather than one per impression.
 Closing records would let an event be settled again, so the program does not
-offer it.
+offer it. Opening a namespace also locks rent, for 98 bytes, once
+(0.00114808 SOL on devnet on 21 October 2026).
 
 ### 3. The program is upgradeable by a single key
 
