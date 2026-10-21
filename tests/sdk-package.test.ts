@@ -179,6 +179,41 @@ describe("ALLOWED_PACKAGE_FILE", () => {
   });
 });
 
+// A minimal ustar writer, so a test can build tarballs `tar` itself would
+// never produce: entries hidden behind a lone zero block, and links.
+const ustarHeader = (name: string, size: number, type: string, linkname = ""): Buffer => {
+  const header = Buffer.alloc(512);
+  const field = (value: string, offset: number, length: number): void => {
+    header.write(value, offset, Math.min(Buffer.byteLength(value), length), "ascii");
+  };
+  const octal = (value: number, length: number): string => `${value.toString(8).padStart(length - 1, "0")}\0`;
+  field(name, 0, 100);
+  field(octal(0o644, 8), 100, 8);
+  field(octal(0, 8), 108, 8);
+  field(octal(0, 8), 116, 8);
+  field(octal(size, 12), 124, 12);
+  field(octal(0, 12), 136, 12);
+  field("        ", 148, 8);
+  field(type, 156, 1);
+  field(linkname, 157, 100);
+  field("ustar\0", 257, 6);
+  field("00", 263, 2);
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  field(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8);
+  return header;
+};
+const ustarFile = (name: string, contents: string): Buffer => {
+  const data = Buffer.from(contents);
+  const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
+  return Buffer.concat([ustarHeader(name, data.length, "0"), data, padding]);
+};
+const writeGzip = (parts: Buffer[]): { dir: string; tarball: string } => {
+  const dir = mkdtempSync(join(tmpdir(), "synxed-sdk-tarball-test-"));
+  const tarball = join(dir, "crafted.tgz");
+  writeFileSync(tarball, Bun.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)])));
+  return { dir, tarball };
+};
+
 // The publish workflow checks the tarball with literals of its own, because
 // its credentialed job runs no repository code. These pin the copies together.
 describe("release configuration stays consistent", () => {
@@ -198,11 +233,13 @@ describe("release configuration stays consistent", () => {
 
   test("the publish job restates the build rules exactly", () => {
     const publish = workflow("publish-sdk.yml");
-    expect(publish).toContain(`const allowedFile = /${ALLOWED_PACKAGE_FILE.source}/;`);
-    expect(publish).toContain(`const registryRange = /${REGISTRY_RANGE.source}/;`);
+    expect(publish).toContain(`const allowedFile = ${String(ALLOWED_PACKAGE_FILE)};`);
+    expect(publish).toContain(`const registryRange = ${String(REGISTRY_RANGE)};`);
     const keys = Object.keys(publishManifest(workspace)).sort();
     expect(publish).toContain(`const expectedKeys = ${JSON.stringify(keys)};`);
-    expect(publish).toContain('run: npm stage publish --provenance --access public "$TARBALL"');
+    expect(publish).toMatch(/^ {8}run: npm stage publish --provenance --access public "\$TARBALL"$/m);
+    expect(publish).toContain('tar --ignore-zeros -tzf "$TARBALL"');
+    expect(publish).toContain('types.some((type) => type !== "-")');
   });
 
   test("CI tests the minimum Node version the package declares", () => {
@@ -213,8 +250,8 @@ describe("release configuration stays consistent", () => {
         : "";
     const minimum = /^>=(\d+)\.(\d+)$/.exec(declared);
     expect(minimum).not.toBeNull();
-    expect(workflow("ci.yml")).toContain(
-      `node-version: "${minimum?.[1]}.${minimum?.[2]}.0"`,
+    expect(workflow("ci.yml")).toMatch(
+      new RegExp(`^ {10}node-version: "${minimum?.[1]}\\.${minimum?.[2]}\\.0"$`, "m"),
     );
   });
 });
@@ -223,10 +260,12 @@ describe("release configuration stays consistent", () => {
 // SYNXED_SDK_TARBALL. These cases fail before any network access.
 describe("smoke test against a given tarball", () => {
   const smoke = (env: Record<string, string>): { status: number | null; output: string } => {
-    const result = spawnSync("bun", ["run", join(REPO_ROOT, "scripts", "smoke-sdk-package.ts")], {
+    const result = spawnSync(process.execPath, ["run", join(REPO_ROOT, "scripts", "smoke-sdk-package.ts")], {
       cwd: REPO_ROOT,
       encoding: "utf8",
-      env: { ...process.env, ...env },
+      // Offline, so a broken refusal fails fast instead of installing from
+      // the registry; never keep temp dirs from these runs.
+      env: { ...process.env, SYNXED_KEEP_SMOKE: "", npm_config_offline: "true", ...env },
       timeout: 60_000,
     });
     return { status: result.status, output: `${result.stdout}${result.stderr}` };
@@ -244,7 +283,13 @@ describe("smoke test against a given tarball", () => {
       writeFileSync(join(dir, "package", extraFile), "SECRET=1\n");
     }
     const tarball = join(dir, "crafted.tgz");
-    const tar = spawnSync("tar", ["-czf", tarball, "-C", dir, "package"]);
+    // List the files explicitly, so the tarball has no directory entry
+    // (npm pack does not write one, and the smoke test refuses it).
+    const entries = ["package/package.json", "package/index.js"];
+    if (extraFile !== undefined) {
+      entries.push(`package/${extraFile}`);
+    }
+    const tar = spawnSync("tar", ["-czf", tarball, "-C", dir, ...entries]);
     expect(tar.status).toBe(0);
     return { dir, tarball };
   };
@@ -266,6 +311,68 @@ describe("smoke test against a given tarball", () => {
     }
   });
 
+  const manifest = JSON.stringify({ name: PACKAGE_NAME, version: workspace.version });
+
+  test("sees entries hidden behind a lone zero block, as npm does", () => {
+    // A reader that stops at the first zero block sees one package.json and
+    // misses the second; npm's reader continues and would publish both.
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", manifest),
+      Buffer.alloc(512),
+      ustarFile("package/package.json", JSON.stringify({ name: PACKAGE_NAME, version: workspace.version, scripts: { postinstall: "evil" } })),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("duplicate entries");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses a symbolic link with an allowlisted name", () => {
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", manifest),
+      ustarHeader("package/evil.js", 0, "2", "/etc/passwd"),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("not regular files");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses duplicate entries", () => {
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", manifest),
+      ustarFile("package/index.js", "export {};\n"),
+      ustarFile("package/index.js", "export const x = 1;\n"),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("duplicate entries");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses a tarball of another package", () => {
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", JSON.stringify({ name: "@coumtech/other", version: workspace.version })),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("@coumtech/other");
+      expect(result.output).toContain("but this checkout is");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("refuses a tarball with a file outside the allowlist", () => {
     const { dir, tarball } = craft(String(workspace.version), ".env");
     try {
@@ -276,4 +383,103 @@ describe("smoke test against a given tarball", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// The publish job's check runs no repository code, so it is restated inline in
+// publish-sdk.yml. This runs that exact script, as the runner would see it,
+// against a valid tarball and against tampered ones.
+describe("publish job tarball check", () => {
+  const checkScript = (): string => {
+    const text = readFileSync(join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"), "utf8");
+    const body = text.split(`cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'\n`)[1]?.split("\n          CHECK\n")[0];
+    expect(body).toBeDefined();
+    return (body ?? "")
+      .split("\n")
+      .map((line) => (line.startsWith(" ".repeat(10)) ? line.slice(10) : line))
+      .join("\n");
+  };
+
+  const valid = publishManifest(workspace);
+  const targets = ["main", "types"].map((key) => String(valid[key]));
+  const exportsField = valid.exports;
+  const exportEntries =
+    typeof exportsField === "object" && exportsField !== null ? Object.values(exportsField) : [];
+  for (const entry of exportEntries) {
+    if (typeof entry === "string") {
+      targets.push(entry);
+    } else if (typeof entry === "object" && entry !== null) {
+      targets.push(...Object.values(entry).map(String));
+    }
+  }
+  const shipped = [...new Set(targets.filter((t) => t !== "./package.json").map((t) => t.slice(2)))];
+
+  const runCheck = (
+    manifestOverride: Record<string, unknown>,
+    extra: Buffer[] = [],
+  ): { status: number | null; output: string } => {
+    const dir = mkdtempSync(join(tmpdir(), "synxed-publish-check-test-"));
+    try {
+      const parts = [
+        ustarFile("package/package.json", JSON.stringify({ ...valid, ...manifestOverride })),
+        ...shipped.map((file) => ustarFile(`package/${file}`, "x\n")),
+        ustarFile("package/README.md", "readme\n"),
+        ustarFile("package/LICENSE", "license\n"),
+        ...extra,
+      ];
+      const tarball = join(dir, "crafted.tgz");
+      writeFileSync(tarball, Bun.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)])));
+      // The same two listings the workflow step writes.
+      const entries = spawnSync("tar", ["--ignore-zeros", "-tzf", tarball], { encoding: "utf8" }).stdout;
+      const types = spawnSync("tar", ["--ignore-zeros", "-tvzf", tarball], { encoding: "utf8" })
+        .stdout.split("\n")
+        .filter((line) => line !== "")
+        .map((line) => line.charAt(0))
+        .join("\n");
+      writeFileSync(join(dir, "entries.txt"), entries);
+      writeFileSync(join(dir, "types.txt"), `${types}\n`);
+      writeFileSync(join(dir, "check.cjs"), checkScript());
+      const result = spawnSync(
+        "node",
+        [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball],
+        {
+          encoding: "utf8",
+          env: { ...process.env, PACKAGE_NAME, VERSION: String(workspace.version) },
+        },
+      );
+      return { status: result.status, output: `${result.stdout}${result.stderr}` };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("accepts a tarball that follows the build rules", () => {
+    const result = runCheck({});
+    expect(result.output).toContain("files checked");
+    expect(result.status).toBe(0);
+  });
+
+  const refused: ReadonlyArray<readonly [string, Record<string, unknown>, Buffer[], string]> = [
+    ["an extra manifest key", { bin: { x: "./index.js" } }, [], "unexpected manifest keys"],
+    ["a git dependency", { dependencies: { bs58: "github:someone/bs58" } }, [], "dependencies.bs58"],
+    ["a peer dependency URL", { peerDependencies: { "@solana/web3.js": "https://example.test/x.tgz" } }, [], "peerDependencies"],
+    ["a main outside the package", { main: "./sub/../index.js" }, [], "bad target"],
+    ["another package name", { name: "@coumtech/other" }, [], "name is @coumtech/other"],
+    ["a changed publishConfig", { publishConfig: { access: "public", provenance: false } }, [], "unexpected publishConfig"],
+    ["a file outside the allowlist", {}, [ustarFile("package/.env", "SECRET=1\n")], "unexpected tarball entry package/.env"],
+    ["a duplicate entry", {}, [ustarFile("package/index.js", "y\n")], "duplicate tarball entries"],
+    [
+      "a manifest hidden behind a lone zero block",
+      {},
+      [Buffer.alloc(512), ustarFile("package/package.json", JSON.stringify({ scripts: { postinstall: "evil" } }))],
+      "duplicate tarball entries",
+    ],
+    ["a symbolic link", {}, [ustarHeader("package/evil.js", 0, "2", "/etc/passwd")], "not regular files"],
+  ];
+  for (const [name, override, extra, message] of refused) {
+    test(`refuses ${name}`, () => {
+      const result = runCheck(override, extra);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain(message);
+    });
+  }
 });

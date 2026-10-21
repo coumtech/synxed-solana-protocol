@@ -4,7 +4,8 @@ name: Publish SDK
 # trusted publishing (OIDC), with a provenance attestation that links the
 # package to this workflow run. No npm token is stored in GitHub. A staged
 # version stays private until a maintainer approves it on npmjs.com with 2FA,
-# so a workflow run alone can never make a version public.
+# so, with the trusted publisher limited to staging as CONTRIBUTING.md
+# requires, a workflow run alone cannot make a version public.
 # Manual only. Leave "publish" unchecked for a dry run.
 # Release steps and the one-time setup: CONTRIBUTING.md, "Releasing the
 # TypeScript SDK".
@@ -233,21 +234,28 @@ jobs:
             echo "sha256 mismatch: packed $EXPECTED, downloaded $actual"
             exit 1
           fi
-          tar -tzf "$TARBALL" > "$RUNNER_TEMP/entries.txt"
-          tar -xzOf "$TARBALL" package/package.json > "$RUNNER_TEMP/manifest.json"
+          # --ignore-zeros reads past a lone zero block, as npm's own tar reader
+          # does, so entries hidden behind one are seen (and refused) here too.
+          tar --ignore-zeros -tzf "$TARBALL" > "$RUNNER_TEMP/entries.txt"
+          tar --ignore-zeros -tvzf "$TARBALL" | cut -c1 > "$RUNNER_TEMP/types.txt"
           cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'
           const fs = require("node:fs");
-          const [entriesFile, manifestFile] = process.argv.slice(2);
+          const [entriesFile, typesFile, tarball] = process.argv.slice(2);
           const problems = [];
           const allowedFile = /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
           const registryRange = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
           const expectedKeys = ["author","bugs","dependencies","description","engines","exports","files","homepage","keywords","license","main","name","peerDependencies","publishConfig","repository","sideEffects","type","types","version"];
-          const entries = fs.readFileSync(entriesFile, "utf8").split("\n").filter((line) => line !== "");
+          const lines = (file) => fs.readFileSync(file, "utf8").split("\n").filter((line) => line !== "");
+          const entries = lines(entriesFile);
+          const types = lines(typesFile);
+          if (types.length !== entries.length || types.some((type) => type !== "-")) problems.push("tarball entries that are not regular files");
           if (new Set(entries).size !== entries.length) problems.push("duplicate tarball entries");
           for (const entry of entries) {
             if (!entry.startsWith("package/") || !allowedFile.test(entry.slice(8))) problems.push("unexpected tarball entry " + entry);
           }
-          const m = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+          if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
+          const manifestText = require("node:child_process").execFileSync("tar", ["--ignore-zeros", "-xzOf", tarball, "package/package.json"], { encoding: "utf8" });
+          const m = JSON.parse(manifestText);
           if (JSON.stringify(Object.keys(m).sort()) !== JSON.stringify(expectedKeys)) problems.push("unexpected manifest keys " + Object.keys(m).sort().join(","));
           if (m.name !== process.env.PACKAGE_NAME) problems.push("name is " + m.name);
           if (m.version !== process.env.VERSION) problems.push("version is " + m.version);
@@ -265,7 +273,7 @@ jobs:
           if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
           console.log(m.name + "@" + m.version + ": " + entries.length + " files checked");
           CHECK
-          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/manifest.json"
+          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/types.txt" "$TARBALL"
 
       # Needs a trusted publisher on npmjs.com for this repository, this
       # workflow file, and the npm-publish environment, allowed to stage. There

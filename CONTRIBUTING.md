@@ -55,8 +55,9 @@ tests on the checkout, and the smoke test against that exact tarball.
 `publish` checks the tarball's sha256, file names, and manifest, then stages it
 on npm through trusted publishing with a provenance attestation. A staged
 version stays private until a maintainer approves it on npmjs.com with
-two-factor authentication, so no workflow run can make a version public on its
-own. No npm token is stored in GitHub.
+two-factor authentication. With the trusted publisher limited to staging (step
+3 below), no workflow run can make a version public on its own. No npm token
+is stored in GitHub.
 
 One-time setup, in repository and npm settings, before the first release:
 
@@ -77,14 +78,16 @@ One-time setup, in repository and npm settings, before the first release:
    `npm publish --provenance=false ./<tarball file>`. The override is needed
    because the package asks for provenance, which only CI can generate, and
    the leading `./` stops npm from reading the path as a GitHub repository.
-   This one version carries no provenance.
+   This one version carries no provenance. Straight after, set the package's
+   publishing access on npmjs.com to require two-factor authentication and
+   disallow tokens; trusted publishing keeps working under that setting.
 3. When the next release is ready to run (its version bump merged to `main`),
    add a trusted publisher to the package on npmjs.com: GitHub Actions,
    repository `coumtech/synxed-solana-protocol`, workflow `publish-sdk.yml`,
-   environment `npm-publish`, with staged publishing only (do not allow direct
-   `npm publish`). npm expires a new trusted publisher that is not used within
-   two days, so run the release straight away. Then set the package's
-   publishing access to require two-factor authentication and disallow tokens.
+   environment `npm-publish`, with staged publishing only: do not allow direct
+   `npm publish`, and leave dist-tag management off. npm expires a new trusted
+   publisher whose first publish has not completed within two days, so stage
+   the release and approve it within that window.
 
 Each later release:
 
@@ -93,8 +96,10 @@ Each later release:
 2. Run **Publish SDK** from `main` with *publish* unchecked, a dry run.
 3. Run it again with *publish* checked and approve the `npm-publish`
    deployment. The version is staged, not yet public.
-4. Approve the staged version on npmjs.com, or with `npm stage approve`, using
-   two-factor authentication. Reject it the same way if anything looks wrong.
+4. Approve the staged version on npmjs.com, or with `npm stage approve
+   <stage-id>`, using two-factor authentication. The stage id is printed by
+   the workflow's "Stage on npm" step and listed by `npm stage list`. Reject
+   it the same way if anything looks wrong.
 
 ## Secrets
 

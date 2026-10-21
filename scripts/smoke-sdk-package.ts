@@ -41,7 +41,7 @@ import {
 } from "./build-sdk-package.ts";
 
 const REQUIRED_FILES = ["package.json", "README.md", "LICENSE", "index.js", "index.d.ts", "index.js.map", "client.js", "ledger.js", "types.js"];
-/** Every child process (npm, tar, node, tsc) gets this long before the smoke test gives up. */
+/** Every child process this script starts (npm, tar, node, tsc) gets this long before it gives up. */
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 /** Any valid program id works for these offline checks; this is the reference devnet deployment's. */
 const REFERENCE_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
@@ -222,7 +222,7 @@ computeSettlementN({ ...request, amountAtomic: 1 });
 
 /** The first ```ts block of the README inside the tarball, which npm shows to users. */
 function readmeExample(tarball: string): string {
-  const readme = run("tar", ["-xzOf", tarball, "package/README.md"], REPO_ROOT);
+  const readme = run("tar", ["--ignore-zeros", "-xzOf", tarball, "package/README.md"], REPO_ROOT);
   const match = /```ts\n([\s\S]*?)```/.exec(readme);
   return match?.[1] ?? fail("the package README has no ```ts example");
 }
@@ -246,16 +246,27 @@ function tsconfig(module: string, moduleResolution: string): string {
   )}\n`;
 }
 
-/** Paths inside a tarball, without npm's leading "package/" directory. */
+/**
+ * Paths inside a tarball, without npm's leading "package/" directory. Reads
+ * past a lone zero block (--ignore-zeros), as npm's own tar reader does, and
+ * refuses anything that is not a regular file (directories, links).
+ */
 function tarballFiles(tarball: string): string[] {
-  return run("tar", ["-tzf", tarball], REPO_ROOT)
+  const types = run("tar", ["--ignore-zeros", "-tvzf", tarball], REPO_ROOT)
     .split("\n")
-    .filter((line) => line !== "" && !line.endsWith("/"))
+    .filter((line) => line !== "")
+    .map((line) => line.charAt(0));
+  if (types.some((type) => type !== "-")) {
+    fail("tarball contains entries that are not regular files");
+  }
+  return run("tar", ["--ignore-zeros", "-tzf", tarball], REPO_ROOT)
+    .split("\n")
+    .filter((line) => line !== "")
     .map((line) => (line.startsWith("package/") ? line.slice("package/".length) : fail(`unexpected tarball entry ${line}`)));
 }
 
 function tarballManifest(tarball: string): { name: string; version: string } {
-  const parsed: unknown = JSON.parse(run("tar", ["-xzOf", tarball, "package/package.json"], REPO_ROOT));
+  const parsed: unknown = JSON.parse(run("tar", ["--ignore-zeros", "-xzOf", tarball, "package/package.json"], REPO_ROOT));
   return {
     name: stringField(parsed, "name", "the tarball manifest"),
     version: stringField(parsed, "version", "the tarball manifest"),
@@ -285,25 +296,21 @@ function engineRange(): string {
 
 function main(): void {
   const work = mkdtempSync(join(tmpdir(), "synxed-sdk-smoke-"));
-  // With a handler installed, SIGINT and SIGTERM no longer kill Bun outright,
-  // so the finally block below still runs and removes (or keeps) the temp dir.
-  // A Ctrl-C also stops the current child, so the run then ends promptly; a
-  // signal sent to this process alone takes effect when the current step
-  // finishes.
-  let exitCode: number | undefined;
+  // With a handler installed, SIGINT and SIGTERM no longer kill Bun outright.
+  // A Ctrl-C also stops the current child, so the run fails, the finally block
+  // below removes (or keeps) the temp dir, and the handler then exits with the
+  // signal's code. A signal sent to this process alone is only acted on once
+  // the run has finished, because each step blocks the event loop.
   const onSignal = (signal: NodeJS.Signals): void => {
-    exitCode = signal === "SIGINT" ? 130 : 143;
+    process.exit(signal === "SIGINT" ? 130 : 143);
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
     // 1 and 2. Obtain the tarball and inspect its contents.
     const tarball = obtainTarball(work);
-    const { name, version } = tarballManifest(tarball);
-    const workspace = readWorkspaceManifest();
-    if (name !== workspace.name || version !== workspace.version) {
-      fail(`${tarball} is ${name}@${version}, but this checkout is ${String(workspace.name)}@${String(workspace.version)}`);
-    }
+    // The file list first: a duplicate package.json would make the manifest
+    // ambiguous, so it must be refused before the manifest is read.
     const files = tarballFiles(tarball);
     if (new Set(files).size !== files.length) {
       fail("tarball contains duplicate entries");
@@ -312,6 +319,11 @@ function main(): void {
       if (!ALLOWED_PACKAGE_FILE.test(file)) {
         fail(`tarball contains an unexpected file: ${file}`);
       }
+    }
+    const { name, version } = tarballManifest(tarball);
+    const workspace = readWorkspaceManifest();
+    if (name !== workspace.name || version !== workspace.version) {
+      fail(`${tarball} is ${name}@${version}, but this checkout is ${String(workspace.name)}@${String(workspace.version)}`);
     }
     for (const file of REQUIRED_FILES) {
       if (!files.includes(file)) {
@@ -373,9 +385,6 @@ function main(): void {
       console.log(`kept ${work}`);
     } else {
       rmSync(work, { recursive: true, force: true });
-    }
-    if (exitCode !== undefined) {
-      process.exit(exitCode);
     }
   }
 }

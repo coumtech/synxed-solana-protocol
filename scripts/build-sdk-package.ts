@@ -176,7 +176,7 @@ export function buildSdkPackage(): Manifest {
   const tsc = spawnSync(
     "bunx",
     ["tsc", "-p", join(SDK_DIR, "tsconfig.build.json")],
-    { cwd: REPO_ROOT, stdio: "inherit" },
+    { cwd: REPO_ROOT, stdio: "inherit", timeout: 10 * 60 * 1000 },
   );
   if (tsc.status !== 0) {
     fail(`tsc failed: ${tsc.error?.message ?? `exit ${tsc.status ?? tsc.signal ?? "unknown"}`}`);
