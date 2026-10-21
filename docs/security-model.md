@@ -156,7 +156,8 @@ record, so settled events stay settled
 Before sending any settlement, persist its request together with its event
 id, its attempt number, and the parameters you built it with (program id,
 namespace, scale, and for tokens the mint and decimals), and keep that record
-permanently. If you sign the transaction separately from sending it
+permanently. A retry under the same event id resends that stored request
+unchanged. If you sign the transaction separately from sending it
 (`buildSettlementNTransaction`, `buildTokenSettlementNTransaction`), also
 persist its signature before sending. The `submit` functions, like a wallet's
 `sendTransaction`, sign and send in one call and return the signature only
@@ -175,11 +176,12 @@ treated it as failed. Decide from the transaction that created the record:
    `SettleTokenN` for your event: the 32 bytes after the instruction's
    one-byte tag equal the on-chain event id (`eventIdSeed`), and its namespace
    account is yours. At most one exists. Confirm it with a second provider:
-   same signature, finalized and successful.
+   same signature, finalized and successful, with the same instruction data
+   and accounts.
 2. Reconcile it against the stored request for that attempt, with the stored
-   parameters and without `beneficiaryIds` (`reconcileSettlementN`,
-   `reconcileTokenSettlementN`). If it matches, the event is paid: never
-   settle it again.
+   parameters and without `beneficiaryIds`, which only label ledger rows
+   (`reconcileSettlementN`, `reconcileTokenSettlementN`), on both providers'
+   copies. If both match, the event is paid: never settle it again.
 3. If it fails with a field mismatch (`NAMESPACE_MISMATCH`, `EVENT_MISMATCH`,
    `AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`,
    `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`, `MEMO_MISMATCH`,
@@ -188,10 +190,12 @@ treated it as failed. Decide from the transaction that created the record:
    because your authority key or your own system settled something you did
    not record. Rotate the authority if the key may be exposed.
 4. Anything else is unresolved: the transaction is not finalized or cannot be
-   found, an endpoint fails (`CLUSTER_MISMATCH`, `TX_NOT_FOUND`, `TX_FAILED`,
-   `TX_SIGNATURE`, `BLOCK_TIME_MISSING`, network errors), or the SDK cannot
-   read it (`PROGRAM_INSTRUCTION`, `INSTRUCTION_DATA`, `ACCOUNT_LAYOUT`, a
-   settlement made through another program, which you compare by hand).
+   found, the two providers disagree, an endpoint fails (`CLUSTER_MISMATCH`,
+   `TX_NOT_FOUND`, `TX_FAILED`, `TX_SIGNATURE`, `BLOCK_TIME_MISSING`, errors
+   from the RPC call itself), or the SDK cannot read the transaction or the
+   stored request (`PROGRAM_INSTRUCTION`, `INSTRUCTION_DATA`,
+   `ACCOUNT_LAYOUT`, any other error, a settlement made through another
+   program, which you compare by hand).
    Retry later and escalate to a person if it stays unresolved.
 
 The SDK's fetching reconcile functions read a transaction with exactly one
