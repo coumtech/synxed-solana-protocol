@@ -23,6 +23,7 @@ import {
 import { fakeAudioAdImpression } from "./event.ts";
 import {
   REPO_ROOT,
+  demoNamespace,
   ensureFunds,
   envBigInt,
   envIntList,
@@ -152,6 +153,8 @@ async function main(): Promise<void> {
 
   const programId = parseProgramId();
   await ensureFunds(connection, payer, lamportsTotal + fundingOverhead(programId));
+  const namespace =
+    programId !== undefined ? await demoNamespace(connection, payer, programId) : undefined;
 
   const submission = await submitSettlementN({
     connection,
@@ -159,6 +162,7 @@ async function main(): Promise<void> {
     request,
     lamportsPerAtomicUnit: scale,
     ...(programId !== undefined ? { programId } : {}),
+    ...(namespace !== undefined ? { namespace } : {}),
   });
 
   console.log(`\nSettled on devnet (${submission.mode} mode, ${shares.length}-way)`);
@@ -176,7 +180,7 @@ async function main(): Promise<void> {
     `  payer     ${explorerAddressUrl(payer.publicKey.toBase58())}`,
   );
 
-  if (programId === undefined) {
+  if (programId === undefined || namespace === undefined) {
     console.log(
       "\nLedger reconciliation skipped: system-transfer mode has no on-chain " +
         "idempotency record. Set SETTLEMENT_PROGRAM_ID for authoritative ledger evidence.",
@@ -189,6 +193,7 @@ async function main(): Promise<void> {
     connection,
     signature: submission.signature,
     programId,
+    namespace,
     request,
     unitsPerAtomicUnit: scale,
     beneficiaryIds: {

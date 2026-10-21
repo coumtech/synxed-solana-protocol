@@ -24,6 +24,7 @@ import {
 import { fakeAudioAdImpression } from "./event.ts";
 import {
   REPO_ROOT,
+  demoNamespace,
   ensureFunds,
   envBigInt,
   envInt,
@@ -128,6 +129,8 @@ async function main(): Promise<void> {
 
   const programId = parseProgramId();
   await ensureFunds(connection, payer, lamportsTotal + fundingOverhead(programId));
+  const namespace =
+    programId !== undefined ? await demoNamespace(connection, payer, programId) : undefined;
 
   const submission = await submitSettlement({
     connection,
@@ -135,6 +138,7 @@ async function main(): Promise<void> {
     request,
     lamportsPerAtomicUnit: scale,
     ...(programId !== undefined ? { programId } : {}),
+    ...(namespace !== undefined ? { namespace } : {}),
   });
 
   console.log(`\nSettled on devnet (${submission.mode} mode)`);
