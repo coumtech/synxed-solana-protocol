@@ -246,10 +246,47 @@ function tsconfig(module: string, moduleResolution: string): string {
   )}\n`;
 }
 
+// Lists a tarball with npm's own tar library (argv: library path, tarball),
+// strictly, so a header it would only warn about fails instead.
+const NPM_TAR_LIST = `
+const seen = [];
+require(process.argv[1]).t({
+  file: process.argv[2], sync: true, strict: true,
+  onentry: (entry) => seen.push(entry.type + " " + entry.path),
+});
+console.log(JSON.stringify(seen));
+`;
+
+/**
+ * The entries npm's own tar library reads in `tarball`. npm installs what this
+ * library reads, which can differ from GNU tar on a malformed header: it
+ * rejects a signed checksum and reads that entry's data as further entries.
+ */
+function npmTarEntries(tarball: string): string[] {
+  const library = join(run("npm", ["root", "-g"], REPO_ROOT).trim(), "npm", "node_modules", "tar");
+  const result = spawnSync("node", ["-e", NPM_TAR_LIST, library, tarball], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    timeout: COMMAND_TIMEOUT_MS,
+  });
+  if (result.status !== 0) {
+    const reason = result.stderr.split("\n").find((line) => line.includes("Error")) ?? `exit ${result.status ?? result.signal ?? "unknown"}`;
+    fail(`npm's tar reader refuses the tarball: ${reason}`);
+  }
+  const parsed: unknown = JSON.parse(result.stdout);
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
+    fail("npm's tar reader listing is not a list of entries");
+  }
+  return parsed.map(String);
+}
+
 /**
  * Paths inside a tarball, without npm's leading "package/" directory. Reads
  * past a lone zero block (--ignore-zeros), as npm's own tar reader does, and
- * refuses anything that is not a regular file (directories, links).
+ * refuses anything tar does not list as a regular file (directories, links;
+ * bsdtar, on macOS, also lists contiguous and unknown entry types as regular
+ * files, which GNU tar in CI refuses). npm's own tar reader must then see
+ * exactly the same regular files.
  */
 function tarballFiles(tarball: string): string[] {
   const types = run("tar", ["--ignore-zeros", "-tvzf", tarball], REPO_ROOT)
@@ -259,10 +296,14 @@ function tarballFiles(tarball: string): string[] {
   if (types.some((type) => type !== "-")) {
     fail("tarball contains entries that are not regular files");
   }
-  return run("tar", ["--ignore-zeros", "-tzf", tarball], REPO_ROOT)
+  const entries = run("tar", ["--ignore-zeros", "-tzf", tarball], REPO_ROOT)
     .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => (line.startsWith("package/") ? line.slice("package/".length) : fail(`unexpected tarball entry ${line}`)));
+    .filter((line) => line !== "");
+  const npmEntries = npmTarEntries(tarball);
+  if (JSON.stringify(npmEntries) !== JSON.stringify(entries.map((entry) => `File ${entry}`))) {
+    fail(`npm's tar reader sees different entries: ${npmEntries.join(", ")}`);
+  }
+  return entries.map((line) => (line.startsWith("package/") ? line.slice("package/".length) : fail(`unexpected tarball entry ${line}`)));
 }
 
 function tarballManifest(tarball: string): { name: string; version: string } {
