@@ -102,6 +102,26 @@ export function findSettlementRecordPda(
   return [pda, bump];
 }
 
+/**
+ * Address of the record a retired instruction (tags 0 to 2) created for an
+ * event id: `["settlement", event_id]`. Those records stay on chain after the
+ * program moves to namespaces, but a namespaced settlement uses a different
+ * address, so it does not see them. Before retrying an event first attempted
+ * before namespaces, check that no account exists here: if one does, the
+ * event was already settled and must not be settled again.
+ */
+export function findLegacySettlementRecordPda(
+  programId: PublicKey,
+  seed: Uint8Array,
+): readonly [PublicKey, number] {
+  assertSeed(seed);
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [new TextEncoder().encode(SETTLEMENT_SEED), seed],
+    programId,
+  );
+  return [pda, bump];
+}
+
 /** A namespace account's contents, as stored on-chain. */
 export interface NamespaceAccount {
   bump: number;

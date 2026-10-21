@@ -215,7 +215,11 @@ could settle it first, to wallets of their choosing, and the real settlement
 then failed with `AccountAlreadyInitialized`. The program now refuses those
 tags with `InvalidInstructionData`, logging that they are retired. Records
 they created stay on chain at their old addresses and are not reused: a
-namespaced record has a different address.
+namespaced record has a different address. So the program cannot tell that
+an event settled before the upgrade is settled: before retrying an event first
+attempted before namespaces, check its old record address
+(`findLegacySettlementRecordPda` in the SDK); if an account exists there, the
+event is settled and must not be settled again.
 
 ## Idempotency
 

@@ -132,11 +132,14 @@ describe("ledger reconciliation", () => {
   });
 
   // A parsed RPC transaction in the shape getParsedTransaction returns.
+  // `leading` instructions come first; the memo and the settlement follow.
   function parsedSettlement(
     accounts: readonly PublicKey[],
     data: string,
     memo: Readonly<Record<string, unknown>>,
+    leading: readonly unknown[] = [],
   ): ParsedTransactionWithMeta {
+    const settleIndex = leading.length + 1;
     return {
       slot: 491_725_036,
       blockTime: 1_788_310_318,
@@ -146,6 +149,7 @@ describe("ledger reconciliation", () => {
           accountKeys: [],
           recentBlockhash: "fixture",
           instructions: [
+            ...leading,
             {
               parsed: JSON.stringify(memo),
               program: "spl-memo",
@@ -159,7 +163,7 @@ describe("ledger reconciliation", () => {
         err: null,
         innerInstructions: [
           {
-            index: 1,
+            index: settleIndex,
             instructions: RECIPIENTS.map((destination, index) => ({
               parsed: {
                 info: { destination, lamports: Number(AMOUNTS[index]), source: PAYER },
@@ -210,6 +214,47 @@ describe("ledger reconciliation", () => {
       unitsPerAtomicUnit: 1_000n,
     });
     expect(reconciled.record.namespace).toBe(NAMESPACE.toBase58());
+  });
+
+  test("reads a first wallet settlement that also opens the namespace", () => {
+    const createNamespace = {
+      accounts: [new PublicKey(PAYER), new PublicKey(PAYER), NAMESPACE, SYSTEM_PROGRAM],
+      data: base58(Uint8Array.from([3, ...namespaceIdFromLabel("synxed-demo"), ...new PublicKey(PAYER).toBytes()])),
+      programId: PROGRAM_ID,
+    };
+    const observed = observeProgramSettlement(
+      parsedSettlement(settleNAccounts(), settleNData, observation().memo, [createNamespace]),
+      "fixture-signature",
+      PROGRAM_ID,
+    );
+    expect(observed.transfers.map((transfer) => transfer.amountOnChain)).toEqual([...AMOUNTS]);
+    const reconciled = reconcileObservedSettlementN({
+      observation: observed,
+      request: request(),
+      namespace: NAMESPACE,
+      unitsPerAtomicUnit: 1_000n,
+    });
+    expect(reconciled.record.signature).toBe("fixture-signature");
+  });
+
+  test("refuses a second settlement or a rotation in the same transaction", () => {
+    const secondSettlement = { accounts: settleNAccounts(), data: settleNData, programId: PROGRAM_ID };
+    const rotation = {
+      accounts: [new PublicKey(PAYER), NAMESPACE],
+      data: base58(Uint8Array.from([4, ...SYSTEM_PROGRAM.toBytes().map((_, i) => i + 1)])),
+      programId: PROGRAM_ID,
+    };
+    for (const extra of [secondSettlement, rotation]) {
+      expectLedgerCode(
+        () =>
+          observeProgramSettlement(
+            parsedSettlement(settleNAccounts(), settleNData, observation().memo, [extra]),
+            "fixture-signature",
+            PROGRAM_ID,
+          ),
+        "PROGRAM_INSTRUCTION",
+      );
+    }
   });
 
   test("refuses a record that is not derived from the namespace in the instruction", () => {

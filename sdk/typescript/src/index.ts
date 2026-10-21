@@ -55,6 +55,7 @@ export {
   encodeSettleNData,
   encodeSettleTokenNData,
   eventIdSeed,
+  findLegacySettlementRecordPda,
   findNamespacePda,
   findSettlementRecordPda,
   namespaceIdFromLabel,

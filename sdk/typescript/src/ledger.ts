@@ -10,6 +10,7 @@ import {
 import bs58 from "bs58";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
+  CREATE_NAMESPACE_TAG,
   SETTLE_N_HEADER_LENGTH,
   SETTLE_N_TAG,
   SETTLE_TOKEN_N_HEADER_LENGTH,
@@ -316,16 +317,8 @@ export function observeProgramSettlement(
     );
   }
 
-  const matches = transaction.transaction.message.instructions
-    .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.programId.equals(programId));
-  if (matches.length !== 1 || !isPartiallyDecoded(matches[0].instruction)) {
-    throw new LedgerError(
-      "PROGRAM_INSTRUCTION",
-      `expected exactly one raw instruction for program ${programId.toBase58()}`,
-    );
-  }
-  const programInstruction = matches[0].instruction;
+  const settlement = findSettlementInstruction(transaction, programId);
+  const programInstruction = settlement.instruction;
   const decoded = decodeSettleNData(programInstruction.data);
   const count = decoded.bps.length;
   const expectedAccountCount = count + 5;
@@ -357,7 +350,7 @@ export function observeProgramSettlement(
 
   const memo = extractMemo(transaction);
   const inner = transaction.meta.innerInstructions?.find(
-    (group) => group.index === matches[0].index,
+    (group) => group.index === settlement.index,
   );
   if (inner === undefined) {
     throw new LedgerError(
@@ -593,16 +586,8 @@ export function observeProgramTokenSettlement(
   if (transaction.blockTime === undefined || transaction.blockTime === null) {
     throw new LedgerError("BLOCK_TIME_MISSING", `transaction ${signature} has no block time`);
   }
-  const matches = transaction.transaction.message.instructions
-    .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.programId.equals(programId));
-  if (matches.length !== 1 || !isPartiallyDecoded(matches[0].instruction)) {
-    throw new LedgerError(
-      "PROGRAM_INSTRUCTION",
-      `expected exactly one raw instruction for program ${programId.toBase58()}`,
-    );
-  }
-  const programInstruction = matches[0].instruction;
+  const settlement = findSettlementInstruction(transaction, programId);
+  const programInstruction = settlement.instruction;
   const decoded = decodeSettleTokenNData(programInstruction.data);
   const count = decoded.bps.length;
   const expectedAccountCount = count + 8;
@@ -639,7 +624,7 @@ export function observeProgramTokenSettlement(
     );
   }
   const inner = transaction.meta.innerInstructions?.find(
-    (group) => group.index === matches[0].index,
+    (group) => group.index === settlement.index,
   );
   if (inner === undefined) {
     throw new LedgerError(
@@ -905,6 +890,49 @@ export function ledgerEntryId(
   return toHex(
     sha256(new TextEncoder().encode(`${signature}\u0000${role}\u0000${beneficiaryId}`)),
   );
+}
+
+/**
+ * The transaction's one settlement instruction for `programId`. A
+ * `CreateNamespace` for the same program may sit beside it: a wallet's first
+ * settlement opens its namespace in the same transaction. Anything else from
+ * the program (a second settlement, a rotation) fails closed.
+ */
+function findSettlementInstruction(
+  transaction: ParsedTransactionWithMeta,
+  programId: PublicKey,
+): { instruction: PartiallyDecodedInstruction; index: number } {
+  const fromProgram = transaction.transaction.message.instructions
+    .map((instruction, index) => ({ instruction, index }))
+    .filter(({ instruction }) => instruction.programId.equals(programId));
+  const raw: { instruction: PartiallyDecodedInstruction; index: number }[] = [];
+  for (const { instruction, index } of fromProgram) {
+    if (!isPartiallyDecoded(instruction)) {
+      throw new LedgerError(
+        "PROGRAM_INSTRUCTION",
+        `expected raw instructions for program ${programId.toBase58()}`,
+      );
+    }
+    raw.push({ instruction, index });
+  }
+  const settlements = raw.filter(
+    ({ instruction }) => instructionTag(instruction.data) !== CREATE_NAMESPACE_TAG,
+  );
+  if (settlements.length !== 1) {
+    throw new LedgerError(
+      "PROGRAM_INSTRUCTION",
+      `expected exactly one settlement instruction for program ${programId.toBase58()}, besides any CreateNamespace`,
+    );
+  }
+  return settlements[0];
+}
+
+function instructionTag(data: string): number | null {
+  try {
+    return bs58.decode(data)[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function assertNamespace(observed: string, expected: PublicKey): void {

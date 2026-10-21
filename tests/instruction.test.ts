@@ -9,6 +9,7 @@ import {
   SETTLE_N_TAG,
   SETTLE_TOKEN_N_TAG,
   eventIdSeed,
+  findLegacySettlementRecordPda,
   findNamespacePda,
   findSettlementRecordPda,
   type ProtocolErrorCode,
@@ -70,6 +71,26 @@ describe("eventIdSeed", () => {
 
   test("rejects an empty event id", () => {
     expectCode(() => eventIdSeed(""), "EVENT_ID_EMPTY");
+  });
+});
+
+describe("findLegacySettlementRecordPda", () => {
+  test("matches a record a retired instruction created on devnet", () => {
+    // The reference deployment's four-way settlement of this event, made with
+    // the retired SettleN before namespaces, created this record account.
+    const reference = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
+    const [record] = findLegacySettlementRecordPda(
+      reference,
+      eventIdSeed("evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af"),
+    );
+    expect(record.toBase58()).toBe("4xrJM7aoaSkbmzXRgARZP8WSBzdd1nqrSqk45KJhE7n3");
+  });
+
+  test("differs from the namespaced record of the same event", () => {
+    const namespace = findNamespacePda(PROGRAM_ID, key("creator"), FIXED_SEED)[0];
+    const [legacy] = findLegacySettlementRecordPda(PROGRAM_ID, FIXED_SEED);
+    const [current] = findSettlementRecordPda(PROGRAM_ID, namespace, FIXED_SEED);
+    expect(legacy.equals(current)).toBe(false);
   });
 });
 

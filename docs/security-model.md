@@ -195,17 +195,22 @@ treated it as failed. Decide from the transaction that created the record:
    Retry later and escalate to a person if it stays unresolved.
 
 The SDK's fetching reconcile functions read a transaction with exactly one
-top-level `SettleN` or `SettleTokenN` instruction. For a settlement made
+top-level `SettleN` or `SettleTokenN` instruction, alongside at most the
+`CreateNamespace` a wallet's first settlement carries. For a settlement made
 through another program, read its stack height and resolve its account
 indexes against the transaction's static keys, then
 `meta.loadedAddresses.writable`, then `meta.loadedAddresses.readonly`, or
 request the `jsonParsed` encoding.
 
 Records created by the retired instructions stay on chain at their old
-addresses (`["settlement", event_id]`). They do not block anything in a
-namespace, and the SDK no longer reads those transactions
-(`tests/ledger.test.ts`: refuses a settlement made with a retired
-instruction).
+addresses (`["settlement", event_id]`), and the SDK no longer reads those
+transactions (`tests/ledger.test.ts`: refuses a settlement made with a
+retired instruction). A namespaced settlement does not see them, so after the
+program is upgraded in place, an event that was settled before the upgrade
+could be settled a second time. Before retrying any event first attempted
+before the upgrade, check its old record address
+(`findLegacySettlementRecordPda`); if an account exists there, the event is
+paid. Events first attempted after the upgrade need no such check.
 
 ### 2. Records are permanent and cost rent per settlement
 
