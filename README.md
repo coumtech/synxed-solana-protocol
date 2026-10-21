@@ -10,7 +10,7 @@ App / game  ->  Revenue event  ->  Split (35/35/20/10, configurable)
             ->  Solana settlement  ->  artist / studio / platform / rewards pool
 ```
 
-**What this is:** the public settlement rail — a Solana program, a strict
+**What this is:** the public settlement rail, made up of a Solana program, a strict
 TypeScript SDK, a runnable demo, and the protocol documentation.
 
 **What this is not:** the SYNXED product. The proprietary platform (radio
@@ -37,7 +37,7 @@ configurable) split:
 Splits are basis points that must sum to exactly 10000; payouts are integer
 math that always sums to the gross amount (rounding dust goes to the last
 share, documented in [docs/protocol.md](docs/protocol.md)). Invalid splits
-are rejected — in the client and on-chain — never renormalized.
+are rejected, in the client and on-chain, and never renormalized.
 
 Splits are not limited to three parties. The `SettleN` instruction settles
 one to eight configured shares under the same rules, which is how a
@@ -118,11 +118,11 @@ See [docs/spl-stablecoin.md](docs/spl-stablecoin.md).
 ### Settlement modes
 
 - **Fallback (default):** one system transfer per nonzero share, computed
-  with the split math, plus a memo — works with nothing deployed.
+  with the split math, plus a memo. It works with nothing deployed.
 - **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
   becomes a single instruction that re-validates the split on-chain,
   enforces per-event idempotency, and pays every wallet atomically. A
-  reference deployment exists on devnet — no build tools required:
+  reference deployment exists on devnet, so no build tools are required:
 
   ```
   SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
@@ -179,7 +179,7 @@ docs/                         architecture, protocol spec, integration guide,
   SVM tests of the compiled program (idempotency, pre-funded record
   defense, account validation) run in CI on every pull request
 
-**Current open-source extensions:**
+**Current open source extensions:**
 
 - Four-way reference split: artist 35%, studio 35%, platform 20%, listener
   rewards pool 10% (`bun run demo`; the original three-way example remains
@@ -201,9 +201,9 @@ docs/                         architecture, protocol spec, integration guide,
 
 ## Contributing and security
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — branch protection, workflow, code
+- [CONTRIBUTING.md](CONTRIBUTING.md): branch protection, workflow, code
   standards
-- [SECURITY.md](SECURITY.md) — private vulnerability reporting; never
+- [SECURITY.md](SECURITY.md): private vulnerability reporting; never
   commit keypairs or `.env`
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
