@@ -58,7 +58,7 @@ const RELEASE_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
  * full version. Git, URL, path, alias, workspace, and catalog specs are
  * rejected because they bypass the registry or cannot be resolved by npm.
  */
-const REGISTRY_RANGE = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+export const REGISTRY_RANGE = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const EXPECTED_PUBLISH_CONFIG = JSON.stringify({ access: "public", provenance: true });
 
 type Manifest = Record<string, unknown>;

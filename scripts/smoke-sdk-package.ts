@@ -36,18 +36,14 @@ import {
   ALLOWED_PACKAGE_FILE,
   PACKAGE_DIR,
   REPO_ROOT,
-  SDK_DIR,
   buildSdkPackage,
   readWorkspaceManifest,
 } from "./build-sdk-package.ts";
 
 const REQUIRED_FILES = ["package.json", "README.md", "LICENSE", "index.js", "index.d.ts", "index.js.map", "client.js", "ledger.js", "types.js"];
-/** Network installs get this long before the smoke test gives up. */
-const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
-/**
- * Any valid program id works for these offline checks; the reference devnet
- * deployment's id is used so derived addresses match the documentation.
- */
+/** Every child process (npm, tar, node, tsc) gets this long before the smoke test gives up. */
+const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/** Any valid program id works for these offline checks; this is the reference devnet deployment's. */
 const REFERENCE_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
 const EVENT_ID = "smoke-event-1";
 const SHARES = [
@@ -61,7 +57,7 @@ function fail(message: string): never {
   throw new Error(`smoke-sdk-package: ${message}`);
 }
 
-function run(command: string, args: readonly string[], cwd: string, timeout = INSTALL_TIMEOUT_MS): string {
+function run(command: string, args: readonly string[], cwd: string, timeout = COMMAND_TIMEOUT_MS): string {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0) {
     process.stderr.write(result.stdout ?? "");
@@ -109,7 +105,7 @@ function expectedFromSource(): Record<string, unknown> {
     kind: "audio_ad_impression",
     amountAtomic: 20_000n,
     asset: "SOL_LAMPORTS_STANDIN",
-    shares: SHARES.map((share, i) => ({ ...share, recipient: RECIPIENTS[i] ?? fail("missing recipient") })),
+    shares: SHARES.map((share, i) => ({ ...share, recipient: RECIPIENTS[i] })),
     memo: "smoke",
   });
   return {
@@ -123,7 +119,7 @@ function expectedFromSource(): Record<string, unknown> {
 }
 
 const CONSUMER_MJS = `import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import * as sdk from "@coumtech/synxed-solana-protocol";
 import * as client from "@coumtech/synxed-solana-protocol/client";
@@ -186,11 +182,19 @@ assert.ok(manifest.peerDependencies["@solana/web3.js"], "web3.js must be a peer 
 assert.equal(manifest.dependencies["@solana/web3.js"], undefined, "web3.js must not be a regular dependency");
 assert.equal(manifest.private, undefined);
 assert.equal(manifest.engines.node, input.engines);
+const [, floorMajor, floorMinor] = /^>=(\\d+)\\.(\\d+)$/.exec(input.engines).map(Number);
+const [major, minor] = process.versions.node.split(".").map(Number);
+assert.ok(major > floorMajor || (major === floorMajor && minor >= floorMinor), \`Node \${process.versions.node} is below the declared \${input.engines}\`);
 assert.deepEqual(Object.keys(manifest.exports["."]), ["types", "default"], "types must come first");
 
-// Source maps carry the original sources, since src/ is not shipped.
-const map = JSON.parse(readFileSync("./node_modules/@coumtech/synxed-solana-protocol/index.js.map", "utf8"));
-assert.ok(Array.isArray(map.sourcesContent) && map.sourcesContent.every((s) => typeof s === "string" && s.length > 0));
+// Every source map carries the original sources, since src/ is not shipped.
+const packageDir = "./node_modules/@coumtech/synxed-solana-protocol";
+const maps = readdirSync(packageDir).filter((file) => file.endsWith(".js.map"));
+assert.ok(maps.length > 0, "no source maps shipped");
+for (const file of maps) {
+  const map = JSON.parse(readFileSync(\`\${packageDir}/\${file}\`, "utf8"));
+  assert.ok(Array.isArray(map.sourcesContent) && map.sourcesContent.every((s) => typeof s === "string" && s.length > 0), file);
+}
 console.log(\`node consumer on \${process.version}: ok\`);
 `;
 
@@ -216,9 +220,9 @@ export type Surface = [SubmitSettlementNOptions, SettlementReconciliation];
 computeSettlementN({ ...request, amountAtomic: 1 });
 `;
 
-/** The first ```ts block of the package README, which npm shows to users. */
-function readmeExample(): string {
-  const readme = readFileSync(join(SDK_DIR, "README.md"), "utf8");
+/** The first ```ts block of the README inside the tarball, which npm shows to users. */
+function readmeExample(tarball: string): string {
+  const readme = run("tar", ["-xzOf", tarball, "package/README.md"], REPO_ROOT);
   const match = /```ts\n([\s\S]*?)```/.exec(readme);
   return match?.[1] ?? fail("the package README has no ```ts example");
 }
@@ -261,15 +265,12 @@ function tarballManifest(tarball: string): { name: string; version: string } {
 /** Build and pack, or take SYNXED_SDK_TARBALL. Returns the tarball path. */
 function obtainTarball(work: string): string {
   const given = process.env.SYNXED_SDK_TARBALL;
-  if (given !== undefined && given !== "") {
-    const tarball = resolve(given);
-    const { name, version } = tarballManifest(tarball);
-    const workspace = readWorkspaceManifest();
-    if (name !== workspace.name || version !== workspace.version) {
-      fail(`${tarball} is ${name}@${version}, but this checkout is ${String(workspace.name)}@${String(workspace.version)}`);
-    }
-    console.log(`testing the given tarball ${tarball}`);
-    return tarball;
+  if (given === "") {
+    fail("SYNXED_SDK_TARBALL is set but empty");
+  }
+  if (given !== undefined) {
+    console.log(`testing the given tarball ${resolve(given)}`);
+    return resolve(given);
   }
   buildSdkPackage();
   const packed: unknown = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", work], PACKAGE_DIR));
@@ -284,18 +285,29 @@ function engineRange(): string {
 
 function main(): void {
   const work = mkdtempSync(join(tmpdir(), "synxed-sdk-smoke-"));
-  // spawnSync blocks, so a signal lands after the current child exits; clean up then.
-  const cleanUpAndExit = (signal: NodeJS.Signals): void => {
-    rmSync(work, { recursive: true, force: true });
-    process.exit(signal === "SIGINT" ? 130 : 143);
+  // With a handler installed, SIGINT and SIGTERM no longer kill Bun outright,
+  // so the finally block below still runs and removes (or keeps) the temp dir.
+  // A Ctrl-C also stops the current child, so the run then ends promptly; a
+  // signal sent to this process alone takes effect when the current step
+  // finishes.
+  let exitCode: number | undefined;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    exitCode = signal === "SIGINT" ? 130 : 143;
   };
-  process.once("SIGINT", cleanUpAndExit);
-  process.once("SIGTERM", cleanUpAndExit);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   try {
     // 1 and 2. Obtain the tarball and inspect its contents.
     const tarball = obtainTarball(work);
     const { name, version } = tarballManifest(tarball);
+    const workspace = readWorkspaceManifest();
+    if (name !== workspace.name || version !== workspace.version) {
+      fail(`${tarball} is ${name}@${version}, but this checkout is ${String(workspace.name)}@${String(workspace.version)}`);
+    }
     const files = tarballFiles(tarball);
+    if (new Set(files).size !== files.length) {
+      fail("tarball contains duplicate entries");
+    }
     for (const file of files) {
       if (!ALLOWED_PACKAGE_FILE.test(file)) {
         fail(`tarball contains an unexpected file: ${file}`);
@@ -348,7 +360,7 @@ function main(): void {
 
     // 5. Type-check a TypeScript consumer under both resolution modes.
     writeFileSync(join(consumer, "consumer.ts"), CONSUMER_TS);
-    writeFileSync(join(consumer, "readme-example.ts"), readmeExample());
+    writeFileSync(join(consumer, "readme-example.ts"), readmeExample(tarball));
     writeFileSync(join(consumer, "tsconfig.node.json"), tsconfig("NodeNext", "NodeNext"));
     writeFileSync(join(consumer, "tsconfig.bundler.json"), tsconfig("ESNext", "Bundler"));
     const tsc = join(consumer, "node_modules", "typescript", "bin", "tsc");
@@ -361,6 +373,9 @@ function main(): void {
       console.log(`kept ${work}`);
     } else {
       rmSync(work, { recursive: true, force: true });
+    }
+    if (exitCode !== undefined) {
+      process.exit(exitCode);
     }
   }
 }

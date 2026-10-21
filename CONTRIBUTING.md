@@ -50,28 +50,41 @@ get, so an upstream release can break it without a change in this repository.
 
 The **Publish SDK** workflow has three jobs. `package` builds and packs the
 tarball from the lockfile with lifecycle scripts disabled and refuses a
-version that is already on npm. `verify` runs the typecheck, the TypeScript
-tests, and the smoke test against that exact tarball. `publish` checks the
-tarball's sha256 and manifest and publishes it through npm trusted publishing
-with a provenance attestation. No npm token is stored in GitHub.
+version that is already on npm. `verify` runs the typecheck and the TypeScript
+tests on the checkout, and the smoke test against that exact tarball.
+`publish` checks the tarball's sha256, file names, and manifest, then stages it
+on npm through trusted publishing with a provenance attestation. A staged
+version stays private until a maintainer approves it on npmjs.com with
+two-factor authentication, so no workflow run can make a version public on its
+own. No npm token is stored in GitHub.
 
 One-time setup, in repository and npm settings, before the first release:
 
-1. Create the GitHub environment `npm-publish` (Settings, Environments) with
-   deployment branches limited to `main` and a required reviewer. Do this
-   before the workflow first runs: a run that names a missing environment
-   creates it without protection. The check for `main` inside the workflow
-   file only catches mistakes, because a branch can edit its own copy.
-2. Publish the first version by hand. Trusted publishing is configured from
-   the package's settings page, so the package must exist first. Run the
-   workflow as a dry run, download its `sdk-tarball` artifact, compare its
-   sha256 with the run summary, then on a maintainer machine run `npm login`
-   and `npm publish --access public <tarball>`. This one version carries no
-   provenance.
-3. On npmjs.com, add a trusted publisher to the package: GitHub Actions,
+1. Create the GitHub environment `npm-publish` (Settings, Environments): limit
+   deployment branches to `main`, add a required reviewer, and turn off
+   administrator bypass. Leave "Prevent self-review" off while there is a single
+   maintainer, or nobody could approve. Do this before the workflow first runs:
+   a run that names a missing environment creates it without protection. The
+   check for `main` inside the workflow file only catches mistakes, because a
+   branch can edit its own copy.
+2. Publish the first version by hand, because a trusted publisher can only be
+   added to a package that exists. Run the workflow as a dry run and, within
+   seven days (the artifact's retention), download its `sdk-tarball` artifact.
+   It arrives as a zip; extract the `.tgz` and compare its sha256 with the one
+   in the run summary. Then, from the folder that holds the `.tgz`, on a
+   machine logged in (`npm login`) to an npm account that is a member of the
+   `@coumtech` organization with permission to create packages, run
+   `npm publish --provenance=false ./<tarball file>`. The override is needed
+   because the package asks for provenance, which only CI can generate, and
+   the leading `./` stops npm from reading the path as a GitHub repository.
+   This one version carries no provenance.
+3. When the next release is ready to run (its version bump merged to `main`),
+   add a trusted publisher to the package on npmjs.com: GitHub Actions,
    repository `coumtech/synxed-solana-protocol`, workflow `publish-sdk.yml`,
-   environment `npm-publish`. Then set the package's publishing access to
-   require two-factor authentication and disallow tokens.
+   environment `npm-publish`, with staged publishing only (do not allow direct
+   `npm publish`). npm expires a new trusted publisher that is not used within
+   two days, so run the release straight away. Then set the package's
+   publishing access to require two-factor authentication and disallow tokens.
 
 Each later release:
 
@@ -79,7 +92,9 @@ Each later release:
    version is 0.x, a minor bump may change the API. Merge it after review.
 2. Run **Publish SDK** from `main` with *publish* unchecked, a dry run.
 3. Run it again with *publish* checked and approve the `npm-publish`
-   deployment.
+   deployment. The version is staged, not yet public.
+4. Approve the staged version on npmjs.com, or with `npm stage approve`, using
+   two-factor authentication. Reject it the same way if anything looks wrong.
 
 ## Secrets
 

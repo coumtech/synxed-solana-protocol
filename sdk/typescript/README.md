@@ -34,10 +34,10 @@ import { assertLedgerCluster, reconcileSettlementN } from "@coumtech/synxed-sola
 // Reference devnet deployment. Deploy your own copy to trust exact bytecode.
 const programId = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
 const connection = new Connection(DEVNET_RPC_URL, "confirmed");
-// A funded devnet keypair, loaded from a file you keep out of version control.
-const payer = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(readFileSync("payer.json", "utf8")) as number[]),
-);
+// A funded devnet keypair kept out of version control. Create one with
+// `solana-keygen new --outfile payer.json`, then fund it on devnet.
+const secretKey: number[] = JSON.parse(readFileSync("payer.json", "utf8"));
+const payer = Keypair.fromSecretKey(Uint8Array.from(secretKey));
 
 const request: SettlementRequestN = {
   eventId: "impression-0001", // one id per billable event; the chain settles it once
@@ -74,6 +74,13 @@ const reconciliation = await reconcileSettlementN({
 });
 console.log(submission.explorerUrl, reconciliation.record.slot);
 ```
+
+Passing `programId` selects program mode: the settlement program re-validates
+the split on chain, pays every share in one instruction, and refuses a second
+settlement of the same event id. Without it, the client sends plain system
+transfers plus a memo, with no on-chain validation and no idempotency; that
+fallback exists for devnet demonstrations only, and reconciliation needs
+program mode.
 
 `reconcileSettlementN` waits for finality, decodes the instruction, derives
 the event's settlement record, and compares the memo, shares, accounts, and

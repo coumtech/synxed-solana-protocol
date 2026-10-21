@@ -1,26 +1,29 @@
 name: Publish SDK
 
-# Publishes sdk/typescript to npm as @coumtech/synxed-solana-protocol through
-# npm trusted publishing (OIDC), with a provenance attestation that links the
-# package to this workflow run. No npm token is stored in GitHub.
+# Stages sdk/typescript on npm as @coumtech/synxed-solana-protocol through npm
+# trusted publishing (OIDC), with a provenance attestation that links the
+# package to this workflow run. No npm token is stored in GitHub. A staged
+# version stays private until a maintainer approves it on npmjs.com with 2FA,
+# so a workflow run alone can never make a version public.
 # Manual only. Leave "publish" unchecked for a dry run.
 # Release steps and the one-time setup: CONTRIBUTING.md, "Releasing the
 # TypeScript SDK".
 #
-# Three jobs, so the published file never meets unreviewed code:
+# Three jobs, so the staged file never meets unreviewed code:
 # - package: installs from the lockfile with lifecycle scripts disabled,
 #   compiles, packs, records the sha256, and uploads the tarball. Nothing from
 #   the registry runs here except the pinned compiler.
 # - verify: runs the tests and the smoke test against that exact tarball. The
 #   smoke test installs from the registry, so this job may run third-party
 #   code, but it cannot change the uploaded tarball or its recorded sha256.
-# - publish: holds the npm-publish environment and id-token: write, runs only
-#   npm, checks the sha256 and the manifest inside the tarball, and publishes.
+# - publish: holds the npm-publish environment and id-token: write, checks out
+#   no code and installs no dependencies, checks the sha256, every file name,
+#   and the whole manifest inside the tarball, and stages it.
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish to npm (unchecked = dry run)"
+        description: "Stage on npm (unchecked = dry run)"
         type: boolean
         default: false
 
@@ -33,6 +36,9 @@ concurrency:
 
 env:
   PACKAGE_NAME: "@coumtech/synxed-solana-protocol"
+  # Pinned so every job runs the same npm: Node 24.22.0 bundles npm 11.19.1,
+  # which supports npm stage (11.15.0 or later) and trusted publishing.
+  NODE_VERSION: "24.22.0"
 
 jobs:
   package:
@@ -46,11 +52,11 @@ jobs:
       sha256: ${{ steps.pack.outputs.sha256 }}
       version: ${{ steps.pack.outputs.version }}
     steps:
-      - name: Require main for a real publish
+      - name: Require main for a real release
         if: ${{ inputs.publish }}
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Publishing is only allowed from main (this run is on $GITHUB_REF)."
+            echo "Releases are only allowed from main (this run is on $GITHUB_REF)."
             exit 1
           fi
 
@@ -68,7 +74,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Install JS dependencies from the lockfile, without lifecycle scripts
         run: bun install --frozen-lockfile --ignore-scripts
@@ -110,7 +117,7 @@ jobs:
       - name: Dry run
         env:
           TARBALL: ${{ runner.temp }}/sdk-tarball/${{ steps.pack.outputs.tarball }}
-        run: npm publish --dry-run --provenance=false "$TARBALL"
+        run: npm stage publish --dry-run --provenance=false "$TARBALL"
 
       - name: Upload the tarball
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -142,7 +149,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Install JS dependencies from the lockfile, without lifecycle scripts
         run: bun install --frozen-lockfile --ignore-scripts
@@ -189,21 +197,21 @@ jobs:
       - name: Require main
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Publishing is only allowed from main (this run is on $GITHUB_REF)."
+            echo "Releases are only allowed from main (this run is on $GITHUB_REF)."
             exit 1
           fi
 
-      # Node 24 bundles npm 11, which supports npm trusted publishing (OIDC).
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
 
-      - name: Check npm supports trusted publishing
+      - name: Check npm supports staged trusted publishing
         run: |
           npm --version
-          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); if (a < 11 || (a === 11 && (b < 5 || (b === 5 && c < 1)))) { console.error("npm 11.5.1 or later is required"); process.exit(1); }' "$(npm --version)"
+          node -e 'const [a, b] = process.argv[1].split(".").map(Number); if (a < 11 || (a === 11 && b < 15)) { console.error("npm 11.15.0 or later is required for npm stage"); process.exit(1); }' "$(npm --version)"
 
       - name: Download the tarball
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -211,7 +219,10 @@ jobs:
           name: sdk-tarball
           path: ${{ runner.temp }}/sdk-tarball
 
-      - name: Check the sha256 and the manifest inside the tarball
+      # Independent of the repository code on purpose: the same rules as
+      # scripts/build-sdk-package.ts, restated here (tests/sdk-package.test.ts
+      # keeps the two in step).
+      - name: Check the sha256, the file names, and the manifest
         env:
           TARBALL: ${{ runner.temp }}/sdk-tarball/${{ needs.package.outputs.tarball }}
           EXPECTED: ${{ needs.package.outputs.sha256 }}
@@ -222,23 +233,45 @@ jobs:
             echo "sha256 mismatch: packed $EXPECTED, downloaded $actual"
             exit 1
           fi
+          tar -tzf "$TARBALL" > "$RUNNER_TEMP/entries.txt"
           tar -xzOf "$TARBALL" package/package.json > "$RUNNER_TEMP/manifest.json"
-          node -e '
-            const m = require(process.argv[1]);
-            const problems = [];
-            if (m.name !== process.env.PACKAGE_NAME) problems.push("name is " + m.name);
-            if (m.version !== process.env.VERSION) problems.push("version is " + m.version);
-            if (m.scripts !== undefined) problems.push("manifest has scripts");
-            if (m.private !== undefined) problems.push("manifest has private");
-            if (JSON.stringify(m.publishConfig) !== JSON.stringify({ access: "public", provenance: true })) problems.push("unexpected publishConfig");
-            if (problems.length > 0) { console.error(problems.join("; ")); process.exit(1); }
-            console.log(m.name + "@" + m.version + " checked");
-          ' "$RUNNER_TEMP/manifest.json"
+          cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'
+          const fs = require("node:fs");
+          const [entriesFile, manifestFile] = process.argv.slice(2);
+          const problems = [];
+          const allowedFile = /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
+          const registryRange = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+          const expectedKeys = ["author","bugs","dependencies","description","engines","exports","files","homepage","keywords","license","main","name","peerDependencies","publishConfig","repository","sideEffects","type","types","version"];
+          const entries = fs.readFileSync(entriesFile, "utf8").split("\n").filter((line) => line !== "");
+          if (new Set(entries).size !== entries.length) problems.push("duplicate tarball entries");
+          for (const entry of entries) {
+            if (!entry.startsWith("package/") || !allowedFile.test(entry.slice(8))) problems.push("unexpected tarball entry " + entry);
+          }
+          const m = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+          if (JSON.stringify(Object.keys(m).sort()) !== JSON.stringify(expectedKeys)) problems.push("unexpected manifest keys " + Object.keys(m).sort().join(","));
+          if (m.name !== process.env.PACKAGE_NAME) problems.push("name is " + m.name);
+          if (m.version !== process.env.VERSION) problems.push("version is " + m.version);
+          if (JSON.stringify(m.publishConfig) !== JSON.stringify({ access: "public", provenance: true })) problems.push("unexpected publishConfig");
+          for (const field of ["dependencies", "peerDependencies"]) {
+            for (const [dep, spec] of Object.entries(m[field] || {})) {
+              if (typeof spec !== "string" || !registryRange.test(spec)) problems.push(field + "." + dep + " is " + spec);
+            }
+          }
+          const targets = [m.main, m.types];
+          for (const entry of Object.values(m.exports || {})) targets.push(...(typeof entry === "string" ? [entry] : Object.values(entry)));
+          for (const target of targets) {
+            if (typeof target !== "string" || !target.startsWith("./") || target.includes("..") || !entries.includes("package/" + target.slice(2))) problems.push("bad target " + target);
+          }
+          if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
+          console.log(m.name + "@" + m.version + ": " + entries.length + " files checked");
+          CHECK
+          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/manifest.json"
 
-      # Needs npm trusted publishing configured for this repository, this
-      # workflow file, and the npm-publish environment. There is no token
-      # fallback: without it, npm fails with ENEEDAUTH.
-      - name: Publish to npm
+      # Needs a trusted publisher on npmjs.com for this repository, this
+      # workflow file, and the npm-publish environment, allowed to stage. There
+      # is no token fallback: without it npm refuses with an authentication
+      # error. The staged version is private until a maintainer approves it.
+      - name: Stage on npm
         env:
           TARBALL: ${{ runner.temp }}/sdk-tarball/${{ needs.package.outputs.tarball }}
-        run: npm publish --provenance --access public "$TARBALL"
+        run: npm stage publish --provenance --access public "$TARBALL"
