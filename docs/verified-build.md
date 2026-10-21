@@ -1,7 +1,7 @@
 # Verified builds
 
 How to confirm that the program running on devnet is the program whose
-source you are reading — without trusting the maintainers.
+source you are reading, without trusting the maintainers.
 
 The reference deployment is `HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT`
 on devnet. It is upgradeable by the maintainers (standard upgradeable
@@ -25,7 +25,7 @@ project pins one:
 
 The deployed program is built in that image. The verification script and
 the CI workflow build in that image. Building there yields the same bytes
-on Linux, on macOS (under emulation), anywhere Docker runs — the pull
+on Linux, on macOS (under emulation), anywhere Docker runs. The pull
 request that introduced this check proved it by building on a macOS host
 and a native Linux runner and matching both to the chain.
 
@@ -43,10 +43,10 @@ image with `solana-verify build`, hashes the result, fetches the on-chain
 program hash, and compares. Output ends in `MATCH` (exit 0) or `DRIFT`
 (exit 1); an incomplete run (missing tools, build or RPC failure) exits 2
 and never claims either. The first run pulls the image; on Apple Silicon it
-is `linux/amd64` and runs under emulation, so expect 15–30 minutes the first
+is `linux/amd64` and runs under emulation, so expect 15 to 30 minutes the first
 time.
 
-The script is written by the maintainers — read it, or skip it entirely and
+The script is written by the maintainers. Read it, or skip it entirely and
 use `verify-from-repo` below, which goes through none of it.
 
 CI runs the same script after every push to `main`, once a day, and in
@@ -89,7 +89,7 @@ Read the printed verdict (✅ or ❌): the command exits 0 either way, so do
 not script on its exit code. Without `--base-image` the tool picks an
 image from the `solana-program` version in `Cargo.lock` (a different
 toolchain), and without `--features onchain` the crate builds without its
-entrypoint — both give a mismatch that says nothing about the deployment.
+entrypoint. Both give a mismatch that says nothing about the deployment.
 After a match the tool offers to upload a verification record on-chain;
 decline unless you mean to sign for it with a funded key.
 
@@ -109,7 +109,7 @@ comparison, performed against whatever `main` currently is.
 
 1. Merge the change to `main` (after CI and the adversarial review).
 2. Download the canonical artifact produced by the pull-request check, or
-   build it in the pinned image via the script's isolated copy — never with a
+   build it in the pinned image via the script's isolated copy, never with a
    native toolchain, and never into the working tree's shared `target/`:
    ```bash
    SYNXED_BUILD_ONLY=1 \

@@ -31,7 +31,7 @@ function request(amountAtomic: bigint): SettlementRequest {
 describe("submitSettlement input guards", () => {
   test("rejects scaled totals beyond u64 in either mode", async () => {
     // 2^54 * 2^11 = 2^65 > u64 max, while each 35/40/25 share alone would
-    // still fit in a u64 — the total must be checked, not just the shares.
+    // still fit in a u64: the total must be checked, not just the shares.
     const oversized = submitSettlement({
       connection,
       payer,
@@ -44,7 +44,7 @@ describe("submitSettlement input guards", () => {
 
   test("accepts a total of exactly u64 max past the bound check", async () => {
     // U64_MAX itself passes the range guard and fails later on the empty
-    // recipient — proving the bound is exclusive of valid maxima.
+    // recipient, proving the bound is exclusive of valid maxima.
     const atMax = submitSettlement({
       connection,
       payer,

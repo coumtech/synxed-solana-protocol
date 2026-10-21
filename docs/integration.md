@@ -8,8 +8,8 @@ using only the public code in this repository.
 Your app decides when an event is billable. This protocol only needs the
 result.
 
-> **The SDK is not published to npm.** Do not `npm install` the name below —
-> the package name resolves only inside this repository's Bun workspace
+> **The SDK is not published to npm.** Do not `npm install` the name below.
+> The package name resolves only inside this repository's Bun workspace
 > (the demo consumes it exactly this way; see
 > `examples/gaming-payment-demo/package.json`). To use the SDK elsewhere,
 > vendor `sdk/typescript/src`.
@@ -46,7 +46,7 @@ const result = computeSettlement(request);
 // result.payouts -> [{ role: "artist", amountAtomic: 7000n, ... }, ...]
 ```
 
-`computeSettlement` throws a typed `ProtocolError` on any invalid split —
+`computeSettlement` throws a typed `ProtocolError` on any invalid split:
 wrong sum, fractional or out-of-range bps, zero amount, roles out of order.
 Handle the error; do not retry with adjusted numbers unless a human
 approved the new configuration.
@@ -65,7 +65,7 @@ const submission = await submitSettlement({
   payer,                        // Keypair funding the payouts
   request,
   lamportsPerAtomicUnit: 1_000n, // devnet stand-in scaling, see below
-  // programId: new PublicKey("...") — optional, see "Program mode"
+  // programId: new PublicKey("...") (optional, see "Program mode")
 });
 console.log(submission.explorerUrl);
 ```
@@ -117,7 +117,7 @@ keys are yours; never commit them.
 
 ## N-way splits and pooled shares
 
-For more than three parties — for example a listener rewards pool — build a
+For more than three parties, for example a listener rewards pool, build a
 `SettlementRequestN` and use the N-way functions. Labels are yours; the
 program only sees recipients and basis points.
 
@@ -149,7 +149,7 @@ const submission = await submitSettlementN({ connection, payer, request,
 ```
 
 One to eight shares are accepted; the shares must sum to 10000 bps. A
-pooled share is just a recipient wallet on-chain — distribution from the
+pooled share is just a recipient wallet on-chain; distribution from the
 pool to individual listeners is an off-chain, batched concern described in
 [payout-ledger.md](payout-ledger.md).
 

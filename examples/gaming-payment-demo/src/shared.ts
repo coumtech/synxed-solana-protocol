@@ -227,15 +227,15 @@ export async function ensureFunds(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `Devnet airdrop failed (${message}). Fund the payer manually at ` +
-        `https://faucet.solana.com — address ${payer.publicKey.toBase58()}`,
+        `https://faucet.solana.com (address ${payer.publicKey.toBase58()})`,
     );
   }
   const after = BigInt(await connection.getBalance(payer.publicKey));
   if (after < neededLamports) {
     throw new Error(
       `Balance ${after} lamports still below required ${neededLamports} ` +
-        `after airdrop. Fund the payer at https://faucet.solana.com — ` +
-        `address ${payer.publicKey.toBase58()}`,
+        `after airdrop. Fund the payer at https://faucet.solana.com ` +
+        `(address ${payer.publicKey.toBase58()})`,
     );
   }
 }

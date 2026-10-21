@@ -1,6 +1,6 @@
 # Wallet-connect settlement demo
 
-The open-source browser example uses Solana Wallet Adapter and automatically
+The open source browser example uses Solana Wallet Adapter and automatically
 discovers installed Wallet Standard wallets. Phantom and Solflare are also
 registered as fallback entries so the picker is never empty. In a desktop
 browser with no wallet installed it still lists both: choosing Phantom turns
