@@ -18,7 +18,8 @@ const AMOUNT_ATOMIC = 20_000n;
 const UNITS_PER_ATOMIC = 1_000n;
 // Rent for the 41-byte settlement record plus fees.
 const FUNDING_OVERHEAD = 1_200_000n;
-// Rent for the 98-byte namespace, paid once, on the wallet's first settlement.
+// Rent for the 98-byte namespace at the default rent rate (devnet charges
+// less), paid once, on the wallet's first settlement.
 const NAMESPACE_RENT = 1_572_960n;
 // Each wallet settles in its own namespace under this label, so nobody else
 // can claim one of its event ids.

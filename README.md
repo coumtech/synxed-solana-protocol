@@ -121,8 +121,10 @@ See [docs/spl-stablecoin.md](docs/spl-stablecoin.md).
   with the split math, plus a memo. It works with nothing deployed.
 - **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
   becomes a single instruction that re-validates the split on-chain,
-  enforces per-event idempotency, and pays every wallet atomically. A
-  reference deployment exists on devnet, so no build tools are required:
+  enforces per-event idempotency, and pays every wallet atomically. The demo
+  first opens the payer's settlement namespace (once), so only the payer can
+  settle its event ids. A reference deployment exists on devnet, so no build
+  tools are required:
 
   ```
   SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
@@ -169,15 +171,17 @@ docs/                         architecture, protocol spec, security model,
 **Current scope (implemented here):**
 
 - Deterministic, auditable split primitive (Rust + TypeScript): three-way
-  by default, one to eight shares via `SettleN`, both sharing one
-  per-event idempotency record
-- Devnet settlement program with per-event idempotency
+  by default, one to eight shares, native or classic SPL Token, all sharing
+  one idempotency record per event
+- Devnet settlement program with per-integrator settlement namespaces: only
+  a namespace's authority can settle its event ids
 - Strict TypeScript client and a reproducible CLI demo
 - Finalized-transaction ledger reconciliation with deterministic direct and
   pooled entries; mismatched chain evidence is rejected
 - Tests for the happy path and every invalid-split case, plus in-process
-  SVM tests of the compiled program (idempotency, pre-funded record
-  defense, account validation) run in CI on every pull request
+  SVM tests of the compiled program (namespaces and authority, idempotency,
+  pre-funded record defense, account validation) run in CI on every pull
+  request
 
 **Current open source extensions:**
 

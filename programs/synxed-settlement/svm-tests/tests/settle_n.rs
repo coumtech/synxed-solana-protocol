@@ -1,5 +1,5 @@
 //! End-to-end tests of the N-way `SettleN` instruction against the
-//! compiled program, including its shared idempotency with `Settle`.
+//! compiled program, including one record per event across share counts.
 
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::rent::Rent;
@@ -31,7 +31,7 @@ fn settles_four_ways_with_a_rewards_pool_share() {
 }
 
 #[test]
-fn shares_idempotency_with_the_three_way_instruction() {
+fn three_and_four_way_settlements_share_one_record() {
     let mut f = Fixture::new();
     let recipients = four_recipients(&f);
 
@@ -40,7 +40,7 @@ fn shares_idempotency_with_the_three_way_instruction() {
         .expect("three-way settlement succeeds");
     let err = f
         .settle_n(event(31), AMOUNT, &REWARDS_BPS, &recipients)
-        .expect_err("re-settling via SettleN must fail");
+        .expect_err("re-settling four ways must fail");
     assert!(err.contains("AccountAlreadyInitialized"), "got {err}");
     assert_eq!(f.balance(&recipients[3]), 0, "pool never paid");
 
@@ -49,7 +49,7 @@ fn shares_idempotency_with_the_three_way_instruction() {
         .expect("four-way settlement succeeds");
     let err = f
         .settle(event(32), AMOUNT, BPS)
-        .expect_err("re-settling via Settle must fail");
+        .expect_err("re-settling three ways must fail");
     assert!(err.contains("AccountAlreadyInitialized"), "got {err}");
 }
 

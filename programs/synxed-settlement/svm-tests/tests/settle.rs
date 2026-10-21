@@ -1,4 +1,4 @@
-//! End-to-end tests of the three-way `Settle` instruction inside an
+//! End-to-end tests of a three-way `SettleN` settlement inside an
 //! in-process SVM (LiteSVM). These exercise the real on-chain binary, so
 //! they cover the processor paths the host unit tests cannot: PDA checks,
 //! record creation, idempotency, and the pre-funding attack the record

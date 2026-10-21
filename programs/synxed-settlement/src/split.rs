@@ -5,7 +5,7 @@
 //! payouts always sum to `amount` (conservation).
 
 pub const BPS_DENOMINATOR: u32 = 10_000;
-/// Share count of the original three-way `Settle` instruction.
+/// Share count of the default three-way split (artist, studio, platform).
 pub const SHARE_COUNT: usize = 3;
 /// Upper bound on shares per settlement. Bounded so account lists and
 /// instruction data stay small and compute stays predictable.
