@@ -147,13 +147,13 @@ fn rejects_token_2022_and_any_other_token_program() {
 fn rejects_token_accounts_not_owned_by_the_token_program() {
     // Each account keeps a valid token layout but is re-owned by the system
     // program, so only the program's owner check can reject it.
-    for target in ["source", "mint", "destination"] {
+    for target in 0..3 {
         let (mut fixture, mint, source, recipients) = token_fixture();
-        let forged = match target {
-            "source" => source,
-            "mint" => mint,
-            _ => recipients[0],
-        };
+        let (target, forged) = [
+            ("source", source),
+            ("mint", mint),
+            ("destination", recipients[0]),
+        ][target];
         let mut account = fixture.svm.get_account(&forged).expect("account exists");
         account.owner = SYSTEM_PROGRAM_ID;
         fixture
@@ -202,6 +202,10 @@ fn rejects_a_wrong_token_account_count() {
         .send(&[missing], &[&payer], &payer.pubkey())
         .expect_err("a missing destination must fail");
     assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+    assert!(fixture
+        .svm
+        .get_account(&fixture.record_pda(&event(69)))
+        .is_none());
 }
 
 #[test]
@@ -216,6 +220,7 @@ fn rejects_a_read_only_token_destination() {
         &recipients,
         mint,
     );
+    // Accounts: payer, source, then the destinations, so index 2 is the first.
     ix.accounts[2].is_writable = false;
     let payer = fixture.payer.insecure_clone();
     let err = fixture
@@ -278,4 +283,119 @@ fn rejects_a_source_that_holds_another_mint() {
         100_000,
         "nothing moved"
     );
+}
+
+#[test]
+fn rejects_invalid_token_share_counts_splits_and_amounts() {
+    // SettleTokenN repeats the share-count, split, and amount checks of the
+    // native instructions; each must reject on the token path too.
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let nine = [
+        1_000u16, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 2_000,
+    ];
+    let cases: [(&[u16], u64, &[Pubkey], &str); 4] = [
+        (&nine, AMOUNT, &recipients, "InvalidInstructionData"),
+        (&[], AMOUNT, &recipients[..0], "InvalidInstructionData"),
+        (
+            &[5_000, 5_000, 1_000],
+            AMOUNT,
+            &recipients[..3],
+            "InvalidArgument",
+        ),
+        (&BPS, 0, &recipients, "InvalidArgument"),
+    ];
+    for (bps, amount, destinations, expected) in cases {
+        let err = fixture
+            .settle_token_n(event(75), amount, DECIMALS, bps, source, destinations, mint)
+            .expect_err("an invalid token settlement must fail");
+        assert!(err.contains(expected), "{bps:?} / {amount}: got {err}");
+    }
+    assert!(fixture
+        .svm
+        .get_account(&fixture.record_pda(&event(75)))
+        .is_none());
+}
+
+#[test]
+fn uses_transfer_checked_for_every_token_payout() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let ix = fixture.settle_token_n_instruction(
+        event(76),
+        AMOUNT,
+        DECIMALS,
+        &BPS,
+        source,
+        &recipients,
+        mint,
+    );
+    let payer = fixture.payer.insecure_clone();
+    let inner = fixture
+        .send_traced(&[ix], &[&payer], &payer.pubkey())
+        .expect("settlement succeeds");
+    let token_tags: Vec<u8> = inner
+        .iter()
+        .filter(|(program, _)| *program == TOKEN_PROGRAM_ID)
+        .map(|(_, data)| data[0])
+        .collect();
+    // Instruction tag 12 is TransferChecked in the SPL Token program; plain
+    // Transfer is tag 3. One transfer per nonzero share.
+    assert_eq!(token_tags, vec![12, 12, 12, 12]);
+}
+
+#[test]
+fn splits_the_largest_token_amount_exactly() {
+    // The per-share product is computed in 128 bits; with 64-bit arithmetic
+    // these shares would be wrong.
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let payer = fixture.payer.pubkey();
+    fixture.set_token_account(source, mint, payer, u64::MAX);
+    fixture
+        .settle_token_n(
+            event(77),
+            u64::MAX,
+            DECIMALS,
+            &[5_000, 5_000],
+            source,
+            &recipients[..2],
+            mint,
+        )
+        .expect("the largest amount settles");
+    assert_eq!(fixture.token_balance(&recipients[0]), u64::MAX / 2);
+    assert_eq!(
+        fixture.token_balance(&recipients[1]),
+        u64::MAX - u64::MAX / 2
+    );
+}
+
+#[test]
+fn a_frozen_destination_fails_the_settlement_only_when_owed_a_share() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let mut frozen = fixture
+        .svm
+        .get_account(&recipients[3])
+        .expect("destination exists");
+    frozen.data[108] = 2; // token account state: frozen
+    fixture
+        .svm
+        .set_account(recipients[3], frozen)
+        .expect("freeze the destination");
+
+    let err = fixture
+        .settle_token_n(event(78), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
+        .expect_err("a frozen destination owed a share must fail");
+    // SPL Token error 17 is AccountFrozen.
+    assert!(err.contains("Custom(17)"), "got {err}");
+
+    fixture
+        .settle_token_n(
+            event(79),
+            AMOUNT,
+            DECIMALS,
+            &[3_500, 3_500, 3_000, 0],
+            source,
+            &recipients,
+            mint,
+        )
+        .expect("a zero-token share to a frozen destination is skipped");
+    assert_eq!(fixture.token_balance(&recipients[3]), 0);
 }

@@ -257,6 +257,37 @@ impl Fixture {
             .map_err(|failed| format!("{:?}", failed.err))
     }
 
+    /// Like `send`, but returns the program id and data of every inner
+    /// instruction the transaction executed, in execution order.
+    pub fn send_traced(
+        &mut self,
+        ixs: &[Instruction],
+        signers: &[&Keypair],
+        fee_payer: &Pubkey,
+    ) -> Result<Vec<(Pubkey, Vec<u8>)>, String> {
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            ixs,
+            Some(fee_payer),
+            signers,
+            self.svm.latest_blockhash(),
+        );
+        let keys = tx.message.account_keys.clone();
+        self.svm
+            .send_transaction(tx)
+            .map(|meta| {
+                meta.inner_instructions
+                    .iter()
+                    .flatten()
+                    .map(|inner| {
+                        let program = keys[usize::from(inner.instruction.program_id_index)];
+                        (program, inner.instruction.data.clone())
+                    })
+                    .collect()
+            })
+            .map_err(|failed| format!("{:?}", failed.err))
+    }
+
     pub fn balance(&self, key: &Pubkey) -> u64 {
         self.svm.get_balance(key).unwrap_or(0)
     }

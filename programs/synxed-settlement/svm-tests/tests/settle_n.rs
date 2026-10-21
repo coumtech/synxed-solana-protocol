@@ -104,6 +104,10 @@ fn rejects_an_invalid_n_way_split() {
         .settle_n(event(38), AMOUNT, &[3_500, 3_500, 2_000, 900], &recipients)
         .expect_err("bps summing to 9900 must fail");
     assert!(err.contains("InvalidArgument"), "got {err}");
+    let err = f
+        .settle_n(event(38), AMOUNT, &[5_000, 5_000, 1_000], &recipients[..3])
+        .expect_err("bps summing to 11000 must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
     assert_eq!(f.balance(&recipients[3]), 0);
 }
 
