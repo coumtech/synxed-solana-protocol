@@ -1,6 +1,6 @@
 # Payout ledger and reconciliation
 
-> **Status: Open-source reference implementation.** The public TypeScript SDK
+> **Status: Open source reference implementation.** The public TypeScript SDK
 > defines these records, extracts evidence from finalized `SettleN`
 > transactions, and rejects any mismatch in event seed, amount, shares,
 > recipients, memo, or inner transfers. It is an auditable reference layer,

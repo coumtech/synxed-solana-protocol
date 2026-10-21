@@ -55,8 +55,8 @@ Wait for the `Settled on devnet (program mode)` block. Copy the
 
 **[1:15] Show the transaction.**
 In Explorer, scroll to the instruction list: the memo, then the settlement
-program instruction with its inner transfers, one to each wallet, amounts
-matching the table. Point at the inner `Transfer`, `Allocate`, `Assign`
+program instruction with its inner transfers (one to each wallet, amounts
+matching the table). Point at the inner `Transfer`, `Allocate`, `Assign`
 trio that builds the record account: "that's the idempotency record; this
 event can never be paid twice." Show the reconciled JSON: the record-account
 rent transfer is excluded, and the four payout amounts match chain evidence.

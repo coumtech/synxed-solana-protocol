@@ -96,9 +96,9 @@ fn settle(
     if recipients.iter().any(|recipient| !recipient.is_writable) {
         return Err(ProgramError::InvalidAccountData);
     }
-    // A payout sent to a settlement record (this event's, or another event's
-    // that already settled) could never be recovered: nothing can debit a record once it
-    // is program-owned.
+    // A payout sent to this event's record, or to the record of an event that
+    // already settled, could never be recovered: nothing can debit a record
+    // once it is program-owned.
     if recipients
         .iter()
         .any(|recipient| recipient.key == record.key || recipient.owner == program_id)

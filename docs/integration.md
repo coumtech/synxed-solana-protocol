@@ -8,8 +8,8 @@ using only the public code in this repository.
 Your app decides when an event is billable. This protocol only needs the
 result.
 
-> **The SDK is not published to npm.** Do not `npm install` the name below:
-> the package name resolves only inside this repository's Bun workspace
+> **The SDK is not published to npm.** Do not `npm install` the name below.
+> The package name resolves only inside this repository's Bun workspace
 > (the demo consumes it exactly this way; see
 > `examples/gaming-payment-demo/package.json`). To use the SDK elsewhere,
 > vendor `sdk/typescript/src`.
@@ -65,7 +65,7 @@ const submission = await submitSettlement({
   payer,                        // Keypair funding the payouts
   request,
   lamportsPerAtomicUnit: 1_000n, // devnet stand-in scaling, see below
-  // programId: new PublicKey("...") is optional, see "Program mode"
+  // programId: new PublicKey("...") (optional, see "Program mode")
 });
 console.log(submission.explorerUrl);
 ```

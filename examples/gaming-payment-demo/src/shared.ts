@@ -234,8 +234,8 @@ export async function ensureFunds(
   if (after < neededLamports) {
     throw new Error(
       `Balance ${after} lamports still below required ${neededLamports} ` +
-        `after airdrop. Fund the payer at https://faucet.solana.com: ` +
-        `address ${payer.publicKey.toBase58()}`,
+        `after airdrop. Fund the payer at https://faucet.solana.com ` +
+        `(address ${payer.publicKey.toBase58()})`,
     );
   }
 }

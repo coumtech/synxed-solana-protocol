@@ -10,7 +10,7 @@ App / game  ->  Revenue event  ->  Split (35/35/20/10, configurable)
             ->  Solana settlement  ->  artist / studio / platform / rewards pool
 ```
 
-**What this is:** the public settlement rail: a Solana program, a strict
+**What this is:** the public settlement rail, made up of a Solana program, a strict
 TypeScript SDK, a runnable demo, and the protocol documentation.
 
 **What this is not:** the SYNXED product. The proprietary platform (radio
@@ -179,7 +179,7 @@ docs/                         architecture, protocol spec, integration guide,
   SVM tests of the compiled program (idempotency, pre-funded record
   defense, account validation) run in CI on every pull request
 
-**Current open-source extensions:**
+**Current open source extensions:**
 
 - Four-way reference split: artist 35%, studio 35%, platform 20%, listener
   rewards pool 10% (`bun run demo`; the original three-way example remains
