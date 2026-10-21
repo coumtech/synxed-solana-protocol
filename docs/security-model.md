@@ -147,16 +147,37 @@ settled while its beneficiaries received nothing. The opposite mistake is as
 bad: settling again when the event was in fact paid by you pays it twice.
 
 Before sending any settlement, persist its request together with its event
-id, attempt number, and transaction signature, and keep that record
-permanently. The procedure below compares chain evidence with it.
+id, its attempt number, and the parameters you built it with (program id,
+scale, and for tokens the mint and decimals), and keep that record
+permanently. The procedure below compares chain evidence with it. If you sign
+the transaction separately from sending it (`buildSettlementNTransaction`,
+`buildTokenSettlementNTransaction`), also persist its signature before
+sending. The `submit` functions, like a wallet's `sendTransaction`, sign and
+send in one call and return the signature only afterwards, so persist the
+request before calling them and the signature when they return.
 
 On `AccountAlreadyInitialized`, decide only from the transaction that created
-the record. Two definitions first. The *payer* of a settlement is the first
+the record. Three definitions first. The *payer* of a settlement is the first
 account of its settlement instruction, which must sign; it can differ from the
 transaction's fee payer. A settlement is *for your event* when the 32 bytes
 after its one-byte instruction tag (zero-based offsets 1 to 32) equal the
 on-chain event id, which the SDK derives as `sha256` of your application event
-id (`eventIdSeed`).
+id (`eventIdSeed`). Reconcile with the parameters stored with the request
+and without `beneficiaryIds`. Reconciliation *reports a mismatch* when it
+fails with `EVENT_MISMATCH`, `AMOUNT_MISMATCH`, `ASSET_MISMATCH`,
+`SHARES_MISMATCH`, `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`,
+`MEMO_MISMATCH`, or `MEMO_MISSING`, and the second provider's copy of the
+transaction (step 2) fails with the same code: an endpoint that omits inner
+instructions or leaves the memo unparsed produces some of these codes for a
+genuine transaction. The other errors fall in two groups. `CLUSTER_MISMATCH`,
+`TX_NOT_FOUND`, `TX_FAILED`, `TX_SIGNATURE`, `BLOCK_TIME_MISSING`, and network
+errors are faults of the endpoint: nothing it returned is evidence, so the
+case is unresolved (step 5); check every endpoint's genesis hash
+(`assertLedgerCluster`) before steps 1 and 2. `PROGRAM_INSTRUCTION`,
+`INSTRUCTION_DATA`, `ACCOUNT_LAYOUT`, and any other error mean the SDK could
+not read the transaction: compare it by hand as described after step 5, and
+until then the case is unresolved. A settlement made through another program
+is always compared by hand, whatever the SDK reports.
 
 1. List the record address's transactions with `getSignaturesForAddress`,
    paging until the end, from an endpoint that keeps full transaction history
@@ -169,11 +190,15 @@ id (`eventIdSeed`).
    event, either as a top-level instruction or as an inner instruction invoked
    by another program (look in `meta.innerInstructions`). At most one exists,
    because any later settlement of the event fails. Confirm it with a second
-   RPC provider before acting on step 3 or 4.
+   RPC provider before acting on step 3 or 4: it must return the same
+   signature, finalized and successful, with the same instruction data and
+   payer. If it returns a different transaction, none, or an error, the case
+   is unresolved (step 5).
 3. If its payer is any key you control or have ever controlled (keep the list
-   across key rotations, key pools, fee payers, and treasury keys), reconcile
-   the transaction against the stored request for that attempt. If it
-   matches, the event is paid: never settle it again. If no stored request
+   across key rotations, key pools, fee payers, and treasury keys, and include
+   any program-derived address that signs for you, such as a multisig vault),
+   reconcile the transaction against the stored request for that attempt. If
+   it matches, the event is paid: never settle it again. If no stored request
    matches, or reconciliation reports a mismatch, do not mark the event paid
    and do not settle it again: raise an incident alert, because it means a
    bug or a compromised key.
@@ -183,11 +208,15 @@ id (`eventIdSeed`).
    exact copy means someone is reading your pending transactions. If
    reconciliation reports a mismatch, the event id was claimed. Move the event
    to a new id only by compare-and-set: replace the claimed id only if it is
-   still the current id for your internal event, and derive the next id from
-   the claimed one (for example an HMAC of your internal event id and the
-   claimed attempt number plus one), so that concurrent runs pick the same id
-   and the program rejects the second. A run that finds a newer current id
-   stops and resumes with it. Then settle under the new id and raise an alert.
+   still the current id for your internal event. Derive every replacement id
+   deterministically from values you store, for example the HMAC under your
+   secret of your internal event id and the claimed id's stored attempt number
+   plus one, where an id from before you stored attempt numbers counts as
+   attempt 0, and where an attempt number whose id was already used is
+   skipped. Never use a fresh random id as a replacement: concurrent runs must
+   pick the same id, so that the program rejects the second. A run that finds
+   a newer current id stops and resumes with it. Then settle under the new id
+   and raise an alert.
 5. Anything else is unresolved: the creating transaction is not finalized
    yet, cannot be found, or the RPC fails, including a lookup or finality
    error from reconciliation. Retry the lookup later, never settle under a new
@@ -206,7 +235,12 @@ static keys, then `meta.loadedAddresses.writable`, then
 
 Also use event ids nobody can guess. Derive the application event id from a
 secret, for example the HMAC of your internal event id and attempt number
-above, or use a random 128-bit id stored by the same compare-and-set. The memo
+above, with both inputs length-prefixed so that two internal events can never
+produce the same input. Or, for the first attempt only, use a random 128-bit
+id that you store as the internal event's current id by compare-and-set
+(insert only if it has none) before sending; every run and retry reads it back
+instead of generating one, because two runs that each generate their own
+random id settle two different records and pay the event twice. The memo
 of every settlement publishes its application event id, so a guessable scheme
 is exposed by the first settlement. This stops guessing and enumeration; it
 does not stop an observer of the pending transaction, so prefer a private or
@@ -267,13 +301,15 @@ is missing, closed, or frozen fails the settlement. Check recipients before
 settling, keep shares above the rent-exempt minimum, and drop or replace a
 recipient that keeps failing.
 
-### 7. Token settlements that create accounts fit six shares, seven only with a minimal memo
+### 7. Token settlements that create accounts fit six shares with a short event id and memo, seven only with near-empty ones
 
 By default `buildTokenSettlementNTransaction` creates missing recipient token
 accounts in the same transaction. Each share then costs 77 bytes, and the
 SDK's memo grows with the event id and `request.memo`, against Solana's
 1,232-byte transaction limit. Measured with the SDK on 21 October 2026, signed
-by one key, in bytes:
+by one key, with the `SPL_STABLECOIN` asset label, a 44-character mint
+address, 6 decimals, and a 24-character `occurredAt` (`toISOString()`), in
+bytes:
 
 | Event id and memo | 6 shares | 7 shares | 8 shares |
 | --- | --- | --- | --- |
@@ -282,11 +318,17 @@ by one key, in bytes:
 | `evt_` and a UUID, same memo | 1,203 | too large | too large |
 | A 64-character id, same memo | 1,227 | too large | too large |
 
-Seven shares fit only with a one-character id and an empty memo, and six
-fit only while the event id and memo stay short. The table uses a 20,000
-base-unit amount; every digit of the amount, the `kind` and `occurredAt`
-fields, and any extra instruction, such as a priority fee, use the same
-margin. Without account
+The memo is JSON that carries the event id and `request.memo`, so what
+counts is their combined length. With plain ASCII text, six shares fit while
+the two together stay within 88 characters, and seven only while they stay
+within 11 (1,232 bytes, the limit, with an 11-character id and an empty
+memo). A 64-character id with a 30-character memo is already too large for
+six shares (1,238 bytes). The `USDC` label is 10 bytes shorter than
+`SPL_STABLECOIN`, a 43-character mint address is 1 byte shorter, and quotes,
+backslashes, control characters, and non-ASCII characters take more than one
+byte each. The table uses a 20,000 base-unit amount; every further digit of
+the amount or of the decimals, every character of `occurredAt` beyond 24, and
+any extra instruction, such as a priority fee, use the same margin. Without account
 creation each share costs 35 bytes, and eight shares fit in the same cases
 (931 to 1,013 bytes). web3.js refuses to serialize an oversized transaction,
 so nothing is sent. For seven or eight token shares, or a long event id or
