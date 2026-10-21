@@ -155,7 +155,9 @@ fn rejects_a_read_only_recipient_and_a_wrong_system_program() {
     let payer = f.payer.insecure_clone();
 
     let mut readonly = f.settle_n_instruction(event(44), AMOUNT, &REWARDS_BPS, &recipients, record);
-    readonly.accounts[2].is_writable = false;
+    // Accounts: payer, authority, namespace, then the recipients; index 4 is the
+    // second recipient.
+    readonly.accounts[4].is_writable = false;
     let err = f
         .send(&[readonly], &[&payer], &payer.pubkey())
         .expect_err("read-only recipient must fail");

@@ -220,8 +220,9 @@ fn rejects_a_read_only_token_destination() {
         &recipients,
         mint,
     );
-    // Accounts: payer, source, then the destinations, so index 2 is the first.
-    ix.accounts[2].is_writable = false;
+    // Accounts: payer, authority, namespace, source, then the destinations, so
+    // index 4 is the first.
+    ix.accounts[4].is_writable = false;
     let payer = fixture.payer.insecure_clone();
     let err = fixture
         .send(&[ix], &[&payer], &payer.pubkey())
