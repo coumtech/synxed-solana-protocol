@@ -305,9 +305,12 @@ fn rejects_invalid_token_share_counts_splits_and_amounts() {
         (&BPS, 0, &recipients, "InvalidArgument"),
     ];
     for (bps, amount, destinations, expected) in cases {
-        let err = fixture
-            .settle_token_n(event(75), amount, DECIMALS, bps, source, destinations, mint)
-            .expect_err("an invalid token settlement must fail");
+        let result =
+            fixture.settle_token_n(event(75), amount, DECIMALS, bps, source, destinations, mint);
+        let err = match result {
+            Ok(()) => panic!("{bps:?} / {amount} must fail"),
+            Err(err) => err,
+        };
         assert!(err.contains(expected), "{bps:?} / {amount}: got {err}");
     }
     assert!(fixture
@@ -317,13 +320,13 @@ fn rejects_invalid_token_share_counts_splits_and_amounts() {
 }
 
 #[test]
-fn uses_transfer_checked_for_every_token_payout() {
+fn uses_transfer_checked_for_every_nonzero_token_payout() {
     let (mut fixture, mint, source, recipients) = token_fixture();
     let ix = fixture.settle_token_n_instruction(
         event(76),
         AMOUNT,
         DECIMALS,
-        &BPS,
+        &[3_500, 3_500, 3_000, 0],
         source,
         &recipients,
         mint,
@@ -338,8 +341,8 @@ fn uses_transfer_checked_for_every_token_payout() {
         .map(|(_, data)| data[0])
         .collect();
     // Instruction tag 12 is TransferChecked in the SPL Token program; plain
-    // Transfer is tag 3. One transfer per nonzero share.
-    assert_eq!(token_tags, vec![12, 12, 12, 12]);
+    // Transfer is tag 3. One transfer per nonzero share: the zero share is skipped.
+    assert_eq!(token_tags, vec![12, 12, 12]);
 }
 
 #[test]
@@ -383,8 +386,13 @@ fn a_frozen_destination_fails_the_settlement_only_when_owed_a_share() {
     let err = fixture
         .settle_token_n(event(78), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
         .expect_err("a frozen destination owed a share must fail");
-    // SPL Token error 17 is AccountFrozen.
+    // SPL Token error 17 is AccountFrozen. The whole settlement reverts.
     assert!(err.contains("Custom(17)"), "got {err}");
+    assert_eq!(fixture.token_balance(&source), 100_000, "nothing moved");
+    assert!(fixture
+        .svm
+        .get_account(&fixture.record_pda(&event(78)))
+        .is_none());
 
     fixture
         .settle_token_n(
@@ -398,4 +406,23 @@ fn a_frozen_destination_fails_the_settlement_only_when_owed_a_share() {
         )
         .expect("a zero-token share to a frozen destination is skipped");
     assert_eq!(fixture.token_balance(&recipients[3]), 0);
+}
+
+#[test]
+fn a_frozen_source_fails_the_settlement() {
+    let (mut fixture, mint, source, recipients) = token_fixture();
+    let mut frozen = fixture.svm.get_account(&source).expect("source exists");
+    frozen.data[108] = 2; // token account state: frozen
+    fixture
+        .svm
+        .set_account(source, frozen)
+        .expect("freeze the source");
+    let err = fixture
+        .settle_token_n(event(74), AMOUNT, DECIMALS, &BPS, source, &recipients, mint)
+        .expect_err("a frozen source must fail");
+    assert!(err.contains("Custom(17)"), "got {err}");
+    assert!(fixture
+        .svm
+        .get_account(&fixture.record_pda(&event(74)))
+        .is_none());
 }

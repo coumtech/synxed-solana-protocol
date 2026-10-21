@@ -75,8 +75,9 @@ console.log(submission.explorerUrl);
   between the two. Keep each recipient's share above the rent-exempt
   minimum for an empty account (0.00065024 SOL on devnet on 20 October 2026;
   query `getMinimumBalanceForRentExemption(0)`) or transfers to brand-new
-  accounts will fail. The demo's guard uses the more conservative
-  `APPROX_RENT_EXEMPT_MIN_LAMPORTS` (890,880 lamports).
+  accounts will fail. The gaming demo prints a warning when a share is below
+  the SDK's more conservative `APPROX_RENT_EXEMPT_MIN_LAMPORTS` (890,880
+  lamports).
 - **Fallback mode (default):** one `SystemProgram` transfer per nonzero share plus a memo.
   No deployment needed.
 - **Program mode:** pass `programId` and the client sends a single `Settle`
@@ -166,7 +167,8 @@ Use `submitTokenSettlementN` when the settlement asset is a configured classic
 SPL Token mint. The SDK derives the payer and recipient associated token
 accounts, adds idempotent recipient-account creation instructions, and submits
 one `SettleTokenN` program instruction. With that account creation one
-transaction fits at most six token shares, often fewer; see known limitation 7
+transaction fits six token shares, and seven only with a one-character event id
+and an empty memo; see known limitation 7
 in [security-model.md](security-model.md). The on-chain program verifies the mint,
 decimals, account ownership, and every checked transfer.
 

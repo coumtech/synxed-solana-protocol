@@ -44,7 +44,7 @@ against it; CI runs the suite on every pull request.
 | Rule | Failure | Compiled-program test |
 | --- | --- | --- |
 | 1 to 8 shares | `InvalidInstructionData` | `settle_n.rs`: `rejects_nine_shares_and_zero_shares`; `settle_token_n.rs`: `rejects_invalid_token_share_counts_splits_and_amounts` |
-| Each share at most 10000 bps and the shares sum to exactly 10000 (both under and over are rejected) | `InvalidArgument` | `settle.rs`: `rejects_an_invalid_split_before_paying_anyone`; `settle_n.rs`: `rejects_an_invalid_n_way_split`; `settle_token_n.rs`: `rejects_invalid_token_share_counts_splits_and_amounts` |
+| The shares sum to exactly 10000 bps, which also caps each share (both under and over are rejected) | `InvalidArgument` | `settle.rs`: `rejects_an_invalid_split_before_paying_anyone`; `settle_n.rs`: `rejects_an_invalid_n_way_split`; `settle_token_n.rs`: `rejects_invalid_token_share_counts_splits_and_amounts` |
 | Amount greater than zero | `InvalidArgument` | `settle_n.rs`: `rejects_a_zero_amount`; `settle_token_n.rs`: `rejects_invalid_token_share_counts_splits_and_amounts` |
 | Integer split: floor per share, remainder to the last share, total always equals the amount; the per-share product is computed in 128 bits, and the release profile keeps overflow checks on | Not reachable by construction | The settlement tests check every payout; `settle_token_n.rs`: `splits_the_largest_token_amount_exactly` settles `u64::MAX`; host tests in `src/split.rs` cover the arithmetic |
 | Exact account list: n + 3 accounts for native settlement, n + 6 for token settlement | `NotEnoughAccountKeys` | `settle.rs`: `rejects_extra_trailing_accounts`; `settle_n.rs`: `rejects_a_recipient_count_that_does_not_match_the_shares`; `settle_token_n.rs`: `rejects_a_wrong_token_account_count` |
@@ -61,7 +61,7 @@ against it; CI runs the suite on every pull request.
 | Token settlement: the mint is initialized and has the stated decimals | `UninitializedAccount` (from the mint decoder), `InvalidAccountData` | `settle_token_n.rs`: `rejects_an_uninitialized_mint`, `rejects_wrong_mint_decimals_and_source_as_recipient` |
 | Token settlement: the source holds the mint and its owner is the payer | `InvalidAccountData` | `settle_token_n.rs`: `rejects_a_source_that_holds_another_mint`, `rejects_wrong_destination_mint_and_source_authority` |
 | Token settlement: every destination holds the mint and is not the source | `InvalidAccountData`, `InvalidArgument` | `settle_token_n.rs`: `rejects_wrong_destination_mint_and_source_authority`, `rejects_wrong_mint_decimals_and_source_as_recipient` |
-| Token transfers use `TransferChecked`, one per nonzero share | Not reached in practice: the program's own mint and decimals checks run first | `settle_token_n.rs`: `uses_transfer_checked_for_every_token_payout` (inspects the executed instructions) |
+| Token transfers use `TransferChecked`, one per nonzero share | Not reached in practice: the program's own mint and decimals checks run first | `settle_token_n.rs`: `uses_transfer_checked_for_every_nonzero_token_payout` (inspects the executed instructions) |
 
 The program also requires the payer and the token source to be writable
 (`InvalidAccountData`); those two checks have no dedicated test. Its explicit
@@ -112,7 +112,8 @@ as noted.
 8. **Freeze authority.** If the mint's freeze authority freezes the source or
    a destination that is owed a nonzero share, the token settlement fails and
    reverts as a whole. Zero-token shares are skipped
-   (`settle_token_n.rs`: `a_frozen_destination_fails_the_settlement_only_when_owed_a_share`).
+   (`settle_token_n.rs`: `a_frozen_destination_fails_the_settlement_only_when_owed_a_share`,
+   `a_frozen_source_fails_the_settlement`).
 
 ## Known limitations
 
@@ -145,12 +146,17 @@ failed transaction's fee. The real risk is an integrator that treats
 settled while its beneficiaries received nothing. The opposite mistake is as
 bad: settling again when the event was in fact paid by you pays it twice.
 
+Before sending any settlement, persist its request together with its event
+id, attempt number, and transaction signature, and keep that record
+permanently. The procedure below compares chain evidence with it.
+
 On `AccountAlreadyInitialized`, decide only from the transaction that created
 the record. Two definitions first. The *payer* of a settlement is the first
 account of its settlement instruction, which must sign; it can differ from the
-transaction's fee payer. A settlement is *for your event* when bytes 1 to 32
-of its instruction data equal `sha256` of your application event id
-(`eventIdSeed` in the SDK).
+transaction's fee payer. A settlement is *for your event* when the 32 bytes
+after its one-byte instruction tag (zero-based offsets 1 to 32) equal the
+on-chain event id, which the SDK derives as `sha256` of your application event
+id (`eventIdSeed`).
 
 1. List the record address's transactions with `getSignaturesForAddress`,
    paging until the end, from an endpoint that keeps full transaction history
@@ -162,36 +168,49 @@ of its instruction data equal `sha256` of your application event id
    that ran this program's `Settle`, `SettleN`, or `SettleTokenN` for your
    event, either as a top-level instruction or as an inner instruction invoked
    by another program (look in `meta.innerInstructions`). At most one exists,
-   because any later settlement of the event fails.
-3. If its payer is any key you have ever used as a payer (keep the list
-   across key rotations and key pools), reconcile that transaction against the
-   request you signed for it; keep every signed request until it is
-   finalized or its blockhash has expired. If it matches, the event is paid:
-   never settle it again. If it does not match, do not mark it paid and do not
-   settle it again: treat it as an incident, a bug or a compromised key.
-4. If its payer has never been one of your keys, reconcile it against your
-   request anyway: if it matches, someone else paid your recipients exactly
-   and the event is paid. Otherwise the event id was claimed. Confirm the
-   creating transaction with a second RPC provider, store a new application
-   event id against your internal event before sending anything, settle under
-   it, and raise an alert. A derived id needs an attempt number, for example
-   an HMAC of your internal event id and the attempt.
+   because any later settlement of the event fails. Confirm it with a second
+   RPC provider before acting on step 3 or 4.
+3. If its payer is any key you control or have ever controlled (keep the list
+   across key rotations, key pools, fee payers, and treasury keys), reconcile
+   the transaction against the stored request for that attempt. If it
+   matches, the event is paid: never settle it again. If no stored request
+   matches, or reconciliation reports a mismatch, do not mark the event paid
+   and do not settle it again: raise an incident alert, because it means a
+   bug or a compromised key.
+4. If its payer is a key you have never controlled, reconcile it against your
+   stored request anyway. If it matches, someone else paid your recipients
+   exactly and the event is paid; raise an alert all the same, because an
+   exact copy means someone is reading your pending transactions. If
+   reconciliation reports a mismatch, the event id was claimed. Move the event
+   to a new id only by compare-and-set: replace the claimed id only if it is
+   still the current id for your internal event, and derive the next id from
+   the claimed one (for example an HMAC of your internal event id and the
+   claimed attempt number plus one), so that concurrent runs pick the same id
+   and the program rejects the second. A run that finds a newer current id
+   stops and resumes with it. Then settle under the new id and raise an alert.
 5. Anything else is unresolved: the creating transaction is not finalized
-   yet, cannot be found, or the RPC fails. Retry the lookup later, never
-   settle under a new event id while it is unresolved, and escalate to a
-   person if it stays unresolved.
+   yet, cannot be found, or the RPC fails, including a lookup or finality
+   error from reconciliation. Retry the lookup later, never settle under a new
+   event id while it is unresolved, and escalate to a person if it stays
+   unresolved.
 
-The SDK's fetching reconcile functions read top-level `SettleN` and
-`SettleTokenN` instructions only; compare a three-way `Settle` or a settlement
-made through another program by hand.
+The SDK's fetching reconcile functions read a transaction with exactly one
+top-level `SettleN` or `SettleTokenN` instruction. Compare by hand a
+three-way `Settle`, a transaction with several instructions for this program,
+or a settlement made through another program. `Settle` and `SettleN` can only
+match a native request; `SettleTokenN` must match your mint, decimals, and
+recipient token accounts. For a settlement made through another program, read
+its stack height and resolve its account indexes against the transaction's
+static keys, then `meta.loadedAddresses.writable`, then
+`meta.loadedAddresses.readonly`, or request the `jsonParsed` encoding.
 
 Also use event ids nobody can guess. Derive the application event id from a
-secret, for example an HMAC of your internal event id and the attempt number,
-or use a random 128-bit id. The memo of every settlement publishes its application event id,
-so a guessable scheme is exposed by the first settlement. This stops guessing
-and enumeration; it does not stop an observer of the pending transaction, so
-prefer a private or trusted submission path (your own RPC node or a provider
-you trust).
+secret, for example the HMAC of your internal event id and attempt number
+above, or use a random 128-bit id stored by the same compare-and-set. The memo
+of every settlement publishes its application event id, so a guessable scheme
+is exposed by the first settlement. This stops guessing and enumeration; it
+does not stop an observer of the pending transaction, so prefer a private or
+trusted submission path (your own RPC node or a provider you trust).
 
 Planned fix, before any mainnet deployment: bind each record to an integrator
 namespace whose authority must sign, for example a record derived from
@@ -248,7 +267,7 @@ is missing, closed, or frozen fails the settlement. Check recipients before
 settling, keep shares above the rent-exempt minimum, and drop or replace a
 recipient that keeps failing.
 
-### 7. Token settlements that create accounts fit at most six shares, often fewer
+### 7. Token settlements that create accounts fit six shares, seven only with a minimal memo
 
 By default `buildTokenSettlementNTransaction` creates missing recipient token
 accounts in the same transaction. Each share then costs 77 bytes, and the
@@ -263,13 +282,16 @@ by one key, in bytes:
 | `evt_` and a UUID, same memo | 1,203 | too large | too large |
 | A 64-character id, same memo | 1,227 | too large | too large |
 
-Six shares fit only while the event id and memo stay short, and any extra
-instruction, such as a priority fee, uses the same margin. Without account
+Seven shares fit only with a one-character id and an empty memo, and six
+fit only while the event id and memo stay short. The table uses a 20,000
+base-unit amount; every digit of the amount, the `kind` and `occurredAt`
+fields, and any extra instruction, such as a priority fee, use the same
+margin. Without account
 creation each share costs 35 bytes, and eight shares fit in the same cases
 (931 to 1,013 bytes). web3.js refuses to serialize an oversized transaction,
-so nothing is sent. For more than a few token shares, create the recipient
-token accounts in a separate transaction first and build the settlement with
-`createRecipientAccounts: false`.
+so nothing is sent. For seven or eight token shares, or a long event id or
+memo, create the recipient token accounts in a separate transaction first and
+build the settlement with `createRecipientAccounts: false`.
 
 ## Operating a payer key
 

@@ -2,7 +2,7 @@
 //! known limitations or as things the program does not check, pinned so they
 //! cannot change silently. When the planned namespaced record lands,
 //! `any_payer_can_claim_an_unsettled_event_id_first` is expected to change on
-//! purpose; the other two pin facts that the fix does not touch.
+//! purpose; the other two pin facts the fix is not designed to change.
 
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
