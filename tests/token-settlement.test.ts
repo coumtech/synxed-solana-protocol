@@ -3,12 +3,14 @@ import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
 import {
   SETTLE_TOKEN_N_HEADER_LENGTH,
-  SETTLE_TOKEN_N_TAG,
   ProtocolError,
   buildSettlementNTransaction,
   buildTokenSettlementNTransaction,
   encodeSettleTokenNData,
   eventIdSeed,
+  findNamespacePda,
+  findSettlementRecordPda,
+  namespaceIdFromLabel,
   reconcileObservedTokenSettlementN,
   type ProgramTokenSettlementObservation,
   type SettlementRequestN,
@@ -25,6 +27,7 @@ const RECIPIENTS = [
 ] as const;
 const BPS = [3_500, 3_500, 2_000, 1_000] as const;
 const AMOUNTS = [7_000n, 7_000n, 4_000n, 2_000n] as const;
+const NAMESPACE = findNamespacePda(PROGRAM_ID, PAYER, namespaceIdFromLabel("synxed-demo"))[0];
 
 function request(): SettlementRequestN {
   return {
@@ -53,7 +56,7 @@ describe("SettleTokenN", () => {
     });
     expect(data).toEqual(
       Uint8Array.from([
-        SETTLE_TOKEN_N_TAG,
+        6,
         ...seed,
         0x20, 0x4e, 0, 0, 0, 0, 0, 0,
         6,
@@ -74,6 +77,7 @@ describe("SettleTokenN", () => {
       mint: MINT,
       decimals: 6,
       programId: PROGRAM_ID,
+      namespace: NAMESPACE,
     });
     expect(prepared.mode).toBe("program-token");
     expect(prepared.tokenAmountsByShare).toEqual(AMOUNTS);
@@ -86,7 +90,34 @@ describe("SettleTokenN", () => {
       ),
     );
     expect(prepared.transaction.instructions).toHaveLength(6);
-    expect(prepared.transaction.instructions.at(-1)?.keys).toHaveLength(10);
+    const settle = prepared.transaction.instructions.at(-1);
+    expect(settle?.keys).toHaveLength(12);
+    const [record] = findSettlementRecordPda(PROGRAM_ID, NAMESPACE, eventIdSeed(request().eventId));
+    // payer, authority (the payer by default), namespace, source, four
+    // destinations, mint, record, system program, token program.
+    expect(settle?.keys.slice(0, 4).map((meta) => [meta.pubkey.toBase58(), meta.isSigner, meta.isWritable])).toEqual([
+      [PAYER.toBase58(), true, true],
+      [PAYER.toBase58(), true, false],
+      [NAMESPACE.toBase58(), false, false],
+      [prepared.sourceTokenAccount.toBase58(), false, true],
+    ]);
+    expect(settle?.keys[9].pubkey.equals(record)).toBe(true);
+  });
+
+  test("signs with a separate namespace authority when one is given", () => {
+    const authority = new PublicKey(RECIPIENTS[3]);
+    const prepared = buildTokenSettlementNTransaction({
+      payer: PAYER,
+      request: { ...request(), shares: request().shares.slice(0, 3).map((share, index) => ({ ...share, bps: [4_000, 4_000, 2_000][index] })) },
+      mint: MINT,
+      decimals: 6,
+      programId: PROGRAM_ID,
+      namespace: NAMESPACE,
+      authority,
+    });
+    const settle = prepared.transaction.instructions.at(-1);
+    expect(settle?.keys[1].pubkey.equals(authority)).toBe(true);
+    expect(settle?.keys[1].isSigner).toBe(true);
   });
 
   test("rejects wrong asset modes, invalid decimals, and a payer recipient", () => {
@@ -97,6 +128,7 @@ describe("SettleTokenN", () => {
         mint: MINT,
         decimals: 6,
         programId: PROGRAM_ID,
+        namespace: NAMESPACE,
       }),
     ).toThrow("requires SPL_STABLECOIN or USDC");
     expect(() =>
@@ -104,6 +136,7 @@ describe("SettleTokenN", () => {
         payer: PAYER,
         request: request(),
         programId: PROGRAM_ID,
+        namespace: NAMESPACE,
       }),
     ).toThrow("native settlement requires SOL_LAMPORTS_STANDIN");
     expect(() =>
@@ -113,6 +146,7 @@ describe("SettleTokenN", () => {
         mint: MINT,
         decimals: 256,
         programId: PROGRAM_ID,
+        namespace: NAMESPACE,
       }),
     ).toThrow("token decimals must be an integer in 0..=255");
     try {
@@ -122,6 +156,7 @@ describe("SettleTokenN", () => {
         mint: MINT,
         decimals: 6,
         programId: PROGRAM_ID,
+        namespace: NAMESPACE,
       });
       throw new Error("expected payer recipient to fail");
     } catch (error: unknown) {
@@ -141,6 +176,8 @@ describe("SettleTokenN", () => {
       blockTime: 1_789_200_001,
       programId: PROGRAM_ID.toBase58(),
       payer: PAYER.toBase58(),
+      authority: PAYER.toBase58(),
+      namespace: NAMESPACE.toBase58(),
       sourceTokenAccount: source,
       recipientTokenAccounts: destinations,
       mint: MINT.toBase58(),
@@ -173,6 +210,7 @@ describe("SettleTokenN", () => {
     const result = reconcileObservedTokenSettlementN({
       observation,
       request: request(),
+      namespace: NAMESPACE,
       tokenBaseUnitsPerAtomicUnit: 1n,
       mint: MINT,
       decimals: 6,
@@ -183,7 +221,8 @@ describe("SettleTokenN", () => {
       },
     });
     expect(result.record.mode).toBe("program-token");
-    expect(result.record.schemaVersion).toBe(1);
+    expect(result.record.schemaVersion).toBe(2);
+    expect(result.record.namespace).toBe(NAMESPACE.toBase58());
     expect(result.record.programId).toBe(PROGRAM_ID.toBase58());
     expect(result.record.payer).toBe(PAYER.toBase58());
     expect(result.record.settlementRecord).toBe("record-address");
@@ -198,10 +237,21 @@ describe("SettleTokenN", () => {
           transfers: observation.transfers.slice(0, -1),
         },
         request: request(),
+        namespace: NAMESPACE,
         tokenBaseUnitsPerAtomicUnit: 1n,
         mint: MINT,
         decimals: 6,
       }),
     ).toThrow("inner token transfers do not exactly match");
+    expect(() =>
+      reconcileObservedTokenSettlementN({
+        observation,
+        request: request(),
+        namespace: findNamespacePda(PROGRAM_ID, MINT, namespaceIdFromLabel("synxed-demo"))[0],
+        tokenBaseUnitsPerAtomicUnit: 1n,
+        mint: MINT,
+        decimals: 6,
+      }),
+    ).toThrow("settled in namespace");
   });
 });

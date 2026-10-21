@@ -28,7 +28,9 @@ import {
   computeSettlementN,
   encodeSettleNData,
   eventIdSeed,
+  findNamespacePda,
   findSettlementRecordPda,
+  namespaceIdFromLabel,
 } from "../sdk/typescript/src/index.ts";
 import { explorerTxUrl } from "../sdk/typescript/src/client.ts";
 import { ledgerEntryId } from "../sdk/typescript/src/ledger.ts";
@@ -46,6 +48,7 @@ const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 /** Any valid program id works for these offline checks; this is the reference devnet deployment's. */
 const REFERENCE_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
 const EVENT_ID = "smoke-event-1";
+const NAMESPACE_LABEL = "smoke-namespace";
 const SHARES = [
   { label: "artist", bps: 3_500 },
   { label: "studio", bps: 3_500 },
@@ -108,11 +111,19 @@ function expectedFromSource(): Record<string, unknown> {
     shares: SHARES.map((share, i) => ({ ...share, recipient: RECIPIENTS[i] })),
     memo: "smoke",
   });
+  const programId = new PublicKey(REFERENCE_PROGRAM_ID);
+  // The first recipient stands in for the creator; any key derives an address.
+  const namespace = findNamespacePda(
+    programId,
+    new PublicKey(RECIPIENTS[0]),
+    namespaceIdFromLabel(NAMESPACE_LABEL),
+  )[0];
   return {
+    namespace: namespace.toBase58(),
     seedHex: Buffer.from(seed).toString("hex"),
     dataHex: Buffer.from(encodeSettleNData({ eventSeed: seed, amount: 20_000n, bps: SHARES.map((s) => s.bps) })).toString("hex"),
     payouts: split.payouts.map((p) => [p.label, p.recipient, p.amountAtomic.toString()]),
-    record: findSettlementRecordPda(new PublicKey(REFERENCE_PROGRAM_ID), seed)[0].toBase58(),
+    record: findSettlementRecordPda(programId, namespace, seed)[0].toBase58(),
     entryId: ledgerEntryId("smoke-signature", "artist", "artist:1"),
     explorer: explorerTxUrl("smoke-signature"),
   };
@@ -132,14 +143,20 @@ const expected = input.expected;
 const programId = new PublicKey(input.programId);
 const recipients = input.recipients.map((r) => new PublicKey(r));
 
-// The SettleN golden vector, written out independently here; the same bytes are
-// asserted by tests/instruction-n.test.ts and the Rust codec tests.
+// The golden vectors, written out independently here; the same bytes are
+// asserted by tests/instruction-n.test.ts, tests/namespace.test.ts, and the
+// Rust codec tests.
 const fixed = Uint8Array.from({ length: 32 }, (_, i) => i);
+const descending = Uint8Array.from({ length: 32 }, (_, i) => 255 - i);
 const golden = sdk.encodeSettleNData({ eventSeed: fixed, amount: 20000n, bps: [3500, 3500, 2000, 1000] });
-assert.deepEqual(Array.from(golden), [1, ...fixed, 0x20, 0x4e, 0, 0, 0, 0, 0, 0, 4, 0xac, 0x0d, 0xac, 0x0d, 0xd0, 0x07, 0xe8, 0x03]);
+assert.deepEqual(Array.from(golden), [5, ...fixed, 0x20, 0x4e, 0, 0, 0, 0, 0, 0, 4, 0xac, 0x0d, 0xac, 0x0d, 0xd0, 0x07, 0xe8, 0x03]);
+const create = sdk.encodeCreateNamespaceData({ namespaceId: fixed, authority: new PublicKey(descending) });
+assert.deepEqual(Array.from(create), [3, ...fixed, ...descending]);
 
 // Same answers as the TypeScript sources.
 const seed = sdk.eventIdSeed(input.eventId);
+const namespace = sdk.findNamespacePda(programId, recipients[0], sdk.namespaceIdFromLabel(input.namespaceLabel))[0];
+assert.equal(namespace.toBase58(), expected.namespace);
 const hex = (bytes) => Buffer.from(bytes).toString("hex");
 assert.equal(hex(seed), expected.seedHex);
 assert.equal(hex(sdk.encodeSettleNData({ eventSeed: seed, amount: 20000n, bps: input.bps })), expected.dataHex);
@@ -154,7 +171,7 @@ const split = sdk.computeSettlementN({
 });
 assert.deepEqual(split.payouts.map((p) => [p.label, p.recipient, p.amountAtomic.toString()]), expected.payouts);
 assert.equal(split.totalAtomic, 20000n);
-assert.equal(sdk.findSettlementRecordPda(programId, seed)[0].toBase58(), expected.record);
+assert.equal(sdk.findSettlementRecordPda(programId, namespace, seed)[0].toBase58(), expected.record);
 assert.equal(ledger.ledgerEntryId("smoke-signature", "artist", "artist:1"), expected.entryId);
 assert.equal(client.explorerTxUrl("smoke-signature"), expected.explorer);
 
@@ -162,14 +179,16 @@ assert.equal(client.explorerTxUrl("smoke-signature"), expected.explorer);
 // second web3.js copy at a different version; a same-version regular
 // dependency would be deduped by npm, so the manifest checks below are what
 // pin web3.js as a peer dependency.
-const ix = sdk.buildSettleNInstruction({ programId, payer: recipients[0], recipients }, { eventSeed: seed, amount: 20000n, bps: input.bps });
+const ix = sdk.buildSettleNInstruction({ programId, payer: recipients[0], authority: recipients[0], namespace, recipients }, { eventSeed: seed, amount: 20000n, bps: input.bps });
 const systemKey = ix.keys.at(-1).pubkey;
 assert.ok(systemKey instanceof PublicKey, "package returned a PublicKey from a different @solana/web3.js copy");
 assert.ok(systemKey.equals(SystemProgram.programId));
-assert.ok(sdk.findSettlementRecordPda(programId, seed)[0] instanceof PublicKey);
+assert.ok(sdk.findSettlementRecordPda(programId, namespace, seed)[0] instanceof PublicKey);
 
 // Subpath entry points share module instances with the root entry point.
 assert.equal(client.submitSettlementN, sdk.submitSettlementN);
+assert.equal(client.findNamespacePda, sdk.findNamespacePda);
+assert.equal(client.namespaceIdFromLabel, sdk.namespaceIdFromLabel);
 assert.equal(ledger.reconcileSettlementN, sdk.reconcileSettlementN);
 assert.equal(types.ProtocolError, sdk.ProtocolError);
 
@@ -361,6 +380,7 @@ function main(): void {
         programId: REFERENCE_PROGRAM_ID,
         engines: engineRange(),
         eventId: EVENT_ID,
+        namespaceLabel: NAMESPACE_LABEL,
         labels: SHARES.map((s) => s.label),
         bps: SHARES.map((s) => s.bps),
         recipients: RECIPIENTS,

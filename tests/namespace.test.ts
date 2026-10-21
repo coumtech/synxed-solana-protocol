@@ -134,8 +134,8 @@ describe("namespace instruction builders", () => {
       [SystemProgram.programId.toBase58(), false, false],
     ]);
     expect(instruction.programId.equals(PROGRAM_ID)).toBe(true);
-    expect(Uint8Array.from(instruction.data)).toEqual(
-      encodeCreateNamespaceData({ namespaceId: ASCENDING, authority: DESCENDING_KEY }),
+    expect(Array.from(instruction.data)).toEqual(
+      Array.from(encodeCreateNamespaceData({ namespaceId: ASCENDING, authority: DESCENDING_KEY })),
     );
   });
 
@@ -155,8 +155,8 @@ describe("namespace instruction builders", () => {
       [authority.toBase58(), true, false],
       [namespace.toBase58(), false, true],
     ]);
-    expect(Uint8Array.from(instruction.data)).toEqual(
-      encodeSetNamespaceAuthorityData(DESCENDING_KEY),
+    expect(Array.from(instruction.data)).toEqual(
+      Array.from(encodeSetNamespaceAuthorityData(DESCENDING_KEY)),
     );
   });
 });

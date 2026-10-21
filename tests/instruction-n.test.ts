@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   SETTLE_N_HEADER_LENGTH,
-  SETTLE_N_TAG,
   ProtocolError,
   buildSettleNInstruction,
   encodeSettleNData,
