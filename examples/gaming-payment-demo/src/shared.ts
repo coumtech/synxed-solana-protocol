@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { ensureNamespace, namespaceIdFromLabel } from "@coumtech/synxed-solana-protocol";
 
 export const REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -194,10 +195,40 @@ export function parseProgramId(): PublicKey | undefined {
 
 /**
  * Lamports to keep on top of the settlement itself: program mode also pays
- * rent for the 41-byte settlement record (~1,176,240 lamports) plus fees.
+ * rent for the 41-byte settlement record (~1,176,240 lamports), on the first
+ * run rent for the 98-byte namespace (~1,572,960 lamports), plus fees.
  */
 export function fundingOverhead(programId: PublicKey | undefined): bigint {
-  return programId !== undefined ? 1_200_000n : 1_000_000n;
+  return programId !== undefined ? 2_800_000n : 1_000_000n;
+}
+
+/** The demo's namespace label; SETTLEMENT_NAMESPACE overrides it. */
+export const DEFAULT_NAMESPACE_LABEL = "synxed-demo";
+
+/**
+ * The payer's settlement namespace for program mode, opened on first use.
+ * The payer is its creator and authority, so only this payer can settle in
+ * it, and nobody else can claim one of its event ids.
+ */
+export async function demoNamespace(
+  connection: Connection,
+  payer: Keypair,
+  programId: PublicKey,
+): Promise<PublicKey> {
+  const label = envString("SETTLEMENT_NAMESPACE") ?? DEFAULT_NAMESPACE_LABEL;
+  const ensured = await ensureNamespace({
+    connection,
+    payer,
+    programId,
+    namespaceId: namespaceIdFromLabel(label),
+  });
+  if (ensured.created) {
+    console.log(`Opened settlement namespace "${label}" ${ensured.address.toBase58()}`);
+    console.log(`  signature ${ensured.signature ?? ""}`);
+  } else {
+    console.log(`Settlement namespace "${label}" ${ensured.address.toBase58()}`);
+  }
+  return ensured.address;
 }
 
 export async function ensureFunds(
@@ -227,15 +258,15 @@ export async function ensureFunds(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `Devnet airdrop failed (${message}). Fund the payer manually at ` +
-        `https://faucet.solana.com — address ${payer.publicKey.toBase58()}`,
+        `https://faucet.solana.com (address ${payer.publicKey.toBase58()})`,
     );
   }
   const after = BigInt(await connection.getBalance(payer.publicKey));
   if (after < neededLamports) {
     throw new Error(
       `Balance ${after} lamports still below required ${neededLamports} ` +
-        `after airdrop. Fund the payer at https://faucet.solana.com — ` +
-        `address ${payer.publicKey.toBase58()}`,
+        `after airdrop. Fund the payer at https://faucet.solana.com ` +
+        `(address ${payer.publicKey.toBase58()})`,
     );
   }
 }

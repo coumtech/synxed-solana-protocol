@@ -4,7 +4,11 @@ import {
   LedgerError,
   allocatePoolPayout,
   assertLedgerCluster,
+  encodeSettleNData,
   eventIdSeed,
+  findNamespacePda,
+  findSettlementRecordPda,
+  namespaceIdFromLabel,
   observeProgramSettlement,
   reconcileObservedSettlementN,
   type LedgerErrorCode,
@@ -13,7 +17,8 @@ import {
 } from "../sdk/typescript/src/index.ts";
 
 const PAYER = "6k3KRgAuv4CwanjLGwYH1rzwTeZwSRbeLETHfen4h51s";
-const RECORD = "4xrJM7aoaSkbmzXRgARZP8WSBzdd1nqrSqk45KJhE7n3";
+// The record of the pre-namespace reference transaction below.
+const LEGACY_RECORD = "4xrJM7aoaSkbmzXRgARZP8WSBzdd1nqrSqk45KJhE7n3";
 const RECIPIENTS = [
   "6AF4DwckLZ7pxwWYarmJx5Sk6dyziagHNoDA8CJpDQa5",
   "EfKS8o2pDsHAJUKQQ3evE5m6PgYR7rxEYvGQavk2y1Da",
@@ -24,6 +29,42 @@ const BPS = [3_500, 3_500, 2_000, 1_000] as const;
 const AMOUNTS = [7_000_000n, 7_000_000n, 4_000_000n, 2_000_000n] as const;
 const EVENT_ID = "evt_ledger_reconciliation";
 const PROGRAM_ID = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
+const NAMESPACE = findNamespacePda(
+  PROGRAM_ID,
+  new PublicKey(PAYER),
+  namespaceIdFromLabel("synxed-demo"),
+)[0];
+const RECORD = findSettlementRecordPda(PROGRAM_ID, NAMESPACE, eventIdSeed(EVENT_ID))[0].toBase58();
+const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+// RPC instruction data is base58; a small encoder keeps the test independent
+// of the SDK's own bs58 dependency.
+function base58(bytes: Uint8Array): string {
+  let value = 0n;
+  for (const byte of bytes) value = value * 256n + BigInt(byte);
+  let out = "";
+  while (value > 0n) {
+    out = BASE58[Number(value % 58n)] + out;
+    value /= 58n;
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    out = `1${out}`;
+  }
+  return out;
+}
+
+function expectLedgerCode(fn: () => unknown, code: LedgerErrorCode): void {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(LedgerError);
+    expect((error as LedgerError).code).toBe(code);
+    return;
+  }
+  throw new Error(`expected LedgerError ${code}, but nothing was thrown`);
+}
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -53,6 +94,8 @@ function observation(): ProgramSettlementObservation {
     blockTime: 1_789_200_000,
     programId: PROGRAM_ID.toBase58(),
     payer: PAYER,
+    authority: PAYER,
+    namespace: NAMESPACE.toBase58(),
     record: RECORD,
     eventSeedHex: toHex(eventIdSeed(EVENT_ID)),
     amountOnChain: 20_000_000n,
@@ -88,41 +131,31 @@ describe("ledger reconciliation", () => {
     ).rejects.toMatchObject({ code: "CLUSTER_MISMATCH" });
   });
 
-  test("extracts the finalized reference transaction's SettleN evidence", () => {
-    const signature =
-      "31NVbBvwgnRrnaBN5BQAh8UpovHqBCyhFfvbDXqQi3pMv3xbMeCCpts7eh1UwUxUEQokWrfgHj9aMfKBNXYsvzra";
-    const transaction = {
+  // A parsed RPC transaction in the shape getParsedTransaction returns.
+  // `leading` instructions come first; the memo and the settlement follow.
+  function parsedSettlement(
+    accounts: readonly PublicKey[],
+    data: string,
+    memo: Readonly<Record<string, unknown>>,
+    leading: readonly unknown[] = [],
+  ): ParsedTransactionWithMeta {
+    const settleIndex = leading.length + 1;
+    return {
       slot: 491_725_036,
       blockTime: 1_788_310_318,
       transaction: {
-        signatures: [signature],
+        signatures: ["fixture-signature"],
         message: {
           accountKeys: [],
-          recentBlockhash: "reference-fixture",
+          recentBlockhash: "fixture",
           instructions: [
+            ...leading,
             {
-              parsed: JSON.stringify({
-                protocol: "synxed-settlement",
-                event: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
-                occurredAt: "2026-09-02T00:51:58.000Z",
-                kind: "audio_ad_impression",
-                asset: "SOL_LAMPORTS_STANDIN",
-                lamports: "20000000",
-                memo: "audio ad in Skyline Runners (4-way)",
-              }),
+              parsed: JSON.stringify(memo),
               program: "spl-memo",
               programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
             },
-            {
-              accounts: [
-                new PublicKey(PAYER),
-                ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
-                new PublicKey(RECORD),
-                new PublicKey("11111111111111111111111111111111"),
-              ],
-              data: "2RWubWCVYD4cdnLHpRJR1E417pZE1tKuSLFWKrYD7Zdn6cFw3z54ihSvmfeXhy7ds6eW",
-              programId: PROGRAM_ID,
-            },
+            { accounts: [...accounts], data, programId: PROGRAM_ID },
           ],
         },
       },
@@ -130,28 +163,150 @@ describe("ledger reconciliation", () => {
         err: null,
         innerInstructions: [
           {
-            index: 1,
-            instructions: [
-              ...RECIPIENTS.map((destination, index) => ({
-                parsed: {
-                  info: { destination, lamports: Number(AMOUNTS[index]), source: PAYER },
-                  type: "transfer",
-                },
-                program: "system",
-                programId: new PublicKey("11111111111111111111111111111111"),
-              })),
-            ],
+            index: settleIndex,
+            instructions: RECIPIENTS.map((destination, index) => ({
+              parsed: {
+                info: { destination, lamports: Number(AMOUNTS[index]), source: PAYER },
+                type: "transfer",
+              },
+              program: "system",
+              programId: SYSTEM_PROGRAM,
+            })),
           },
         ],
       },
     } as unknown as ParsedTransactionWithMeta;
+  }
 
-    const observed = observeProgramSettlement(transaction, signature, PROGRAM_ID);
+  const settleNData = base58(
+    encodeSettleNData({ eventSeed: eventIdSeed(EVENT_ID), amount: 20_000_000n, bps: BPS }),
+  );
+  const settleNAccounts = (namespace: PublicKey = NAMESPACE): PublicKey[] => [
+    new PublicKey(PAYER),
+    new PublicKey(PAYER),
+    namespace,
+    ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
+    new PublicKey(RECORD),
+    SYSTEM_PROGRAM,
+  ];
+  const otherNamespace = findNamespacePda(PROGRAM_ID, SYSTEM_PROGRAM, new Uint8Array(32))[0];
+
+  test("extracts SettleN evidence, with the authority and namespace", () => {
+    const observed = observeProgramSettlement(
+      parsedSettlement(settleNAccounts(), settleNData, observation().memo),
+      "fixture-signature",
+      PROGRAM_ID,
+    );
     expect(observed.amountOnChain).toBe(20_000_000n);
     expect(observed.bps).toEqual(BPS);
     expect(observed.recipients).toEqual(RECIPIENTS);
+    expect(observed.payer).toBe(PAYER);
+    expect(observed.authority).toBe(PAYER);
+    expect(observed.namespace).toBe(NAMESPACE.toBase58());
+    expect(observed.record).toBe(RECORD);
     expect(observed.transfers.map((transfer) => transfer.amountOnChain)).toEqual(
       [...AMOUNTS],
+    );
+    const reconciled = reconcileObservedSettlementN({
+      observation: observed,
+      request: request(),
+      namespace: NAMESPACE,
+      unitsPerAtomicUnit: 1_000n,
+    });
+    expect(reconciled.record.namespace).toBe(NAMESPACE.toBase58());
+  });
+
+  test("reads a first wallet settlement that also opens the namespace", () => {
+    const createNamespace = {
+      accounts: [new PublicKey(PAYER), new PublicKey(PAYER), NAMESPACE, SYSTEM_PROGRAM],
+      data: base58(Uint8Array.from([3, ...namespaceIdFromLabel("synxed-demo"), ...new PublicKey(PAYER).toBytes()])),
+      programId: PROGRAM_ID,
+    };
+    const observed = observeProgramSettlement(
+      parsedSettlement(settleNAccounts(), settleNData, observation().memo, [createNamespace]),
+      "fixture-signature",
+      PROGRAM_ID,
+    );
+    expect(observed.transfers.map((transfer) => transfer.amountOnChain)).toEqual([...AMOUNTS]);
+    const reconciled = reconcileObservedSettlementN({
+      observation: observed,
+      request: request(),
+      namespace: NAMESPACE,
+      unitsPerAtomicUnit: 1_000n,
+    });
+    expect(reconciled.record.signature).toBe("fixture-signature");
+  });
+
+  test("refuses a second settlement or a rotation in the same transaction", () => {
+    const secondSettlement = { accounts: settleNAccounts(), data: settleNData, programId: PROGRAM_ID };
+    const rotation = {
+      accounts: [new PublicKey(PAYER), NAMESPACE],
+      data: base58(Uint8Array.from([4, ...SYSTEM_PROGRAM.toBytes().map((_, i) => i + 1)])),
+      programId: PROGRAM_ID,
+    };
+    for (const extra of [secondSettlement, rotation]) {
+      expectLedgerCode(
+        () =>
+          observeProgramSettlement(
+            parsedSettlement(settleNAccounts(), settleNData, observation().memo, [extra]),
+            "fixture-signature",
+            PROGRAM_ID,
+          ),
+        "PROGRAM_INSTRUCTION",
+      );
+    }
+  });
+
+  test("refuses a record that is not derived from the namespace in the instruction", () => {
+    expectLedgerCode(
+      () =>
+        observeProgramSettlement(
+          parsedSettlement(settleNAccounts(otherNamespace), settleNData, observation().memo),
+          "fixture-signature",
+          PROGRAM_ID,
+        ),
+      "ACCOUNT_LAYOUT",
+    );
+  });
+
+  test("refuses a settlement made with a retired instruction", () => {
+    // The finalized devnet reference transaction from before namespaces: tag 1,
+    // payer, four recipients, record, system program.
+    const legacyData = "2RWubWCVYD4cdnLHpRJR1E417pZE1tKuSLFWKrYD7Zdn6cFw3z54ihSvmfeXhy7ds6eW";
+    const legacy = parsedSettlement(
+      [
+        new PublicKey(PAYER),
+        ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
+        new PublicKey(LEGACY_RECORD),
+        SYSTEM_PROGRAM,
+      ],
+      legacyData,
+      {
+        protocol: "synxed-settlement",
+        event: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
+        occurredAt: "2026-09-02T00:51:58.000Z",
+        kind: "audio_ad_impression",
+        asset: "SOL_LAMPORTS_STANDIN",
+        lamports: "20000000",
+        memo: "audio ad in Skyline Runners (4-way)",
+      },
+    );
+    expectLedgerCode(
+      () => observeProgramSettlement(legacy, "fixture-signature", PROGRAM_ID),
+      "INSTRUCTION_DATA",
+    );
+  });
+
+  test("refuses evidence from another namespace", () => {
+    expectLedgerCode(
+      () =>
+        reconcileObservedSettlementN({
+          observation: observation(),
+          request: request(),
+          namespace: otherNamespace,
+          unitsPerAtomicUnit: 1_000n,
+        }),
+      "NAMESPACE_MISMATCH",
     );
   });
 
@@ -159,6 +314,7 @@ describe("ledger reconciliation", () => {
     const result = reconcileObservedSettlementN({
       observation: observation(),
       request: request(),
+      namespace: NAMESPACE,
       unitsPerAtomicUnit: 1_000n,
       beneficiaryIds: {
         artist: "artist:demo",
@@ -173,8 +329,10 @@ describe("ledger reconciliation", () => {
       "4000000",
       "2000000",
     ]);
-    expect(result.record.schemaVersion).toBe(1);
+    expect(result.record.schemaVersion).toBe(2);
     expect(result.record.programId).toBe(PROGRAM_ID.toBase58());
+    expect(result.record.namespace).toBe(NAMESPACE.toBase58());
+    expect(result.record.authority).toBe(PAYER);
     expect(result.record.payer).toBe(PAYER);
     expect(result.record.settlementRecord).toBe(RECORD);
     expect(result.record.payouts.map((line) => line.role)).toEqual([
@@ -204,6 +362,7 @@ describe("ledger reconciliation", () => {
         reconcileObservedSettlementN({
           observation: changed,
           request: request(),
+          namespace: NAMESPACE,
           unitsPerAtomicUnit: 1_000n,
         }),
       ).toThrow(LedgerError);
@@ -211,6 +370,7 @@ describe("ledger reconciliation", () => {
         reconcileObservedSettlementN({
           observation: changed,
           request: request(),
+          namespace: NAMESPACE,
           unitsPerAtomicUnit: 1_000n,
         });
       } catch (error) {
@@ -223,6 +383,7 @@ describe("ledger reconciliation", () => {
     const result = reconcileObservedSettlementN({
       observation: observation(),
       request: request(),
+      namespace: NAMESPACE,
       unitsPerAtomicUnit: 1_000n,
     });
     const pool = result.poolPayouts[0];
@@ -243,6 +404,7 @@ describe("ledger reconciliation", () => {
     const result = reconcileObservedSettlementN({
       observation: observation(),
       request: request(),
+      namespace: NAMESPACE,
       unitsPerAtomicUnit: 1_000n,
     });
     const entries = allocatePoolPayout(

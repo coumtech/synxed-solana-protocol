@@ -2,12 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   SETTLE_N_HEADER_LENGTH,
-  SETTLE_N_TAG,
   ProtocolError,
   buildSettleNInstruction,
   encodeSettleNData,
+  findNamespacePda,
   findSettlementRecordPda,
   type ProtocolErrorCode,
+  type SettleNAccounts,
 } from "../sdk/typescript/src/index.ts";
 
 const PROGRAM_ID = new PublicKey("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
@@ -39,9 +40,9 @@ describe("encodeSettleNData", () => {
       amount: 20_000n,
       bps: REWARDS_BPS,
     });
-    // tag | seed[32] | 20000u64le | count=4 | 3500 | 3500 | 2000 | 1000 (u16le)
+    // tag(5) | seed[32] | 20000u64le | count=4 | 3500 | 3500 | 2000 | 1000 (u16le)
     const expected = Uint8Array.from([
-      SETTLE_N_TAG,
+      5,
       ...FIXED_SEED,
       0x20, 0x4e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
       0x04,
@@ -78,52 +79,79 @@ describe("encodeSettleNData", () => {
 
 describe("buildSettleNInstruction", () => {
   const recipients = [key("artist"), key("studio"), key("synxed"), key("pool")];
+  const namespace = findNamespacePda(PROGRAM_ID, key("payer"), FIXED_SEED)[0];
+  const accounts = (overrides: Partial<SettleNAccounts> = {}): SettleNAccounts => ({
+    programId: PROGRAM_ID,
+    payer: key("payer"),
+    authority: key("authority"),
+    namespace,
+    recipients,
+    ...overrides,
+  });
 
-  test("orders accounts as payer, recipients, record, system program", () => {
-    const instruction = buildSettleNInstruction(
-      { programId: PROGRAM_ID, payer: key("payer"), recipients },
-      { eventSeed: FIXED_SEED, amount: 20_000n, bps: REWARDS_BPS },
-    );
-    const [record] = findSettlementRecordPda(PROGRAM_ID, FIXED_SEED);
-    expect(instruction.keys.length).toBe(recipients.length + 3);
-    expect(instruction.keys[0].pubkey.equals(key("payer"))).toBe(true);
-    expect(instruction.keys[0].isSigner).toBe(true);
-    recipients.forEach((recipient, i) => {
-      const meta = instruction.keys[i + 1];
-      expect(meta.pubkey.equals(recipient)).toBe(true);
-      expect(meta.isSigner).toBe(false);
-      expect(meta.isWritable).toBe(true);
+  test("orders payer, authority, namespace, recipients, record, system program", () => {
+    const instruction = buildSettleNInstruction(accounts(), {
+      eventSeed: FIXED_SEED,
+      amount: 20_000n,
+      bps: REWARDS_BPS,
     });
-    expect(instruction.keys[5].pubkey.equals(record)).toBe(true);
-    expect(instruction.keys[5].isWritable).toBe(true);
-    expect(instruction.keys[6].pubkey.equals(SystemProgram.programId)).toBe(true);
-    expect(instruction.keys[6].isWritable).toBe(false);
+    const [record] = findSettlementRecordPda(PROGRAM_ID, namespace, FIXED_SEED);
+    const metas = instruction.keys.map((meta) => [
+      meta.pubkey.toBase58(),
+      meta.isSigner,
+      meta.isWritable,
+    ]);
+    expect(metas).toEqual([
+      [key("payer").toBase58(), true, true],
+      [key("authority").toBase58(), true, false],
+      [namespace.toBase58(), false, false],
+      ...recipients.map((recipient) => [recipient.toBase58(), false, true]),
+      [record.toBase58(), false, true],
+      [SystemProgram.programId.toBase58(), false, false],
+    ]);
+  });
+
+  test("derives the record from the namespace", () => {
+    const other = findNamespacePda(PROGRAM_ID, key("other"), FIXED_SEED)[0];
+    const instruction = buildSettleNInstruction(accounts({ namespace: other }), {
+      eventSeed: FIXED_SEED,
+      amount: 20_000n,
+      bps: REWARDS_BPS,
+    });
+    const [record] = findSettlementRecordPda(PROGRAM_ID, other, FIXED_SEED);
+    expect(instruction.keys[3 + recipients.length].pubkey.equals(record)).toBe(true);
   });
 
   test("rejects a recipient count that does not match the shares", () => {
     expectCode(
       () =>
-        buildSettleNInstruction(
-          { programId: PROGRAM_ID, payer: key("payer"), recipients: recipients.slice(0, 3) },
-          { eventSeed: FIXED_SEED, amount: 20_000n, bps: REWARDS_BPS },
-        ),
+        buildSettleNInstruction(accounts({ recipients: recipients.slice(0, 3) }), {
+          eventSeed: FIXED_SEED,
+          amount: 20_000n,
+          bps: REWARDS_BPS,
+        }),
       "RECIPIENT_COUNT",
     );
   });
 
-  test("rejects the record account in every recipient position", () => {
-    const [record] = findSettlementRecordPda(PROGRAM_ID, FIXED_SEED);
+  test("rejects the record or the namespace in a recipient position", () => {
+    const [record] = findSettlementRecordPda(PROGRAM_ID, namespace, FIXED_SEED);
+    const params = { eventSeed: FIXED_SEED, amount: 20_000n, bps: REWARDS_BPS };
     expectCode(
       () =>
         buildSettleNInstruction(
-          {
-            programId: PROGRAM_ID,
-            payer: key("payer"),
-            recipients: [recipients[0], recipients[1], recipients[2], record],
-          },
-          { eventSeed: FIXED_SEED, amount: 20_000n, bps: REWARDS_BPS },
+          accounts({ recipients: [recipients[0], recipients[1], recipients[2], record] }),
+          params,
         ),
       "RECIPIENT_IS_RECORD",
+    );
+    expectCode(
+      () =>
+        buildSettleNInstruction(
+          accounts({ recipients: [namespace, recipients[1], recipients[2], recipients[3]] }),
+          params,
+        ),
+      "RECIPIENT_IS_NAMESPACE",
     );
   });
 });

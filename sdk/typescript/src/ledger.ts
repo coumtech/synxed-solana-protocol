@@ -10,6 +10,7 @@ import {
 import bs58 from "bs58";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
+  CREATE_NAMESPACE_TAG,
   SETTLE_N_HEADER_LENGTH,
   SETTLE_N_TAG,
   SETTLE_TOKEN_N_HEADER_LENGTH,
@@ -37,6 +38,7 @@ export type LedgerErrorCode =
   | "TX_FAILED"
   | "TX_SIGNATURE"
   | "CLUSTER_MISMATCH"
+  | "NAMESPACE_MISMATCH"
   | "BLOCK_TIME_MISSING"
   | "PROGRAM_INSTRUCTION"
   | "INSTRUCTION_DATA"
@@ -80,6 +82,9 @@ export interface ProgramSettlementObservation {
   blockTime: number;
   programId: string;
   payer: string;
+  /** The namespace authority that signed. */
+  authority: string;
+  namespace: string;
   record: string;
   eventSeedHex: string;
   amountOnChain: bigint;
@@ -95,6 +100,9 @@ export interface ProgramTokenSettlementObservation {
   blockTime: number;
   programId: string;
   payer: string;
+  /** The namespace authority that signed. */
+  authority: string;
+  namespace: string;
   sourceTokenAccount: string;
   recipientTokenAccounts: readonly string[];
   mint: string;
@@ -118,12 +126,16 @@ export interface PayoutLine {
 }
 
 export interface SettlementRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   eventId: string;
   signature: string;
   slot: number;
   cluster: LedgerCluster;
   programId: string;
+  /** The settlement namespace the event was settled in. */
+  namespace: string;
+  /** The namespace authority that signed the settlement. */
+  authority: string;
   payer: string;
   settlementRecord: string;
   mode: "program" | "program-token";
@@ -167,6 +179,8 @@ export interface SettlementReconciliation {
 export interface ReconcileObservedSettlementNOptions {
   observation: ProgramSettlementObservation;
   request: SettlementRequestN;
+  /** Your settlement namespace; evidence from any other is refused. */
+  namespace: PublicKey;
   unitsPerAtomicUnit: bigint;
   cluster?: LedgerCluster;
   /** Stable platform IDs by share label. Wallet-derived IDs are the fallback. */
@@ -189,6 +203,8 @@ export interface ReconcileSettlementNOptions
 export interface ReconcileObservedTokenSettlementNOptions {
   observation: ProgramTokenSettlementObservation;
   request: SettlementRequestN;
+  /** Your settlement namespace; evidence from any other is refused. */
+  namespace: PublicKey;
   tokenBaseUnitsPerAtomicUnit: bigint;
   mint: PublicKey;
   decimals: number;
@@ -260,6 +276,7 @@ export async function reconcileSettlementN(
   return reconcileObservedSettlementN({
     observation,
     request: options.request,
+    namespace: options.namespace,
     unitsPerAtomicUnit: options.unitsPerAtomicUnit,
     cluster,
     ...(options.beneficiaryIds !== undefined
@@ -300,18 +317,11 @@ export function observeProgramSettlement(
     );
   }
 
-  const matches = transaction.transaction.message.instructions
-    .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.programId.equals(programId));
-  if (matches.length !== 1 || !isPartiallyDecoded(matches[0].instruction)) {
-    throw new LedgerError(
-      "PROGRAM_INSTRUCTION",
-      `expected exactly one raw instruction for program ${programId.toBase58()}`,
-    );
-  }
-  const programInstruction = matches[0].instruction;
+  const settlement = findSettlementInstruction(transaction, programId);
+  const programInstruction = settlement.instruction;
   const decoded = decodeSettleNData(programInstruction.data);
-  const expectedAccountCount = decoded.bps.length + 3;
+  const count = decoded.bps.length;
+  const expectedAccountCount = count + 5;
   if (programInstruction.accounts.length !== expectedAccountCount) {
     throw new LedgerError(
       "ACCOUNT_LAYOUT",
@@ -319,12 +329,18 @@ export function observeProgramSettlement(
     );
   }
   const payer = programInstruction.accounts[0].toBase58();
+  const authority = programInstruction.accounts[1].toBase58();
+  const namespace = programInstruction.accounts[2];
   const recipients = programInstruction.accounts
-    .slice(1, 1 + decoded.bps.length)
+    .slice(3, 3 + count)
     .map((key) => key.toBase58());
-  const recordKey = programInstruction.accounts[1 + decoded.bps.length];
-  const systemProgram = programInstruction.accounts[2 + decoded.bps.length];
-  const [derivedRecord] = findSettlementRecordPda(programId, decoded.eventSeed);
+  const recordKey = programInstruction.accounts[3 + count];
+  const systemProgram = programInstruction.accounts[4 + count];
+  const [derivedRecord] = findSettlementRecordPda(
+    programId,
+    namespace,
+    decoded.eventSeed,
+  );
   if (!recordKey.equals(derivedRecord) || !systemProgram.equals(SystemProgram.programId)) {
     throw new LedgerError(
       "ACCOUNT_LAYOUT",
@@ -334,7 +350,7 @@ export function observeProgramSettlement(
 
   const memo = extractMemo(transaction);
   const inner = transaction.meta.innerInstructions?.find(
-    (group) => group.index === matches[0].index,
+    (group) => group.index === settlement.index,
   );
   if (inner === undefined) {
     throw new LedgerError(
@@ -353,6 +369,8 @@ export function observeProgramSettlement(
     blockTime: transaction.blockTime,
     programId: programId.toBase58(),
     payer,
+    authority,
+    namespace: namespace.toBase58(),
     record: recordKey.toBase58(),
     eventSeedHex: toHex(decoded.eventSeed),
     amountOnChain: decoded.amount,
@@ -382,6 +400,7 @@ export function reconcileObservedSettlementN(
       "unitsPerAtomicUnit must be a positive bigint",
     );
   }
+  assertNamespace(observation.namespace, options.namespace);
   if (observation.eventSeedHex !== toHex(eventIdSeed(request.eventId))) {
     throw new LedgerError("EVENT_MISMATCH", "event id does not match the on-chain seed");
   }
@@ -450,12 +469,14 @@ export function reconcileObservedSettlementN(
     destinationAccount: share.recipient,
   }));
   const record: SettlementRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: request.eventId,
     signature: observation.signature,
     slot: observation.slot,
     cluster: options.cluster ?? "devnet",
     programId: observation.programId,
+    namespace: observation.namespace,
+    authority: observation.authority,
     payer: observation.payer,
     settlementRecord: observation.record,
     mode: "program",
@@ -534,6 +555,7 @@ export async function reconcileTokenSettlementN(
       options.programId,
     ),
     request: options.request,
+    namespace: options.namespace,
     tokenBaseUnitsPerAtomicUnit: options.tokenBaseUnitsPerAtomicUnit,
     mint: options.mint,
     decimals: options.decimals,
@@ -564,35 +586,33 @@ export function observeProgramTokenSettlement(
   if (transaction.blockTime === undefined || transaction.blockTime === null) {
     throw new LedgerError("BLOCK_TIME_MISSING", `transaction ${signature} has no block time`);
   }
-  const matches = transaction.transaction.message.instructions
-    .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.programId.equals(programId));
-  if (matches.length !== 1 || !isPartiallyDecoded(matches[0].instruction)) {
-    throw new LedgerError(
-      "PROGRAM_INSTRUCTION",
-      `expected exactly one raw instruction for program ${programId.toBase58()}`,
-    );
-  }
-  const programInstruction = matches[0].instruction;
+  const settlement = findSettlementInstruction(transaction, programId);
+  const programInstruction = settlement.instruction;
   const decoded = decodeSettleTokenNData(programInstruction.data);
-  const expectedAccountCount = decoded.bps.length + 6;
+  const count = decoded.bps.length;
+  const expectedAccountCount = count + 8;
   if (programInstruction.accounts.length !== expectedAccountCount) {
     throw new LedgerError(
       "ACCOUNT_LAYOUT",
       `SettleTokenN expected ${expectedAccountCount} accounts, got ${programInstruction.accounts.length}`,
     );
   }
-  const count = decoded.bps.length;
   const payer = programInstruction.accounts[0].toBase58();
-  const sourceTokenAccount = programInstruction.accounts[1].toBase58();
+  const authority = programInstruction.accounts[1].toBase58();
+  const namespace = programInstruction.accounts[2];
+  const sourceTokenAccount = programInstruction.accounts[3].toBase58();
   const recipientTokenAccounts = programInstruction.accounts
-    .slice(2, 2 + count)
+    .slice(4, 4 + count)
     .map((key) => key.toBase58());
-  const mint = programInstruction.accounts[2 + count];
-  const record = programInstruction.accounts[3 + count];
-  const systemProgram = programInstruction.accounts[4 + count];
-  const tokenProgram = programInstruction.accounts[5 + count];
-  const [derivedRecord] = findSettlementRecordPda(programId, decoded.eventSeed);
+  const mint = programInstruction.accounts[4 + count];
+  const record = programInstruction.accounts[5 + count];
+  const systemProgram = programInstruction.accounts[6 + count];
+  const tokenProgram = programInstruction.accounts[7 + count];
+  const [derivedRecord] = findSettlementRecordPda(
+    programId,
+    namespace,
+    decoded.eventSeed,
+  );
   if (
     !record.equals(derivedRecord) ||
     !systemProgram.equals(SystemProgram.programId) ||
@@ -604,7 +624,7 @@ export function observeProgramTokenSettlement(
     );
   }
   const inner = transaction.meta.innerInstructions?.find(
-    (group) => group.index === matches[0].index,
+    (group) => group.index === settlement.index,
   );
   if (inner === undefined) {
     throw new LedgerError(
@@ -622,6 +642,8 @@ export function observeProgramTokenSettlement(
     blockTime: transaction.blockTime,
     programId: programId.toBase58(),
     payer,
+    authority,
+    namespace: namespace.toBase58(),
     sourceTokenAccount,
     recipientTokenAccounts,
     mint: mint.toBase58(),
@@ -661,6 +683,7 @@ export function reconcileObservedTokenSettlementN(
     );
   }
   const expectedTotal = request.amountAtomic * tokenBaseUnitsPerAtomicUnit;
+  assertNamespace(observation.namespace, options.namespace);
   if (observation.eventSeedHex !== toHex(eventIdSeed(request.eventId))) {
     throw new LedgerError("EVENT_MISMATCH", "event id does not match the on-chain seed");
   }
@@ -754,12 +777,14 @@ export function reconcileObservedTokenSettlementN(
       : (beneficiaryIds[share.label] ?? `wallet:${share.recipient}`),
   }));
   const record: SettlementRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: request.eventId,
     signature: observation.signature,
     slot: observation.slot,
     cluster: options.cluster ?? "devnet",
     programId: observation.programId,
+    namespace: observation.namespace,
+    authority: observation.authority,
     payer: observation.payer,
     settlementRecord: observation.record,
     mode: "program-token",
@@ -865,6 +890,58 @@ export function ledgerEntryId(
   return toHex(
     sha256(new TextEncoder().encode(`${signature}\u0000${role}\u0000${beneficiaryId}`)),
   );
+}
+
+/**
+ * The transaction's one settlement instruction for `programId`. A
+ * `CreateNamespace` for the same program may sit beside it: a wallet's first
+ * settlement opens its namespace in the same transaction. Anything else from
+ * the program (a second settlement, a rotation) fails closed.
+ */
+function findSettlementInstruction(
+  transaction: ParsedTransactionWithMeta,
+  programId: PublicKey,
+): { instruction: PartiallyDecodedInstruction; index: number } {
+  const fromProgram = transaction.transaction.message.instructions
+    .map((instruction, index) => ({ instruction, index }))
+    .filter(({ instruction }) => instruction.programId.equals(programId));
+  const raw: { instruction: PartiallyDecodedInstruction; index: number }[] = [];
+  for (const { instruction, index } of fromProgram) {
+    if (!isPartiallyDecoded(instruction)) {
+      throw new LedgerError(
+        "PROGRAM_INSTRUCTION",
+        `expected raw instructions for program ${programId.toBase58()}`,
+      );
+    }
+    raw.push({ instruction, index });
+  }
+  const settlements = raw.filter(
+    ({ instruction }) => instructionTag(instruction.data) !== CREATE_NAMESPACE_TAG,
+  );
+  if (settlements.length !== 1) {
+    throw new LedgerError(
+      "PROGRAM_INSTRUCTION",
+      `expected exactly one settlement instruction for program ${programId.toBase58()}, besides any CreateNamespace`,
+    );
+  }
+  return settlements[0];
+}
+
+function instructionTag(data: string): number | null {
+  try {
+    return bs58.decode(data)[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function assertNamespace(observed: string, expected: PublicKey): void {
+  if (observed !== expected.toBase58()) {
+    throw new LedgerError(
+      "NAMESPACE_MISMATCH",
+      `settled in namespace ${observed}, not ${expected.toBase58()}`,
+    );
+  }
 }
 
 function decodeSettleNData(data: string): {

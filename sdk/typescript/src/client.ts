@@ -3,7 +3,8 @@
 // Two submission modes:
 //  - "program": one instruction to the deployed settlement program, which
 //    validates the split and pays every recipient atomically. Requires a
-//    program id (see docs/integration.md for deployment).
+//    program id and a settlement namespace whose authority signs (see
+//    docs/integration.md).
 //  - "system-transfer": up to N SystemProgram transfers (zero-lamport shares
 //    are skipped) computed client-side with the same split math, plus a
 //    memo. Works with no deployed program, so the demo runs end-to-end on a
@@ -28,10 +29,13 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import {
-  buildSettleInstruction,
+  buildCreateNamespaceInstruction,
   buildSettleNInstruction,
   buildSettleTokenNInstruction,
+  decodeNamespaceAccount,
   eventIdSeed,
+  findNamespacePda,
+  type NamespaceAccount,
   U64_MAX,
 } from "./instruction.ts";
 import {
@@ -44,6 +48,10 @@ import {
   type SettlementRequest,
   type SettlementRequestN,
 } from "./types.ts";
+
+// Re-exported so the `./client` entry point alone can open and address a
+// namespace (the wallet demo loads only this module and `./ledger`).
+export { findNamespacePda, namespaceIdFromLabel } from "./instruction.ts";
 
 export const DEVNET_RPC_URL = "https://api.devnet.solana.com";
 
@@ -72,6 +80,10 @@ export interface SubmitSettlementOptions {
   lamportsPerAtomicUnit?: bigint;
   /** If set, settle through the deployed program instead of raw transfers. */
   programId?: PublicKey;
+  /** The settlement namespace. Required with `programId`. */
+  namespace?: PublicKey;
+  /** The namespace's authority, if it is not the payer. */
+  authority?: Keypair;
 }
 
 export interface SettlementSubmission {
@@ -89,6 +101,10 @@ export interface SubmitSettlementNOptions {
   request: SettlementRequestN;
   lamportsPerAtomicUnit?: bigint;
   programId?: PublicKey;
+  /** The settlement namespace. Required with `programId`. */
+  namespace?: PublicKey;
+  /** The namespace's authority, if it is not the payer. */
+  authority?: Keypair;
 }
 
 export interface BuildSettlementNOptions {
@@ -96,6 +112,15 @@ export interface BuildSettlementNOptions {
   request: SettlementRequestN;
   lamportsPerAtomicUnit?: bigint;
   programId?: PublicKey;
+  /** The settlement namespace. Required with `programId`. */
+  namespace?: PublicKey;
+  /** The namespace's authority, which must also sign. Defaults to the payer. */
+  authority?: PublicKey;
+  /**
+   * Open the namespace in the same transaction first: its namespace id, with
+   * the payer as creator. `namespace` must be the address it derives.
+   */
+  createNamespaceId?: Uint8Array;
 }
 
 export interface PreparedSettlementN {
@@ -120,15 +145,45 @@ export interface BuildTokenSettlementNOptions {
   mint: PublicKey;
   decimals: number;
   programId: PublicKey;
+  /** The settlement namespace. */
+  namespace: PublicKey;
+  /** The namespace's authority, which must also sign. Defaults to the payer. */
+  authority?: PublicKey;
   tokenBaseUnitsPerAtomicUnit?: bigint;
   /** Include idempotent ATA creation for recipient wallets. Defaults true. */
   createRecipientAccounts?: boolean;
 }
 
 export interface SubmitTokenSettlementNOptions
-  extends Omit<BuildTokenSettlementNOptions, "payer"> {
+  extends Omit<BuildTokenSettlementNOptions, "payer" | "authority"> {
   connection: Connection;
   payer: Keypair;
+  /** The namespace's authority, if it is not the payer. */
+  authority?: Keypair;
+}
+
+/** A namespace account read from the chain. */
+export interface FetchedNamespace extends NamespaceAccount {
+  address: PublicKey;
+}
+
+export interface EnsureNamespaceOptions {
+  connection: Connection;
+  /** Pays the rent and signs as the creator, which is part of the address. */
+  payer: Keypair;
+  programId: PublicKey;
+  /** Any 32 bytes; `namespaceIdFromLabel` derives them from a label. */
+  namespaceId: Uint8Array;
+  /** The key allowed to settle in the namespace. Defaults to the payer. */
+  authority?: PublicKey;
+}
+
+export interface EnsuredNamespace {
+  address: PublicKey;
+  authority: PublicKey;
+  /** True when this call opened the namespace. */
+  created: boolean;
+  signature: string | null;
 }
 
 export interface PreparedTokenSettlementN {
@@ -157,7 +212,78 @@ export function explorerAddressUrl(
   return `https://explorer.solana.com/address/${address}?cluster=${cluster}`;
 }
 
-/** Settle a three-way request through `Settle` (or system transfers). */
+/**
+ * Read a namespace account. Returns null when the address holds no account,
+ * and throws when it holds something other than a namespace of `programId`.
+ */
+export async function fetchNamespace(
+  connection: Connection,
+  programId: PublicKey,
+  address: PublicKey,
+): Promise<FetchedNamespace | null> {
+  const account = await connection.getAccountInfo(address, "confirmed");
+  if (account === null) {
+    return null;
+  }
+  if (!account.owner.equals(programId)) {
+    throw new ProtocolError(
+      "NAMESPACE_ACCOUNT",
+      `${address.toBase58()} is not owned by the settlement program`,
+    );
+  }
+  return { address, ...decodeNamespaceAccount(account.data) };
+}
+
+/**
+ * Open the payer's namespace under `namespaceId` unless it exists, and check
+ * that its current authority is the expected one.
+ */
+export async function ensureNamespace(
+  options: EnsureNamespaceOptions,
+): Promise<EnsuredNamespace> {
+  const authority = options.authority ?? options.payer.publicKey;
+  const [address] = findNamespacePda(
+    options.programId,
+    options.payer.publicKey,
+    options.namespaceId,
+  );
+  const expectAuthority = (found: FetchedNamespace): PublicKey => {
+    if (!found.authority.equals(authority)) {
+      throw new ProtocolError(
+        "NAMESPACE_AUTHORITY",
+        `namespace ${address.toBase58()} has authority ${found.authority.toBase58()}, not ${authority.toBase58()}`,
+      );
+    }
+    return found.authority;
+  };
+  const existing = await fetchNamespace(options.connection, options.programId, address);
+  if (existing !== null) {
+    return { address, authority: expectAuthority(existing), created: false, signature: null };
+  }
+  const transaction = new Transaction().add(
+    buildCreateNamespaceInstruction(
+      {
+        programId: options.programId,
+        payer: options.payer.publicKey,
+        creator: options.payer.publicKey,
+      },
+      { namespaceId: options.namespaceId, authority },
+    ),
+  );
+  try {
+    const signature = await send(options.connection, options.payer, transaction);
+    return { address, authority, created: true, signature };
+  } catch (error) {
+    // Another run may have opened it first; that is fine if it matches.
+    const raced = await fetchNamespace(options.connection, options.programId, address);
+    if (raced === null) {
+      throw error;
+    }
+    return { address, authority: expectAuthority(raced), created: false, signature: null };
+  }
+}
+
+/** Settle a three-way request through `SettleN` (or system transfers). */
 export async function submitSettlement(
   options: SubmitSettlementOptions,
 ): Promise<SettlementSubmission> {
@@ -179,6 +305,12 @@ export async function submitSettlement(
   );
   let mode: SettlementMode;
   if (options.programId === undefined) {
+    if (options.namespace !== undefined || options.authority !== undefined) {
+      throw new ProtocolError(
+        "NAMESPACE_REQUIRED",
+        "namespace and authority apply only with a programId",
+      );
+    }
     mode = "system-transfer";
     addTransfers(
       transaction,
@@ -189,26 +321,29 @@ export async function submitSettlement(
   } else {
     mode = "program";
     transaction.add(
-      buildSettleInstruction(
+      buildSettleNInstruction(
         {
           programId: options.programId,
           payer: options.payer.publicKey,
-          artist,
-          studio,
-          synxed,
+          authority: (options.authority ?? options.payer).publicKey,
+          namespace: requireNamespace(options.namespace),
+          recipients: [artist, studio, synxed],
         },
         {
           eventSeed: eventIdSeed(request.eventId),
           amount: lamportsTotal,
-          artistBps: request.splits[0].bps,
-          studioBps: request.splits[1].bps,
-          synxedBps: request.splits[2].bps,
+          bps: request.splits.map((share) => share.bps),
         },
       ),
     );
   }
 
-  const signature = await send(options.connection, options.payer, transaction);
+  const signature = await send(
+    options.connection,
+    options.payer,
+    transaction,
+    mode === "program" ? options.authority : undefined,
+  );
   return {
     signature,
     explorerUrl: explorerTxUrl(signature),
@@ -229,11 +364,16 @@ export async function submitSettlementN(
       ? { lamportsPerAtomicUnit: options.lamportsPerAtomicUnit }
       : {}),
     ...(options.programId !== undefined ? { programId: options.programId } : {}),
+    ...(options.namespace !== undefined ? { namespace: options.namespace } : {}),
+    ...(options.authority !== undefined
+      ? { authority: options.authority.publicKey }
+      : {}),
   });
   const signature = await send(
     options.connection,
     options.payer,
     prepared.transaction,
+    prepared.mode === "program" ? options.authority : undefined,
   );
   return {
     signature,
@@ -263,11 +403,42 @@ export function buildSettlementNTransaction(
     parseRecipient(share.label, share.recipient),
   );
 
-  const transaction = new Transaction().add(
-    memoInstruction(request, lamportsTotal),
-  );
+  const transaction = new Transaction();
+  if (options.createNamespaceId !== undefined) {
+    if (options.programId === undefined) {
+      throw new ProtocolError(
+        "NAMESPACE_REQUIRED",
+        "createNamespaceId needs a programId",
+      );
+    }
+    const authority = options.authority ?? options.payer;
+    const [derived] = findNamespacePda(
+      options.programId,
+      options.payer,
+      options.createNamespaceId,
+    );
+    if (options.namespace === undefined || !derived.equals(options.namespace)) {
+      throw new ProtocolError(
+        "NAMESPACE_REQUIRED",
+        "namespace must be the address createNamespaceId derives for the payer",
+      );
+    }
+    transaction.add(
+      buildCreateNamespaceInstruction(
+        { programId: options.programId, payer: options.payer, creator: options.payer },
+        { namespaceId: options.createNamespaceId, authority },
+      ),
+    );
+  }
+  transaction.add(memoInstruction(request, lamportsTotal));
   let mode: SettlementMode;
   if (options.programId === undefined) {
+    if (options.namespace !== undefined || options.authority !== undefined) {
+      throw new ProtocolError(
+        "NAMESPACE_REQUIRED",
+        "namespace and authority apply only with a programId",
+      );
+    }
     mode = "system-transfer";
     addTransfers(
       transaction,
@@ -282,6 +453,8 @@ export function buildSettlementNTransaction(
         {
           programId: options.programId,
           payer: options.payer,
+          authority: options.authority ?? options.payer,
+          namespace: requireNamespace(options.namespace),
           recipients,
         },
         {
@@ -360,6 +533,8 @@ export function buildTokenSettlementNTransaction(
       {
         programId: options.programId,
         payer: options.payer,
+        authority: options.authority ?? options.payer,
+        namespace: options.namespace,
         sourceTokenAccount,
         recipientTokenAccounts,
         mint: options.mint,
@@ -391,6 +566,10 @@ export async function submitTokenSettlementN(
     mint: options.mint,
     decimals: options.decimals,
     programId: options.programId,
+    namespace: options.namespace,
+    ...(options.authority !== undefined
+      ? { authority: options.authority.publicKey }
+      : {}),
     ...(options.tokenBaseUnitsPerAtomicUnit !== undefined
       ? { tokenBaseUnitsPerAtomicUnit: options.tokenBaseUnitsPerAtomicUnit }
       : {}),
@@ -398,7 +577,12 @@ export async function submitTokenSettlementN(
       ? { createRecipientAccounts: options.createRecipientAccounts }
       : {}),
   });
-  const signature = await send(options.connection, options.payer, prepared.transaction);
+  const signature = await send(
+    options.connection,
+    options.payer,
+    prepared.transaction,
+    options.authority,
+  );
   return {
     signature,
     explorerUrl: explorerTxUrl(signature),
@@ -488,12 +672,28 @@ function addTransfers(
   });
 }
 
+function requireNamespace(namespace: PublicKey | undefined): PublicKey {
+  if (namespace === undefined) {
+    throw new ProtocolError(
+      "NAMESPACE_REQUIRED",
+      "program mode settles in a namespace: pass its address as namespace",
+    );
+  }
+  return namespace;
+}
+
+/** Sign with the payer, and with the namespace authority when it differs. */
 async function send(
   connection: Connection,
   payer: Keypair,
   transaction: Transaction,
+  authority?: Keypair,
 ): Promise<string> {
-  return sendAndConfirmTransaction(connection, transaction, [payer], {
+  const signers =
+    authority === undefined || authority.publicKey.equals(payer.publicKey)
+      ? [payer]
+      : [payer, authority];
+  return sendAndConfirmTransaction(connection, transaction, signers, {
     commitment: "confirmed",
   });
 }

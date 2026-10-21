@@ -16,7 +16,14 @@ const DEFAULT_RPC = "https://api.devnet.solana.com";
 const DEFAULT_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
 const AMOUNT_ATOMIC = 20_000n;
 const UNITS_PER_ATOMIC = 1_000n;
+// Rent for the 41-byte settlement record plus fees.
 const FUNDING_OVERHEAD = 1_200_000n;
+// Rent for the 98-byte namespace at the default rent rate (devnet charges
+// less), paid once, on the wallet's first settlement.
+const NAMESPACE_RENT = 1_572_960n;
+// Each wallet settles in its own namespace under this label, so nobody else
+// can claim one of its event ids.
+const NAMESPACE_LABEL = "synxed-wallet-demo";
 // Name the wallet-adapter provider gives the Mobile Wallet Adapter entry it adds
 // on Android mobile web (from @solana-mobile/wallet-adapter-mobile).
 const MOBILE_WALLET_ADAPTER_NAME = "Mobile Wallet Adapter";
@@ -107,7 +114,12 @@ export function App(): React.JSX.Element {
     try {
       setRun({ status: "working", message: "Validating the four-way settlement…" });
       const [
-        { buildSettlementNTransaction },
+        {
+          buildSettlementNTransaction,
+          fetchNamespace,
+          findNamespacePda,
+          namespaceIdFromLabel,
+        },
         { assertLedgerCluster, reconcileSettlementN },
       ] = await Promise.all([
           import("@coumtech/synxed-solana-protocol/client"),
@@ -128,14 +140,28 @@ export function App(): React.JSX.Element {
         shares,
         memo: "Wallet-connected four-way settlement",
       };
+      // The wallet's namespace: opened in the same transaction the first time.
+      const namespaceId = namespaceIdFromLabel(NAMESPACE_LABEL);
+      const [namespace] = findNamespacePda(PROGRAM_ID, publicKey, namespaceId);
+      const existing = await fetchNamespace(connection, PROGRAM_ID, namespace);
+      if (existing !== null && !existing.authority.equals(publicKey)) {
+        throw new Error(
+          `This wallet's demo namespace ${namespace.toBase58()} is controlled by ${existing.authority.toBase58()}, so this wallet cannot settle in it.`,
+        );
+      }
       const prepared = buildSettlementNTransaction({
         payer: publicKey,
         request,
         lamportsPerAtomicUnit: UNITS_PER_ATOMIC,
         programId: PROGRAM_ID,
+        namespace,
+        ...(existing === null ? { createNamespaceId: namespaceId } : {}),
       });
       const balance = BigInt(await connection.getBalance(publicKey, "confirmed"));
-      const required = prepared.lamportsTotal + FUNDING_OVERHEAD;
+      const required =
+        prepared.lamportsTotal +
+        FUNDING_OVERHEAD +
+        (existing === null ? NAMESPACE_RENT : 0n);
       if (balance < required) {
         throw new Error(
           `Wallet needs at least ${formatSol(required)} SOL on devnet; current balance is ${formatSol(balance)} SOL. Fund it at faucet.solana.com.`,
@@ -155,6 +181,7 @@ export function App(): React.JSX.Element {
         connection,
         signature,
         programId: PROGRAM_ID,
+        namespace,
         request,
         unitsPerAtomicUnit: UNITS_PER_ATOMIC,
         beneficiaryIds: {
@@ -220,7 +247,7 @@ export function App(): React.JSX.Element {
 
       <section className="hero" aria-labelledby="page-title">
         <div>
-          <p className="eyebrow">Open-source protocol · Solana devnet</p>
+          <p className="eyebrow">Open source protocol · Solana devnet</p>
           <h1 id="page-title">Revenue, split visibly.</h1>
           <p className="lede">
             Sign one four-way settlement, inspect it on-chain, and reconcile

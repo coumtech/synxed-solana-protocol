@@ -1,5 +1,5 @@
 //! End-to-end tests of the N-way `SettleN` instruction against the
-//! compiled program, including its shared idempotency with `Settle`.
+//! compiled program, including one record per event across share counts.
 
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::rent::Rent;
@@ -31,7 +31,7 @@ fn settles_four_ways_with_a_rewards_pool_share() {
 }
 
 #[test]
-fn shares_idempotency_with_the_three_way_instruction() {
+fn three_and_four_way_settlements_share_one_record() {
     let mut f = Fixture::new();
     let recipients = four_recipients(&f);
 
@@ -40,7 +40,7 @@ fn shares_idempotency_with_the_three_way_instruction() {
         .expect("three-way settlement succeeds");
     let err = f
         .settle_n(event(31), AMOUNT, &REWARDS_BPS, &recipients)
-        .expect_err("re-settling via SettleN must fail");
+        .expect_err("re-settling four ways must fail");
     assert!(err.contains("AccountAlreadyInitialized"), "got {err}");
     assert_eq!(f.balance(&recipients[3]), 0, "pool never paid");
 
@@ -49,7 +49,7 @@ fn shares_idempotency_with_the_three_way_instruction() {
         .expect("four-way settlement succeeds");
     let err = f
         .settle(event(32), AMOUNT, BPS)
-        .expect_err("re-settling via Settle must fail");
+        .expect_err("re-settling three ways must fail");
     assert!(err.contains("AccountAlreadyInitialized"), "got {err}");
 }
 
@@ -104,6 +104,10 @@ fn rejects_an_invalid_n_way_split() {
         .settle_n(event(38), AMOUNT, &[3_500, 3_500, 2_000, 900], &recipients)
         .expect_err("bps summing to 9900 must fail");
     assert!(err.contains("InvalidArgument"), "got {err}");
+    let err = f
+        .settle_n(event(38), AMOUNT, &[5_000, 5_000, 1_000], &recipients[..3])
+        .expect_err("bps summing to 11000 must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
     assert_eq!(f.balance(&recipients[3]), 0);
 }
 
@@ -151,7 +155,9 @@ fn rejects_a_read_only_recipient_and_a_wrong_system_program() {
     let payer = f.payer.insecure_clone();
 
     let mut readonly = f.settle_n_instruction(event(44), AMOUNT, &REWARDS_BPS, &recipients, record);
-    readonly.accounts[2].is_writable = false;
+    // Accounts: payer, authority, namespace, then the recipients; index 4 is the
+    // second recipient.
+    readonly.accounts[4].is_writable = false;
     let err = f
         .send(&[readonly], &[&payer], &payer.pubkey())
         .expect_err("read-only recipient must fail");
@@ -194,5 +200,19 @@ fn skips_zero_lamport_shares_without_touching_new_accounts() {
     assert!(
         f.svm.get_account(&idle).is_none(),
         "no transfer to a 0 bps share"
+    );
+}
+
+#[test]
+fn rejects_a_zero_amount() {
+    let mut f = Fixture::new();
+    let recipients = four_recipients(&f);
+    let err = f
+        .settle_n(event(48), 0, &REWARDS_BPS, &recipients)
+        .expect_err("a zero amount must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
+    assert!(
+        f.svm.get_account(&f.record_pda(&event(48))).is_none(),
+        "no record"
     );
 }
