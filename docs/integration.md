@@ -167,8 +167,8 @@ Use `submitTokenSettlementN` when the settlement asset is a configured classic
 SPL Token mint. The SDK derives the payer and recipient associated token
 accounts, adds idempotent recipient-account creation instructions, and submits
 one `SettleTokenN` program instruction. With that account creation one
-transaction fits six token shares, and seven only with a one-character event id
-and an empty memo; see known limitation 7
+transaction fits six token shares while the event id and memo stay short, and
+seven only when they are a few characters long; see known limitation 7
 in [security-model.md](security-model.md). The on-chain program verifies the mint,
 decimals, account ownership, and every checked transfer.
 

@@ -326,7 +326,7 @@ fn uses_transfer_checked_for_every_nonzero_token_payout() {
         event(76),
         AMOUNT,
         DECIMALS,
-        &[3_500, 3_500, 3_000, 0],
+        &[3_500, 0, 3_500, 3_000],
         source,
         &recipients,
         mint,
@@ -341,8 +341,14 @@ fn uses_transfer_checked_for_every_nonzero_token_payout() {
         .map(|(_, data)| data[0])
         .collect();
     // Instruction tag 12 is TransferChecked in the SPL Token program; plain
-    // Transfer is tag 3. One transfer per nonzero share: the zero share is skipped.
+    // Transfer is tag 3. One transfer per nonzero share: the zero share in the
+    // middle is skipped and the shares after it are still paid.
     assert_eq!(token_tags, vec![12, 12, 12]);
+    let balances: Vec<u64> = recipients
+        .iter()
+        .map(|recipient| fixture.token_balance(recipient))
+        .collect();
+    assert_eq!(balances, vec![7_000, 0, 7_000, 6_000]);
 }
 
 #[test]
@@ -375,12 +381,12 @@ fn a_frozen_destination_fails_the_settlement_only_when_owed_a_share() {
     let (mut fixture, mint, source, recipients) = token_fixture();
     let mut frozen = fixture
         .svm
-        .get_account(&recipients[3])
+        .get_account(&recipients[1])
         .expect("destination exists");
     frozen.data[108] = 2; // token account state: frozen
     fixture
         .svm
-        .set_account(recipients[3], frozen)
+        .set_account(recipients[1], frozen)
         .expect("freeze the destination");
 
     let err = fixture
@@ -399,13 +405,18 @@ fn a_frozen_destination_fails_the_settlement_only_when_owed_a_share() {
             event(79),
             AMOUNT,
             DECIMALS,
-            &[3_500, 3_500, 3_000, 0],
+            &[3_500, 0, 3_500, 3_000],
             source,
             &recipients,
             mint,
         )
         .expect("a zero-token share to a frozen destination is skipped");
-    assert_eq!(fixture.token_balance(&recipients[3]), 0);
+    assert_eq!(fixture.token_balance(&recipients[1]), 0);
+    assert_eq!(
+        fixture.token_balance(&recipients[3]),
+        6_000,
+        "later shares are paid"
+    );
 }
 
 #[test]
