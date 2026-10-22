@@ -126,8 +126,9 @@ fn rejects_the_all_zero_key_as_authority() {
         .expect_err("nobody can sign for the all-zero key");
     assert!(err.contains("InvalidArgument"), "got {err}");
 
-    let rotate =
+    let mut rotate =
         f.set_namespace_authority_instruction(&payer.pubkey(), f.namespace, Pubkey::default());
+    rotate.accounts[2].is_signer = false; // nobody can sign for it
     let err = f
         .send(&[rotate], &[&payer], &payer.pubkey())
         .expect_err("rotation to the all-zero key is refused");
@@ -333,7 +334,7 @@ fn only_the_current_authority_can_rotate() {
     read_only.accounts[1].is_writable = false;
     let payer = f.payer.insecure_clone();
     let err = f
-        .send(&[read_only], &[&payer], &payer.pubkey())
+        .send(&[read_only], &[&payer, &outsider], &payer.pubkey())
         .expect_err("a read-only namespace cannot be rotated");
     assert!(err.contains("InvalidAccountData"), "got {err}");
 
@@ -639,4 +640,58 @@ fn an_outsider_cannot_create_another_namespaces_record() {
     f.settle_n(event_id, AMOUNT, &REWARDS_BPS, &recipients)
         .expect("the platform's record was never created");
     f.assert_record(&event_id, AMOUNT);
+}
+
+/// A rotation needs the new authority's signature, so the namespace can never
+/// be handed to a key nobody can sign for (which would lock it for good).
+#[test]
+fn rotation_needs_the_new_authority_to_sign() {
+    let mut f = Fixture::new();
+    let payer = f.payer.insecure_clone();
+    let namespace = f.namespace;
+    let new = Keypair::new();
+
+    let mut unsigned =
+        f.set_namespace_authority_instruction(&payer.pubkey(), namespace, new.pubkey());
+    unsigned.accounts[2].is_signer = false;
+    let err = f
+        .send(&[unsigned], &[&payer], &payer.pubkey())
+        .expect_err("the new authority must sign");
+    assert!(err.contains("MissingRequiredSignature"), "got {err}");
+
+    // The namespace's own address: a key nobody can sign for.
+    let mut unsignable =
+        f.set_namespace_authority_instruction(&payer.pubkey(), namespace, namespace);
+    unsignable.accounts[2].is_signer = false;
+    let err = f
+        .send(&[unsignable], &[&payer], &payer.pubkey())
+        .expect_err("a key nobody can sign for is refused");
+    assert!(err.contains("MissingRequiredSignature"), "got {err}");
+
+    // The signing account must be the key named in the instruction data.
+    let other = Keypair::new();
+    let mut mismatched =
+        f.set_namespace_authority_instruction(&payer.pubkey(), namespace, new.pubkey());
+    mismatched.accounts[2].pubkey = other.pubkey();
+    let err = f
+        .send(&[mismatched], &[&payer, &other], &payer.pubkey())
+        .expect_err("the signer must be the new authority named in the data");
+    assert!(err.contains("InvalidArgument"), "got {err}");
+
+    let account = f.svm.get_account(&namespace).expect("namespace exists");
+    assert_eq!(
+        &account.data[66..98],
+        payer.pubkey().as_ref(),
+        "authority unchanged"
+    );
+
+    let rotate = f.set_namespace_authority_instruction(&payer.pubkey(), namespace, new.pubkey());
+    f.send(&[rotate], &[&payer, &new], &payer.pubkey())
+        .expect("both keys sign, so the rotation goes through");
+    let account = f.svm.get_account(&namespace).expect("namespace exists");
+    assert_eq!(
+        &account.data[66..98],
+        new.pubkey().as_ref(),
+        "authority rotated"
+    );
 }

@@ -107,23 +107,28 @@ fn create_namespace(
     write_namespace(&mut data, bump, creator.key, namespace_id, authority)
 }
 
-/// Replace a namespace's authority, signed by its current authority.
+/// Replace a namespace's authority. The current and the new authority both
+/// sign, so a rotation can never hand the namespace to a key nobody can sign
+/// for, which would lock it for good.
 ///
-/// `accounts` must be exactly: current authority, namespace.
+/// `accounts` must be exactly: current authority, namespace, new authority.
 fn set_namespace_authority(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     new_authority: &Pubkey,
 ) -> ProgramResult {
-    let [authority, namespace] = accounts else {
+    let [authority, namespace, new_authority_account] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
     if !namespace.is_writable {
         return Err(ProgramError::InvalidAccountData);
     }
     authorize(program_id, authority, namespace)?;
-    if *new_authority == Pubkey::default() {
+    if *new_authority == Pubkey::default() || new_authority_account.key != new_authority {
         return Err(ProgramError::InvalidArgument);
+    }
+    if !new_authority_account.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
     }
     let mut data = namespace.try_borrow_mut_data()?;
     data[NAMESPACE_AUTHORITY_OFFSET..NAMESPACE_SIZE].copy_from_slice(new_authority.as_ref());

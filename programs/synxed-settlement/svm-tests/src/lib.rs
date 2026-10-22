@@ -115,7 +115,8 @@ impl Fixture {
         }
     }
 
-    /// `SetNamespaceAuthority` on `namespace`, signed by `authority`.
+    /// `SetNamespaceAuthority` on `namespace`, signed by the current
+    /// `authority` and by `new_authority`.
     pub fn set_namespace_authority_instruction(
         &self,
         authority: &Pubkey,
@@ -127,6 +128,7 @@ impl Fixture {
             accounts: vec![
                 AccountMeta::new_readonly(*authority, true),
                 AccountMeta::new(namespace, false),
+                AccountMeta::new_readonly(new_authority, true),
             ],
             data: encode_set_namespace_authority(new_authority),
         }
@@ -141,7 +143,7 @@ impl Fixture {
             new_authority.pubkey(),
         );
         let payer = self.payer.insecure_clone();
-        self.send(&[ix], &[&payer, &current], &payer.pubkey())?;
+        self.send(&[ix], &[&payer, &current, &new_authority], &payer.pubkey())?;
         self.authority = new_authority;
         Ok(())
     }

@@ -41,7 +41,8 @@ pub enum SettlementInstruction {
     /// Replace a namespace's authority. Existing records stay valid, so
     /// rotating the key does not reset idempotency.
     ///
-    /// Accounts: current authority (signer), namespace (writable).
+    /// Accounts: current authority (signer), namespace (writable), new
+    /// authority (signer, must equal `new_authority`).
     SetNamespaceAuthority { new_authority: Pubkey },
     /// Settle an N-way split (1..=`MAX_SHARES` shares) in native lamports.
     ///
