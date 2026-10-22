@@ -150,12 +150,17 @@ Before sending any settlement, persist its request together with its event
 id, its attempt number, and the parameters you built it with (program id,
 scale, and for tokens the mint and decimals), and keep that record
 permanently. The procedure below compares chain evidence with it, so a retry
-under the same event id resends that stored request unchanged. If you sign
-the transaction separately from sending it (`buildSettlementNTransaction`,
-`buildTokenSettlementNTransaction`), also persist its signature before
-sending. The `submit` functions, like a wallet's `sendTransaction`, sign and
-send in one call and return the signature only afterwards, so persist the
-request before calling them and the signature when they return.
+under the same event id resends that stored request unchanged. If a failure
+means the request itself must change (a frozen token account, or a share
+below the rent-exempt minimum for a new account), first wait until every
+transaction you signed for that event id has failed or its blockhash has
+expired, then store the changed request beside the old one and send it under
+the same event id. If you sign the transaction separately from sending it
+(`buildSettlementNTransaction`, `buildTokenSettlementNTransaction`), also
+persist its signature before sending. The `submit` functions, like a wallet's
+`sendTransaction`, sign and send in one call and return the signature only
+afterwards, so persist the request before calling them and the signature when
+they return.
 
 On `AccountAlreadyInitialized`, decide only from the transaction that created
 the record. Three definitions first. The *payer* of a settlement is the first
@@ -163,32 +168,32 @@ account of its settlement instruction, which must sign; it can differ from the
 transaction's fee payer. A settlement is *for your event* when the 32 bytes
 after its one-byte instruction tag (zero-based offsets 1 to 32) equal the
 on-chain event id, which the SDK derives as `sha256` of your application event
-id (`eventIdSeed`). Reconcile with the parameters stored with the request
-and without `beneficiaryIds`, which only label ledger rows (do not write ledger
-rows from this check). Reconciliation *reports a mismatch* when it
-fails with `EVENT_MISMATCH`, `AMOUNT_MISMATCH`, `ASSET_MISMATCH`,
-`SHARES_MISMATCH`, `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`,
-`MEMO_MISMATCH`, or `MEMO_MISSING`, and the second provider's copy of the
-transaction (step 2) fails with the same code: an endpoint that omits inner
-instructions or leaves the memo unparsed produces some of these codes for a
-genuine transaction. The other errors fall in two groups. `CLUSTER_MISMATCH`,
-`TX_NOT_FOUND`, `TX_FAILED`, `TX_SIGNATURE`, `BLOCK_TIME_MISSING`, and errors
-from the RPC call itself are faults of the endpoint: nothing it returned is
-evidence, so the
-case is unresolved (step 5); check every endpoint's genesis hash
-(`assertLedgerCluster`) before steps 1 and 2. `PROGRAM_INSTRUCTION`,
-`INSTRUCTION_DATA`, `ACCOUNT_LAYOUT`, and any other error mean the SDK could
-not read the transaction or the stored request: compare it by hand as
-described after step 5, and
-until then the case is unresolved. A settlement made through another program
-is always compared by hand, whatever the SDK reports.
+id (`eventIdSeed`). Reconcile with the parameters stored with the request and
+without `beneficiaryIds`, which only label ledger rows; once step 3 or 4 finds
+the event paid, write its ledger rows by reconciling the creating transaction
+as usual, with your `beneficiaryIds` (by hand where the SDK cannot read it).
+Reconciliation *reports a mismatch* when it fails with `EVENT_MISMATCH`,
+`AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`, `RECIPIENT_MISMATCH`,
+`TRANSFER_MISMATCH`, `MEMO_MISMATCH`, or `MEMO_MISSING`, and the second
+provider's copy of the transaction (step 2) fails with the same code: an
+endpoint that omits inner instructions or leaves the memo unparsed produces
+some of these codes for a genuine transaction. The other errors fall in two
+groups. `CLUSTER_MISMATCH`, `TX_NOT_FOUND`, `TX_FAILED`, `TX_SIGNATURE`,
+`BLOCK_TIME_MISSING`, and errors from the RPC call itself are faults of the
+endpoint: nothing it returned is evidence, so the case is unresolved (step 5);
+check every endpoint's genesis hash (`assertLedgerCluster`) before steps 1 and
+2. `PROGRAM_INSTRUCTION`, `INSTRUCTION_DATA`, `ACCOUNT_LAYOUT`, and any other
+error mean the SDK could not read the transaction or the stored request:
+compare it by hand as described after step 5, and until then the case is
+unresolved. A settlement made through another program is always compared by
+hand, whatever the SDK reports.
 
 1. List the record address's transactions with `getSignaturesForAddress`,
    paging until the end, from an endpoint that keeps full transaction history
    (check `getFirstAvailableBlock`). The call returns every transaction that
    referenced the address, newest first, including failed attempts (your own
    retry among them) and plain transfers. A history that ends before the
-   record existed is case 5.
+   record existed is unresolved (step 5).
 2. The creating transaction is the one successful transaction (`err` is null)
    that ran this program's `Settle`, `SettleN`, or `SettleTokenN` for your
    event, either as a top-level instruction or as an inner instruction invoked
@@ -202,9 +207,9 @@ is always compared by hand, whatever the SDK reports.
 3. If its payer is any key you control or have ever controlled (keep the list
    across key rotations, key pools, fee payers, and treasury keys, and include
    any program-derived address that signs for you, such as a multisig vault),
-   reconcile the transaction against the stored request for that attempt. If
-   it matches, the event is paid: never settle it again. If no stored request
-   matches, or reconciliation reports a mismatch, do not mark the event paid
+   reconcile the transaction against every request stored for that event id.
+   If one matches, the event is paid: never settle it again. If none matches,
+   or reconciliation reports a mismatch, do not mark the event paid
    and do not settle it again: raise an incident alert, because it means a
    bug or a compromised key.
 4. If its payer is a key you have never controlled, reconcile it against your
@@ -246,9 +251,8 @@ id. Whichever you use, store the first id as the internal event's current id
 by compare-and-set (insert only if it has none) before sending; every run and
 retry reads it back instead of generating one, because two runs that each
 generate their own random id settle two different records and pay the event
-twice. The memo
-of every settlement publishes its application event id, so a guessable scheme
-is exposed by the first settlement. This stops guessing and enumeration; it
+twice. The memo of every settlement publishes its application event id, so a
+guessable scheme is exposed by the first settlement. This stops guessing and enumeration; it
 does not stop an observer of the pending transaction, so prefer a private or
 trusted submission path (your own RPC node or a provider you trust).
 
@@ -336,9 +340,8 @@ byte each. The table uses a 20,000 base-unit amount; every further digit of
 the amount or of the decimals, every character of `occurredAt` beyond 24, and
 any extra instruction, such as a priority fee, use the same margin. Without
 account creation each share costs 35 bytes, and eight shares fit in the same
-cases
-(931 to 1,013 bytes). web3.js refuses to serialize an oversized transaction,
-so nothing is sent. For seven or eight token shares, or a long event id or
+cases (931 to 1,013 bytes). web3.js refuses to serialize an oversized
+transaction, so nothing is sent. For seven or eight token shares, or a long event id or
 memo, create the recipient token accounts in a separate transaction first and
 build the settlement with `createRecipientAccounts: false`.
 
