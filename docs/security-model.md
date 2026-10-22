@@ -153,16 +153,20 @@ signature to every transaction (96 bytes). Rotate with
 record, so settled events stay settled
 (`rotation_moves_the_right_to_settle_and_keeps_idempotency`).
 
-Before sending any settlement, persist its request together with its event
-id, its attempt number, and the parameters you built it with (program id,
+Before sending any settlement, persist its request together with its event id,
+its attempt number, and the parameters you built it with (program id,
 namespace, scale, and for tokens the mint and decimals), and keep that record
 permanently. A retry under the same event id resends that stored request
-unchanged. If you sign the transaction separately from sending it
-(`buildSettlementNTransaction`, `buildTokenSettlementNTransaction`), also
-persist its signature before sending. The `submit` functions, like a wallet's
-`sendTransaction`, sign and send in one call and return the signature only
-afterwards, so persist the request before calling them and the signature when
-they return.
+unchanged. If a failure means the request itself must change (a frozen token
+account, or a share below the rent-exempt minimum for a new account), first
+wait until every transaction you signed for that event id has failed or its
+blockhash has expired, then store the changed request beside the old one and
+send it under the same event id. If you sign the transaction separately from
+sending it (`buildSettlementNTransaction`,
+`buildTokenSettlementNTransaction`), also persist its signature before
+sending. The `submit` functions, like a wallet's `sendTransaction`, sign and
+send in one call and return the signature only afterwards, so persist the
+request before calling them and the signature when they return.
 
 `AccountAlreadyInitialized` now means that your namespace's authority settled
 the event before: usually your own earlier attempt that landed after you
@@ -178,10 +182,12 @@ treated it as failed. Decide from the transaction that created the record:
    account is yours. At most one exists. Confirm it with a second provider:
    same signature, finalized and successful, with the same instruction data
    and accounts.
-2. Reconcile it against the stored request for that attempt, with the stored
-   parameters and without `beneficiaryIds`, which only label ledger rows
-   (`reconcileSettlementN`, `reconcileTokenSettlementN`), on both providers'
-   copies. If both match, the event is paid: never settle it again.
+2. Reconcile it against every request stored for that event id, with the
+   stored parameters and without `beneficiaryIds`, which only label ledger
+   rows (`reconcileSettlementN`, `reconcileTokenSettlementN`), on both
+   providers' copies. If one request matches on both, the event is paid:
+   never settle it again, and write its ledger rows by reconciling the
+   transaction as usual, with your `beneficiaryIds`.
 3. If it fails with a field mismatch (`NAMESPACE_MISMATCH`, `EVENT_MISMATCH`,
    `AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`,
    `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`, `MEMO_MISMATCH`,
