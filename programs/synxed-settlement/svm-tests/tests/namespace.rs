@@ -10,8 +10,8 @@ use solana_sdk::rent::Rent;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
 use synxed_settlement_svm_tests::{
-    encode_retired, encode_settle_n, event, namespace_pda, record_pda, Fixture, AMOUNT,
-    NAMESPACE_DISCRIMINATOR, NAMESPACE_ID, NAMESPACE_SIZE,
+    encode_create_namespace, encode_retired, encode_settle_n, event, namespace_pda, record_pda,
+    Fixture, AMOUNT, NAMESPACE_DISCRIMINATOR, NAMESPACE_ID, NAMESPACE_SIZE,
 };
 
 const REWARDS_BPS: [u16; 4] = [3_500, 3_500, 2_000, 1_000];
@@ -482,12 +482,16 @@ fn refuses_the_retired_instructions() {
             accounts,
             data: encode_retired(tag, event_id, AMOUNT, &[3_500, 4_000, 2_500]),
         };
-        let err = f
-            .send(&[ix], &[&payer], &payer.pubkey())
-            .expect_err("a retired instruction is refused");
+        let (result, logs) = f.send_logged(&[ix], &[&payer], &payer.pubkey());
+        let err = result.expect_err("a retired instruction is refused");
         assert!(
             err.contains("InvalidInstructionData"),
             "tag {tag}: got {err}"
+        );
+        let expected = format!("instruction tag {tag} is retired");
+        assert!(
+            logs.iter().any(|line| line.contains(&expected)),
+            "tag {tag}: logs {logs:?}"
         );
     }
     assert!(f.svm.get_account(&legacy_record).is_none());
@@ -728,4 +732,198 @@ fn rejects_a_payer_that_did_not_sign_beside_a_signing_authority() {
         .svm
         .get_account(&record_pda(&f.program_id, &namespace, &event(102)))
         .is_none());
+}
+
+/// The payer funds a namespace that the creator signs for, and the address,
+/// the stored creator, and the authority all belong to the creator.
+#[test]
+fn a_separate_payer_opens_the_creators_namespace() {
+    let mut f = Fixture::new();
+    let payer = f.payer.insecure_clone();
+    let creator = Keypair::new(); // unfunded: it only signs
+    let id = [13u8; 32];
+    let open = f.create_namespace_instruction(&payer, &creator, id, creator.pubkey());
+    let payer_before = f.balance(&payer.pubkey());
+    f.send(&[open], &[&payer, &creator], &payer.pubkey())
+        .expect("the payer funds and the creator signs");
+    let address = namespace_pda(&f.program_id, &creator.pubkey(), &id);
+    let account = f
+        .svm
+        .get_account(&address)
+        .expect("namespace at the creator's address");
+    assert_eq!(
+        &account.data[2..34],
+        creator.pubkey().as_ref(),
+        "creator stored"
+    );
+    assert_eq!(
+        &account.data[66..98],
+        creator.pubkey().as_ref(),
+        "authority stored"
+    );
+    assert_eq!(f.balance(&creator.pubkey()), 0, "the creator paid nothing");
+    assert!(
+        payer_before - f.balance(&payer.pubkey())
+            >= Rent::default().minimum_balance(NAMESPACE_SIZE),
+        "the payer paid the rent"
+    );
+    assert!(f
+        .svm
+        .get_account(&namespace_pda(&f.program_id, &payer.pubkey(), &id))
+        .is_none());
+}
+
+/// An account with the namespace layout that names the signer as authority is
+/// still refused when another program owns it.
+#[test]
+fn rejects_a_namespace_layout_owned_by_another_program() {
+    let mut f = Fixture::new();
+    let payer = f.payer.insecure_clone();
+    let fake = Pubkey::new_unique();
+    let mut data = vec![0u8; NAMESPACE_SIZE];
+    data[0] = NAMESPACE_DISCRIMINATOR;
+    data[66..98].copy_from_slice(payer.pubkey().as_ref());
+    f.svm
+        .set_account(
+            fake,
+            Account {
+                lamports: LAMPORTS_PER_SOL,
+                data,
+                owner: Pubkey::new_unique(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .expect("inject a foreign namespace look-alike");
+    let recipients = four(&f);
+    let ix = settle_in(
+        &f,
+        &payer.pubkey(),
+        &payer.pubkey(),
+        true,
+        fake,
+        event(120),
+        &recipients,
+    );
+    let err = f
+        .send(&[ix], &[&payer], &payer.pubkey())
+        .expect_err("not this program's namespace");
+    assert!(err.contains("IllegalOwner"), "got {err}");
+    assert!(f
+        .svm
+        .get_account(&record_pda(&f.program_id, &fake, &event(120)))
+        .is_none());
+}
+
+/// A token settlement with a separate authority: the payer owns the source and
+/// pays, the authority only signs.
+#[test]
+fn settles_tokens_with_a_separate_authority() {
+    let mut f = Fixture::new();
+    let authority = Keypair::new();
+    f.rotate_authority(authority.insecure_clone())
+        .expect("rotate to a separate authority");
+    let mint = Pubkey::new_unique();
+    let source = Pubkey::new_unique();
+    let destinations = [
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+    ];
+    f.set_mint(mint, 6);
+    let payer = f.payer.pubkey();
+    f.set_token_account(source, mint, payer, 100_000);
+    for destination in destinations {
+        f.set_token_account(destination, mint, Pubkey::new_unique(), 0);
+    }
+    let payer_before = f.balance(&payer);
+    f.settle_token_n(
+        event(121),
+        20_000,
+        6,
+        &REWARDS_BPS,
+        source,
+        &destinations,
+        mint,
+    )
+    .expect("the payer's source, the authority's signature");
+    assert_eq!(f.token_balance(&source), 80_000);
+    assert_eq!(f.token_balance(&destinations[3]), 2_000);
+    assert_eq!(
+        f.balance(&authority.pubkey()),
+        0,
+        "the authority paid nothing"
+    );
+    assert!(
+        payer_before > f.balance(&payer),
+        "the payer paid the rent and fee"
+    );
+
+    let authority_source = Pubkey::new_unique();
+    f.set_token_account(authority_source, mint, authority.pubkey(), 100_000);
+    let err = f
+        .settle_token_n(
+            event(122),
+            20_000,
+            6,
+            &REWARDS_BPS,
+            authority_source,
+            &destinations,
+            mint,
+        )
+        .expect_err("the source must belong to the payer, not the authority");
+    assert!(err.contains("InvalidAccountData"), "got {err}");
+}
+
+/// With the namespace address pre-funded, no lamports leave the payer, so
+/// only the program's own check stops an unsigned payer.
+#[test]
+fn opening_a_prefunded_namespace_still_needs_the_payer_to_sign() {
+    let mut f = Fixture::new();
+    let creator = funded(&mut f);
+    let id = [14u8; 32];
+    let address = namespace_pda(&f.program_id, &creator.pubkey(), &id);
+    f.svm
+        .airdrop(&address, Rent::default().minimum_balance(NAMESPACE_SIZE))
+        .expect("pre-fund the address to full rent");
+    let ix = Instruction {
+        program_id: f.program_id,
+        accounts: vec![
+            AccountMeta::new(Pubkey::new_unique(), false),
+            AccountMeta::new_readonly(creator.pubkey(), true),
+            AccountMeta::new(address, false),
+            AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+        ],
+        data: encode_create_namespace(id, creator.pubkey()),
+    };
+    let err = f
+        .send(&[ix], &[&creator], &creator.pubkey())
+        .expect_err("the payer must sign");
+    assert!(err.contains("MissingRequiredSignature"), "got {err}");
+}
+
+#[test]
+fn namespace_instructions_take_exact_account_lists() {
+    let mut f = Fixture::new();
+    let payer = f.payer.insecure_clone();
+    let mut open = f.create_namespace_instruction(&payer, &payer, [15u8; 32], payer.pubkey());
+    open.accounts
+        .push(AccountMeta::new(Pubkey::new_unique(), false));
+    let err = f
+        .send(&[open], &[&payer], &payer.pubkey())
+        .expect_err("an extra account is refused");
+    assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+
+    let new = Keypair::new();
+    let namespace = f.namespace;
+    let mut rotate =
+        f.set_namespace_authority_instruction(&payer.pubkey(), namespace, new.pubkey());
+    rotate
+        .accounts
+        .push(AccountMeta::new(Pubkey::new_unique(), false));
+    let err = f
+        .send(&[rotate], &[&payer, &new], &payer.pubkey())
+        .expect_err("an extra account is refused");
+    assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
 }

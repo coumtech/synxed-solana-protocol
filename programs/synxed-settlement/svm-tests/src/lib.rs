@@ -358,6 +358,27 @@ impl Fixture {
             .map_err(|failed| format!("{:?}", failed.err))
     }
 
+    /// Like `send`, but also returns the transaction's log lines, whether it
+    /// succeeded or failed.
+    pub fn send_logged(
+        &mut self,
+        ixs: &[Instruction],
+        signers: &[&Keypair],
+        fee_payer: &Pubkey,
+    ) -> (Result<(), String>, Vec<String>) {
+        self.svm.expire_blockhash();
+        let tx = Transaction::new_signed_with_payer(
+            ixs,
+            Some(fee_payer),
+            signers,
+            self.svm.latest_blockhash(),
+        );
+        match self.svm.send_transaction(tx) {
+            Ok(meta) => (Ok(()), meta.logs),
+            Err(failed) => (Err(format!("{:?}", failed.err)), failed.meta.logs),
+        }
+    }
+
     /// Like `send`, but returns the program id and data of every inner
     /// instruction the transaction executed, in execution order.
     pub fn send_traced(

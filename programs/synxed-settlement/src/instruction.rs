@@ -274,11 +274,13 @@ mod tests {
     }
 
     /// Golden bytes shared with the TypeScript codec tests
-    /// (`tests/instruction-n.test.ts`, `tests/namespace.test.ts`). If a
-    /// vector changes, both sides must change together.
+    /// (`tests/instruction-n.test.ts`, `tests/token-settlement.test.ts`,
+    /// `tests/namespace.test.ts`). The tags are written as literals so a
+    /// changed tag constant fails here. If a vector changes, both sides must
+    /// change together.
     #[test]
     fn pack_create_namespace_matches_shared_golden_bytes() {
-        let mut expected = vec![CREATE_NAMESPACE_TAG];
+        let mut expected = vec![3u8];
         expected.extend((0u8..32).collect::<Vec<u8>>());
         expected.extend(descending());
         assert_eq!(sample_create().pack(), expected);
@@ -287,7 +289,7 @@ mod tests {
 
     #[test]
     fn pack_set_namespace_authority_matches_shared_golden_bytes() {
-        let mut expected = vec![SET_NAMESPACE_AUTHORITY_TAG];
+        let mut expected = vec![4u8];
         expected.extend(descending());
         assert_eq!(sample_rotate().pack(), expected);
         assert_eq!(expected.len(), 33);
@@ -295,7 +297,7 @@ mod tests {
 
     #[test]
     fn pack_n_matches_shared_golden_bytes() {
-        let mut expected = vec![SETTLE_N_TAG];
+        let mut expected = vec![5u8];
         expected.extend((0u8..32).collect::<Vec<u8>>());
         expected.extend([0x20, 0x4e, 0, 0, 0, 0, 0, 0]); // 20000 u64 LE
         expected.push(4); // share count
@@ -309,7 +311,7 @@ mod tests {
 
     #[test]
     fn pack_token_n_matches_shared_golden_bytes() {
-        let mut expected = vec![SETTLE_TOKEN_N_TAG];
+        let mut expected = vec![6u8];
         expected.extend((0u8..32).collect::<Vec<u8>>());
         expected.extend([0x20, 0x4e, 0, 0, 0, 0, 0, 0]);
         expected.push(6);
