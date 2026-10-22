@@ -246,7 +246,7 @@ jobs:
           const fs = require("node:fs");
           const [entriesFile, typesFile, tarball, npmDir] = process.argv.slice(2);
           const problems = [];
-          const allowedFile = /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
+          const allowedFile = /^(?:(?!server\.js$)[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
           const registryRange = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
           const expectedKeys = ["author","bugs","dependencies","description","engines","exports","files","homepage","keywords","license","main","name","peerDependencies","publishConfig","repository","sideEffects","type","types","version"];
           const lines = (file) => fs.readFileSync(file, "utf8").split("\n").filter((line) => line !== "");
@@ -264,8 +264,16 @@ jobs:
           // tarball again with the tar that npm's pacote resolves (its own copy
           // if it nests one), strictly, so any header it would warn about
           // fails, and require exactly the same entries, in the same order.
-          const pacoteDir = require("node:path").join(npmDir, "node_modules", "pacote");
-          const npmTar = require(require.resolve("tar", { paths: [pacoteDir] }));
+          // The library must come from inside npm's own directory.
+          const path = require("node:path");
+          const npmRoot = fs.realpathSync(npmDir);
+          const pacoteDir = fs.realpathSync(path.join(npmRoot, "node_modules", "pacote"));
+          const tarPath = require("node:module").createRequire(path.join(pacoteDir, "package.json")).resolve("tar");
+          if (!tarPath.startsWith(path.join(npmRoot, "node_modules") + path.sep)) {
+            console.error("npm's tar library resolves outside npm: " + tarPath);
+            process.exit(1);
+          }
+          const npmTar = require(tarPath);
           const npmEntries = [];
           const npmManifest = [];
           try {

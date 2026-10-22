@@ -37,7 +37,6 @@ import {
   PACKAGE_DIR,
   PACKAGE_NAME,
   publishCheckScript,
-  sameTarballEntries,
   REPO_ROOT,
   buildSdkPackage,
   readWorkspaceManifest,
@@ -249,44 +248,11 @@ function tsconfig(module: string, moduleResolution: string): string {
   )}\n`;
 }
 
-// Lists a tarball with the tar library npm's pacote resolves (argv: npm's
-// directory, tarball), strictly, so a header it would only warn about fails.
-const NPM_TAR_LIST = `
-const seen = [];
-const pacoteDir = require("node:path").join(process.argv[1], "node_modules", "pacote");
-require(require.resolve("tar", { paths: [pacoteDir] })).t({
-  file: process.argv[2], sync: true, strict: true,
-  onentry: (entry) => seen.push(entry.type + " " + entry.path),
-});
-console.log(JSON.stringify(seen));
-`;
-
 /**
- * The entries npm's own tar library reads in `tarball`. npm installs what this
- * library reads, which can differ from GNU tar on a malformed header: it
- * rejects a signed checksum and reads that entry's data as further entries.
+ * The npm installed under the global prefix (`npm root -g`), whose tar library
+ * the publish job's check reads the tarball with. On setup-node runners this
+ * is the npm on PATH.
  */
-function npmTarEntries(tarball: string): string[] {
-  const result = spawnSync("node", ["-e", NPM_TAR_LIST, npmDirectory(), tarball], {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-    timeout: COMMAND_TIMEOUT_MS,
-  });
-  if (result.status !== 0) {
-    const reason =
-      result.error?.message ??
-      (result.stderr ?? "").split("\n").find((line) => line.includes("Error")) ??
-      `exit ${result.status ?? result.signal ?? "unknown"}`;
-    fail(`npm's tar reader refuses the tarball: ${reason}`);
-  }
-  const parsed: unknown = JSON.parse(result.stdout);
-  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
-    fail("npm's tar reader listing is not a list of entries");
-  }
-  return parsed.map(String);
-}
-
-/** The directory of the npm on PATH, whose tar library reads the tarball. */
 function npmDirectory(): string {
   return join(run("npm", ["root", "-g"], REPO_ROOT).trim(), "npm");
 }
@@ -296,8 +262,8 @@ function npmDirectory(): string {
  * past a lone zero block (--ignore-zeros), as npm's own tar reader does, and
  * refuses anything tar does not list as a regular file (directories and
  * links; GNU tar, in CI, lists contiguous and unknown entry types as `C` and
- * `?`, while bsdtar, on macOS, lists them as regular files). npm's own tar
- * reader must then see exactly the same regular files, in the same order.
+ * `?`, while bsdtar, on macOS, lists them as regular files). The publish
+ * job's check, run later, compares these entries with npm's own tar reader.
  */
 function tarballFiles(tarball: string): string[] {
   const types = run("tar", ["--ignore-zeros", "-tvzf", tarball], REPO_ROOT)
@@ -310,10 +276,6 @@ function tarballFiles(tarball: string): string[] {
   const entries = run("tar", ["--ignore-zeros", "-tzf", tarball], REPO_ROOT)
     .split("\n")
     .filter((line) => line !== "");
-  const npmEntries = npmTarEntries(tarball);
-  if (!sameTarballEntries(entries, npmEntries)) {
-    fail(`npm's tar reader sees different entries: ${npmEntries.join(", ")}`);
-  }
   return entries.map((line) => (line.startsWith("package/") ? line.slice("package/".length) : fail(`unexpected tarball entry ${line}`)));
 }
 
@@ -327,10 +289,10 @@ function tarballManifest(tarball: string): { name: string; version: string } {
 
 /**
  * Run the publish job's own check (`check.cjs` from publish-sdk.yml) on the
- * tarball, with the same GNU tar listings, so a version published by hand
- * from a dry run meets the same rules as a staged one: the file allowlist,
- * the exact manifest keys, registry-only dependencies, and the comparison
- * with npm's tar reader.
+ * tarball, with the same tar listings the job writes (GNU tar in CI, bsdtar
+ * on macOS), so a version published by hand from a dry run is held to the
+ * same rules as a staged one: the file allowlist, the exact manifest keys,
+ * registry-only dependencies, and the comparison with npm's tar reader.
  */
 function runPublishCheck(tarball: string, work: string, version: string): void {
   const dir = join(work, "publish-check");
@@ -412,12 +374,12 @@ function main(): void {
     if (name !== workspace.name || version !== workspace.version) {
       fail(`${tarball} is ${name}@${version}, but this checkout is ${String(workspace.name)}@${String(workspace.version)}`);
     }
+    runPublishCheck(tarball, work, version);
     for (const file of REQUIRED_FILES) {
       if (!files.includes(file)) {
         fail(`tarball is missing ${file}`);
       }
     }
-    runPublishCheck(tarball, work, version);
     console.log(`checked ${name}@${version}: ${files.length} files`);
 
     // 3. Install into a fresh consumer project.
