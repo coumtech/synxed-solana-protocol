@@ -695,3 +695,37 @@ fn rotation_needs_the_new_authority_to_sign() {
         "authority rotated"
     );
 }
+
+/// The payer funds the record and the payouts, so it must sign even when a
+/// separate namespace authority does.
+#[test]
+fn rejects_a_payer_that_did_not_sign_beside_a_signing_authority() {
+    let mut f = Fixture::new();
+    let payer = f.payer.insecure_clone();
+    let authority = funded(&mut f);
+    let id = [12u8; 32];
+    let open = f.create_namespace_instruction(&payer, &payer, id, authority.pubkey());
+    f.send(&[open], &[&payer], &payer.pubkey())
+        .expect("the creator names a separate authority");
+    let namespace = namespace_pda(&f.program_id, &payer.pubkey(), &id);
+    let recipients = four(&f);
+
+    let mut ix = settle_in(
+        &f,
+        &payer.pubkey(),
+        &authority.pubkey(),
+        true,
+        namespace,
+        event(102),
+        &recipients,
+    );
+    ix.accounts[0].is_signer = false;
+    let err = f
+        .send(&[ix], &[&authority], &authority.pubkey())
+        .expect_err("the payer must sign");
+    assert!(err.contains("MissingRequiredSignature"), "got {err}");
+    assert!(f
+        .svm
+        .get_account(&record_pda(&f.program_id, &namespace, &event(102)))
+        .is_none());
+}
