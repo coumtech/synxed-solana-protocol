@@ -146,21 +146,21 @@ failed transaction's fee. The real risk is an integrator that treats
 settled while its beneficiaries received nothing. The opposite mistake is as
 bad: settling again when the event was in fact paid by you pays it twice.
 
-Before sending any settlement, persist its request together with its event
-id, its attempt number, and the parameters you built it with (program id,
-scale, and for tokens the mint and decimals), and keep that record
-permanently. The procedure below compares chain evidence with it, so a retry
-under the same event id resends that stored request unchanged. If a failure
-means the request itself must change (a frozen token account, or a share
-below the rent-exempt minimum for a new account), first wait until every
-transaction you signed for that event id has failed or its blockhash has
-expired, then store the changed request beside the old one and send it under
-the same event id. If you sign the transaction separately from sending it
-(`buildSettlementNTransaction`, `buildTokenSettlementNTransaction`), also
-persist its signature before sending. The `submit` functions, like a wallet's
-`sendTransaction`, sign and send in one call and return the signature only
-afterwards, so persist the request before calling them and the signature when
-they return.
+Before sending any settlement, persist its request together with its event id,
+its attempt number, and the parameters you built it with (program id, scale,
+and for tokens the mint and decimals), and keep that record permanently. The
+procedure below compares chain evidence with it, so a retry under the same
+event id resends the latest stored request unchanged. If a failure means the
+request itself must change (a frozen token account, or a share below the
+rent-exempt minimum for a new account), store the changed request beside the
+old one and send it under the same event id, attempt number, and program id:
+the program settles at most one transaction per event id, so the old and the
+changed request can never both pay. If you sign the transaction separately
+from sending it (`buildSettlementNTransaction`,
+`buildTokenSettlementNTransaction`), also persist its signature before
+sending. The `submit` functions, like a wallet's `sendTransaction`, sign and
+send in one call and return the signature only afterwards, so persist the
+request before calling them and the signature when they return.
 
 On `AccountAlreadyInitialized`, decide only from the transaction that created
 the record. Three definitions first. The *payer* of a settlement is the first
@@ -171,7 +171,8 @@ on-chain event id, which the SDK derives as `sha256` of your application event
 id (`eventIdSeed`). Reconcile with the parameters stored with the request and
 without `beneficiaryIds`, which only label ledger rows; once step 3 or 4 finds
 the event paid, write its ledger rows by reconciling the creating transaction
-as usual, with your `beneficiaryIds` (by hand where the SDK cannot read it).
+against the request that matched, with its `beneficiaryIds` (by hand where the
+SDK cannot read it).
 Reconciliation *reports a mismatch* when it fails with `EVENT_MISMATCH`,
 `AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`, `RECIPIENT_MISMATCH`,
 `TRANSFER_MISMATCH`, `MEMO_MISMATCH`, or `MEMO_MISSING`, and the second
@@ -208,15 +209,15 @@ hand, whatever the SDK reports.
    across key rotations, key pools, fee payers, and treasury keys, and include
    any program-derived address that signs for you, such as a multisig vault),
    reconcile the transaction against every request stored for that event id.
-   If one matches, the event is paid: never settle it again. If none matches,
-   or reconciliation reports a mismatch, do not mark the event paid
-   and do not settle it again: raise an incident alert, because it means a
-   bug or a compromised key.
-4. If its payer is a key you have never controlled, reconcile it against your
-   stored request anyway. If it matches, someone else paid your recipients
-   exactly and the event is paid; raise an alert all the same, because an
-   exact copy means someone is reading your pending transactions. If
-   reconciliation reports a mismatch, the event id was claimed. Move the event
+   If one matches, the event is paid: never settle it again. If each reports a
+   mismatch, or none is stored, do not mark the event paid and do not settle
+   it again: raise an incident alert, because it means a bug or a compromised
+   key.
+4. If its payer is a key you have never controlled, reconcile it against
+   every request stored for that event id anyway. If one matches, someone
+   else paid your recipients exactly and the event is paid; raise an alert all
+   the same, because an exact copy means someone is reading your pending
+   transactions. If each reports a mismatch, the event id was claimed. Move the event
    to a new id only by compare-and-set: replace the claimed id only if it is
    still the current id for your internal event. Derive every replacement id
    deterministically from values you store, for example the HMAC under your
