@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,9 +8,16 @@ import {
   PACKAGE_NAME,
   REGISTRY_RANGE,
   REPO_ROOT,
+  PUBLISH_CHECK_STEP,
+  publishCheckScript,
+  publishJobStep,
   publishManifest,
   readWorkspaceManifest,
 } from "../scripts/build-sdk-package.ts";
+
+// Several tests spawn the smoke script or node; give them room on a loaded
+// machine (their own child processes time out at 60 seconds).
+setDefaultTimeout(60_000);
 
 // The published manifest is generated from sdk/typescript/package.json by
 // scripts/build-sdk-package.ts. These tests pin the rules that keep the npm
@@ -172,8 +179,9 @@ describe("ALLOWED_PACKAGE_FILE", () => {
     }
   });
 
-  test("rejects sources, nested paths, and anything secret-shaped", () => {
-    for (const file of ["index.ts", "src/index.js", ".env", "payer.json", "id.json", "tsconfig.json", "index.mjs"]) {
+  test("rejects sources, nested paths, anything secret-shaped, and server.js", () => {
+    // npm adds a start script to the manifest of a package that ships server.js.
+    for (const file of ["index.ts", "src/index.js", ".env", "payer.json", "id.json", "tsconfig.json", "index.mjs", "server.js"]) {
       expect(ALLOWED_PACKAGE_FILE.test(file)).toBe(false);
     }
   });
@@ -217,8 +225,8 @@ const ustarHeader = (
   field(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8);
   return header;
 };
-const ustarFile = (name: string, contents: string): Buffer => {
-  const data = Buffer.from(contents);
+const ustarFile = (name: string, contents: string | Buffer): Buffer => {
+  const data = typeof contents === "string" ? Buffer.from(contents) : contents;
   const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
   return Buffer.concat([ustarHeader(name, data.length, "0"), data, padding]);
 };
@@ -226,19 +234,36 @@ const ustarFile = (name: string, contents: string): Buffer => {
 // `hidden` as its data while npm's tar reader reads `hidden` as entries.
 const signedChecksumFile = (name: string, hidden: Buffer): Buffer =>
   Buffer.concat([ustarHeader(name, hidden.length, "0", "", true), hidden]);
-// The tar library bundled with the npm on PATH, which the publish job uses.
-const npmTarLibrary = join(
-  spawnSync("npm", ["root", "-g"], { encoding: "utf8" }).stdout.trim(),
-  "npm",
-  "node_modules",
-  "tar",
-);
+// The directory of the npm on PATH. In CI these tests run under the runner's
+// own npm; the publish job runs the same check under the npm its Node pin
+// bundles.
+const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
+if (npmRoot.status !== 0 || npmRoot.error !== undefined) {
+  throw new Error(`these tests need npm on PATH: ${npmRoot.error?.message ?? npmRoot.stderr}`);
+}
+const npmDirectory = join(npmRoot.stdout.trim(), "npm");
+const npmTarLibrary = join(npmDirectory, "node_modules", "tar");
 const writeGzip = (parts: Buffer[]): { dir: string; tarball: string } => {
   const dir = mkdtempSync(join(tmpdir(), "synxed-sdk-tarball-test-"));
   const tarball = join(dir, "crafted.tgz");
   writeFileSync(tarball, Bun.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)])));
   return { dir, tarball };
 };
+
+// A manifest that follows the build rules, and the files its targets name.
+const valid = publishManifest(workspace);
+const targets = ["main", "types"].map((key) => String(valid[key]));
+const exportsField = valid.exports;
+const exportEntries =
+  typeof exportsField === "object" && exportsField !== null ? Object.values(exportsField) : [];
+for (const entry of exportEntries) {
+  if (typeof entry === "string") {
+    targets.push(entry);
+  } else if (typeof entry === "object" && entry !== null) {
+    targets.push(...Object.values(entry).map(String));
+  }
+}
+const shipped = [...new Set(targets.filter((t) => t !== "./package.json").map((t) => t.slice(2)))];
 
 // The publish workflow checks the tarball with literals of its own, because
 // its credentialed job runs no repository code. These pin the copies together.
@@ -265,15 +290,79 @@ describe("release configuration stays consistent", () => {
     expect(publish).toContain(`const expectedKeys = ${JSON.stringify(keys)};`);
     expect(publish).toMatch(/^ {8}run: npm stage publish --provenance --access public "\$TARBALL"$/m);
     expect(publish).toContain('types.some((type) => type !== "-")');
-    // The listings the check reads, and the line that runs it with npm's own
-    // tar library: without that line the step would pass without checking.
-    expect(publish).toMatch(/^ {10}tar --ignore-zeros -tzf "\$TARBALL" > "\$RUNNER_TEMP\/entries\.txt"$/m);
-    expect(publish).toMatch(
-      /^ {10}tar --ignore-zeros -tvzf "\$TARBALL" \| cut -c1 > "\$RUNNER_TEMP\/types\.txt"$/m,
+  });
+
+  // Every shell line of the check step outside the heredoc, exactly: a line
+  // added, removed, or wrapped (an early exit, an `if false`) fails here.
+  test("the publish job's check step runs exactly these commands", () => {
+    const run = publishJobStep(workflow("publish-sdk.yml"), PUBLISH_CHECK_STEP).run;
+    expect(typeof run).toBe("string");
+    const lines = String(run).split("\n");
+    const opener = lines.indexOf(`cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'`);
+    const closer = lines.indexOf("CHECK", opener + 1);
+    expect(opener).toBeGreaterThan(-1);
+    expect(closer).toBeGreaterThan(opener);
+    const shell = [...lines.slice(0, opener + 1), ...lines.slice(closer)]
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    expect(shell).toEqual([
+      `actual=$(sha256sum "$TARBALL" | cut -d' ' -f1)`,
+      `if [ "$actual" != "$EXPECTED" ]; then`,
+      `echo "sha256 mismatch: packed $EXPECTED, downloaded $actual"`,
+      "exit 1",
+      "fi",
+      `tar --ignore-zeros -tzf "$TARBALL" > "$RUNNER_TEMP/entries.txt"`,
+      `tar --ignore-zeros -tvzf "$TARBALL" | cut -c1 > "$RUNNER_TEMP/types.txt"`,
+      `cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'`,
+      "CHECK",
+      `node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/types.txt" "$TARBALL" "$(npm root -g)/npm"`,
+    ]);
+  });
+
+  // An `if`, `continue-on-error`, `shell`, or an extra step would neutralize
+  // the check without touching its commands, so the job's shape is pinned.
+  test("the publish job's steps and their settings are exactly these", () => {
+    const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
+    const job: unknown = Reflect.get(Reflect.get(parsed ?? {}, "jobs") ?? {}, "publish");
+    expect(Object.keys(job ?? {}).sort()).toEqual([
+      "environment", "if", "name", "needs", "permissions", "runs-on", "steps", "timeout-minutes",
+    ]);
+    const steps: unknown = Reflect.get(job ?? {}, "steps");
+    expect(Array.isArray(steps)).toBe(true);
+    const shape = (Array.isArray(steps) ? steps : []).map((step: unknown) => [
+      String(Reflect.get(step ?? {}, "name")),
+      Object.keys(step ?? {}).sort().join(","),
+    ]);
+    expect(shape).toEqual([
+      ["Require main", "name,run"],
+      ["Setup Node", "name,uses,with"],
+      ["Check npm supports staged trusted publishing", "name,run"],
+      ["Download the tarball", "name,uses,with"],
+      [PUBLISH_CHECK_STEP, "env,name,run"],
+      ["Stage on npm", "env,name,run"],
+    ]);
+    for (const step of Array.isArray(steps) ? steps : []) {
+      expect(String(Reflect.get(step ?? {}, "run") ?? "")).not.toMatch(/GITHUB_ENV|GITHUB_PATH/);
+    }
+  });
+
+  test("the check script is read from the publish job's step, and only there", () => {
+    const real = workflow("publish-sdk.yml");
+    expect(publishCheckScript(real)).toContain("const expectedKeys = ");
+    // A second heredoc with the same opener, anywhere in the file, is refused.
+    const decoy = real.replace(
+      "\n  publish:\n",
+      `\n  decoy:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: |\n          cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'\n          process.exit(0);\n          CHECK\n  publish:\n`,
     );
-    expect(publish).toMatch(
-      /^ {10}node "\$RUNNER_TEMP\/check\.cjs" "\$RUNNER_TEMP\/entries\.txt" "\$RUNNER_TEMP\/types\.txt" "\$TARBALL" "\$\(npm root -g\)\/npm\/node_modules\/tar"$/m,
+    expect(decoy).not.toBe(real);
+    expect(() => publishCheckScript(decoy)).toThrow("exactly once");
+    // A GitHub expression would be substituted only in the job.
+    const expression = real.replace(
+      "          const problems = [];\n",
+      '          const problems = [];\n          if ("${{ inputs.publish }}" === "true") problems.length = 0;\n',
     );
+    expect(expression).not.toBe(real);
+    expect(() => publishCheckScript(expression)).toThrow("GitHub expression");
   });
 
   test("CI tests the minimum Node version the package declares", () => {
@@ -401,6 +490,27 @@ describe("smoke test against a given tarball", () => {
     }
   });
 
+  test("runs the publish job's check, so a hand-published dry run meets its rules", () => {
+    // Passes the smoke test's own checks (allowlisted files, this checkout's
+    // name and version, the required files) but carries a lifecycle script,
+    // which only the publish job's manifest rules refuse.
+    const { dir, tarball } = writeGzip([
+      ustarFile("package/package.json", JSON.stringify({ ...valid, scripts: { postinstall: "evil" } })),
+      ...shipped.map((file) => ustarFile(`package/${file}`, "x\n")),
+      ustarFile("package/index.js.map", "{}\n"),
+      ustarFile("package/README.md", "readme\n"),
+      ustarFile("package/LICENSE", "license\n"),
+    ]);
+    try {
+      const result = smoke({ SYNXED_SDK_TARBALL: tarball });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("the publish job's check refuses the tarball");
+      expect(result.output).toContain("unexpected manifest keys");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("refuses a symbolic link with an allowlisted name", () => {
     const { dir, tarball } = writeGzip([
       ustarFile("package/package.json", manifest),
@@ -460,39 +570,25 @@ describe("smoke test against a given tarball", () => {
 // publish-sdk.yml. This runs that exact script, as the runner would see it,
 // against a valid tarball and against tampered ones.
 describe("publish job tarball check", () => {
-  const checkScript = (): string => {
-    const text = readFileSync(join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"), "utf8");
-    const body = text.split(`cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'\n`)[1]?.split("\n          CHECK\n")[0];
-    expect(body).toBeDefined();
-    return (body ?? "")
-      .split("\n")
-      .map((line) => (line.startsWith(" ".repeat(10)) ? line.slice(10) : line))
-      .join("\n");
-  };
 
-  const valid = publishManifest(workspace);
-  const targets = ["main", "types"].map((key) => String(valid[key]));
-  const exportsField = valid.exports;
-  const exportEntries =
-    typeof exportsField === "object" && exportsField !== null ? Object.values(exportsField) : [];
-  for (const entry of exportEntries) {
-    if (typeof entry === "string") {
-      targets.push(entry);
-    } else if (typeof entry === "object" && entry !== null) {
-      targets.push(...Object.values(entry).map(String));
-    }
-  }
-  const shipped = [...new Set(targets.filter((t) => t !== "./package.json").map((t) => t.slice(2)))];
-
+  // Runs the check as the job does, without NODE_PATH and with an empty HOME,
+  // so no tar library outside npm's directory can be found by accident.
   const runCheck = (
-    manifestOverride: Record<string, unknown>,
+    manifest: Record<string, unknown> | Buffer,
     extra: Buffer[] = [],
-    npmTar = npmTarLibrary,
+    npmDir = npmDirectory,
+    leading: Buffer[] = [],
+    inspect?: (tarball: string) => void,
+    extraEnv: Record<string, string> = {},
   ): { status: number | null; output: string } => {
     const dir = mkdtempSync(join(tmpdir(), "synxed-publish-check-test-"));
     try {
+      const manifestBytes = Buffer.isBuffer(manifest)
+        ? manifest
+        : Buffer.from(JSON.stringify({ ...valid, ...manifest }));
       const parts = [
-        ustarFile("package/package.json", JSON.stringify({ ...valid, ...manifestOverride })),
+        ...leading,
+        ustarFile("package/package.json", manifestBytes),
         ...shipped.map((file) => ustarFile(`package/${file}`, "x\n")),
         ustarFile("package/README.md", "readme\n"),
         ustarFile("package/LICENSE", "license\n"),
@@ -500,6 +596,7 @@ describe("publish job tarball check", () => {
       ];
       const tarball = join(dir, "crafted.tgz");
       writeFileSync(tarball, Bun.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)])));
+      inspect?.(tarball);
       // The same two listings the workflow step writes.
       const entries = spawnSync("tar", ["--ignore-zeros", "-tzf", tarball], { encoding: "utf8" }).stdout;
       const types = spawnSync("tar", ["--ignore-zeros", "-tvzf", tarball], { encoding: "utf8" })
@@ -509,13 +606,16 @@ describe("publish job tarball check", () => {
         .join("\n");
       writeFileSync(join(dir, "entries.txt"), entries);
       writeFileSync(join(dir, "types.txt"), `${types}\n`);
-      writeFileSync(join(dir, "check.cjs"), checkScript());
+      writeFileSync(join(dir, "check.cjs"), publishCheckScript());
+      const home = join(dir, "home");
+      mkdirSync(home);
+      const { NODE_PATH: _ignored, ...env } = process.env;
       const result = spawnSync(
         "node",
-        [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball, npmTar],
+        [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball, npmDir],
         {
           encoding: "utf8",
-          env: { ...process.env, PACKAGE_NAME, VERSION: String(workspace.version) },
+          env: { ...env, HOME: home, PACKAGE_NAME, VERSION: String(workspace.version), ...extraEnv },
         },
       );
       return { status: result.status, output: `${result.stdout}${result.stderr}` };
@@ -538,6 +638,7 @@ describe("publish job tarball check", () => {
     ["another package name", { name: "@coumtech/other" }, [], "name is @coumtech/other"],
     ["a changed publishConfig", { publishConfig: { access: "public", provenance: false } }, [], "unexpected publishConfig"],
     ["a file outside the allowlist", {}, [ustarFile("package/.env", "SECRET=1\n")], "unexpected tarball entry package/.env"],
+    ["server.js, which npm turns into a start script", {}, [ustarFile("package/server.js", "x\n")], "unexpected tarball entry package/server.js"],
     ["a duplicate entry", {}, [ustarFile("package/index.js", "y\n")], "duplicate tarball entries"],
     [
       "a manifest hidden behind a lone zero block",
@@ -567,34 +668,173 @@ describe("publish job tarball check", () => {
     });
   }
 
-  // A stand-in for npm's tar library that sees the same entries as GNU tar
-  // but one extra byte of package.json, for a difference the fixtures above
-  // cannot produce.
-  test("refuses when npm's tar reader sees a different package.json", () => {
+  // A stand-in npm directory whose tar library wraps the real one, for
+  // differences the crafted tarballs cannot produce. `onentry` maps each real
+  // entry to what the stand-in reports.
+  // With `nested`, pacote gets its own tar (the stand-in) and the top-level tar
+  // is a decoy that reads like the real one, as when pacote nests a copy.
+  const standInModule = (onentry: string): string =>
+    `const real = require(${JSON.stringify(npmTarLibrary)});
+exports.t = (options) => real.t({ ...options, onentry: ${onentry} });
+`;
+  const withStandIn = (
+    onentry: string,
+    run: (npmDir: string) => void,
+    nested = false,
+  ): void => {
     const dir = mkdtempSync(join(tmpdir(), "synxed-npm-tar-stand-in-"));
     try {
-      const standIn = join(dir, "tar.cjs");
-      writeFileSync(
-        standIn,
-        `const real = require(${JSON.stringify(npmTarLibrary)});
-exports.t = (options) => real.t({ ...options, onentry: (entry) => {
+      const pacote = join(dir, "node_modules", "pacote");
+      mkdirSync(pacote, { recursive: true });
+      mkdirSync(join(dir, "node_modules", "tar"));
+      if (nested) {
+        mkdirSync(join(pacote, "node_modules", "tar"), { recursive: true });
+        writeFileSync(join(pacote, "node_modules", "tar", "index.js"), standInModule(onentry));
+        writeFileSync(
+          join(dir, "node_modules", "tar", "index.js"),
+          `module.exports = require(${JSON.stringify(npmTarLibrary)});\n`,
+        );
+      } else {
+        writeFileSync(join(dir, "node_modules", "tar", "index.js"), standInModule(onentry));
+      }
+      run(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("refuses when npm's tar reader sees a different package.json", () => {
+    // One extra byte after every chunk of package.json.
+    withStandIn(
+      `(entry) => {
   if (entry.path !== "package/package.json") return options.onentry(entry);
   const listeners = [];
   options.onentry({ type: entry.type, path: entry.path, on: (event, fn) => { if (event === "data") listeners.push(fn); } });
   entry.on("data", (chunk) => listeners.forEach((fn) => fn(Buffer.concat([chunk, Buffer.from(" ")]))));
-} });
+}`,
+      (npmDir) => {
+        const result = runCheck({}, [], npmDir);
+        expect(result.status).not.toBe(0);
+        expect(result.output).toContain("npm's tar reader sees a different package.json");
+      },
+    );
+  });
+
+  test("compares package.json as bytes, not as decoded text", () => {
+    // 0x80 and 0x81 are both invalid UTF-8 and decode to the same text, so
+    // only a byte comparison sees the stand-in's change.
+    const manifest = Buffer.from(JSON.stringify({ ...valid, description: "byte-X" }));
+    manifest[manifest.indexOf("byte-X") + 5] = 0x80;
+    withStandIn(
+      `(entry) => {
+  if (entry.path !== "package/package.json") return options.onentry(entry);
+  const listeners = [];
+  options.onentry({ type: entry.type, path: entry.path, on: (event, fn) => { if (event === "data") listeners.push(fn); } });
+  entry.on("data", (chunk) => listeners.forEach((fn) => fn(Buffer.from(chunk.map((byte) => (byte === 0x80 ? 0x81 : byte))))));
+}`,
+      (npmDir) => {
+        const result = runCheck(manifest, [], npmDir);
+        expect(result.status).not.toBe(0);
+        expect(result.output).toContain("npm's tar reader sees a different package.json");
+      },
+    );
+  });
+
+  test("refuses the same number of entries with a different type or path", () => {
+    for (const [change, expected] of [
+      ["type: entry.path === 'package/LICENSE' ? 'ContiguousFile' : entry.type", "ContiguousFile package/LICENSE"],
+      ["path: entry.path === 'package/LICENSE' ? 'package/other.js' : entry.path", "File package/other.js"],
+    ] as const) {
+      withStandIn(
+        `(entry) => options.onentry({ type: entry.type, path: entry.path, on: (...args) => entry.on(...args), ${change} })`,
+        (npmDir) => {
+          const result = runCheck({}, [], npmDir);
+          expect(result.status).not.toBe(0);
+          expect(result.output).toContain("npm's tar reader sees different entries");
+          expect(result.output).toContain(expected);
+        },
+      );
+    }
+  });
+
+  test("reads with the tar pacote nests, not the top-level copy", () => {
+    withStandIn(
+      "(entry) => options.onentry({ type: entry.path === 'package/LICENSE' ? 'ContiguousFile' : entry.type, path: entry.path, on: (...args) => entry.on(...args) })",
+      (npmDir) => {
+        const result = runCheck({}, [], npmDir);
+        expect(result.status).not.toBe(0);
+        expect(result.output).toContain("npm's tar reader sees different entries");
+      },
+      true,
+    );
+  });
+
+  test("refuses the same entries in a different order", () => {
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-tar-stand-in-"));
+    try {
+      mkdirSync(join(dir, "node_modules", "pacote"), { recursive: true });
+      mkdirSync(join(dir, "node_modules", "tar"));
+      writeFileSync(
+        join(dir, "node_modules", "tar", "index.js"),
+        `const real = require(${JSON.stringify(npmTarLibrary)});
+exports.t = (options) => {
+  const seen = [];
+  real.t({ ...options, onentry: (entry) => seen.push({ type: entry.type, path: entry.path }) });
+  seen.reverse().forEach((entry) => options.onentry({ ...entry, on: () => {} }));
+};
 `,
       );
-      const result = runCheck({}, [], standIn);
+      const result = runCheck({}, [], dir);
       expect(result.status).not.toBe(0);
-      expect(result.output).toContain("npm's tar reader sees a different package.json");
+      expect(result.output).toContain("npm's tar reader sees different entries");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
+  test("refuses a tar library found outside npm's directory", () => {
+    // npm's directory has pacote but no tar; NODE_PATH offers the real one.
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-without-tar-"));
+    try {
+      mkdirSync(join(dir, "node_modules", "pacote"), { recursive: true });
+      const result = runCheck({}, [], dir, [], undefined, {
+        NODE_PATH: join(npmDirectory, "node_modules"),
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.output).not.toContain("files checked");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a large multi-byte package.json that npm reads in several chunks", () => {
+    let chunks = 0;
+    const result = runCheck(
+      { description: "\u00e9".repeat(20_000) },
+      [],
+      npmDirectory,
+      [ustarFile("package/aaa.js", "x".repeat(20_000))],
+      (tarball) => {
+        const counted = spawnSync(
+          "node",
+          [
+            "-e",
+            `let n = 0; require(process.argv[1]).t({ file: process.argv[2], sync: true, onentry: (e) => { if (e.path === "package/package.json") e.on("data", () => { n += 1; }); } }); console.log(n);`,
+            npmTarLibrary,
+            tarball,
+          ],
+          { encoding: "utf8" },
+        );
+        chunks = Number(counted.stdout.trim());
+      },
+    );
+    expect(chunks).toBeGreaterThan(1);
+    expect(result.output).toContain("files checked");
+    expect(result.status).toBe(0);
+  });
+
   test("fails closed when npm's tar library cannot be loaded", () => {
-    const result = runCheck({}, [], join(tmpdir(), "no-such-npm", "node_modules", "tar"));
+    const result = runCheck({}, [], join(tmpdir(), "no-such-npm"));
     expect(result.status).not.toBe(0);
     expect(result.output).not.toContain("files checked");
   });

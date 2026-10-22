@@ -10,6 +10,9 @@
  * come from the workspace package after validation; main, types, exports, and
  * files are generated; private, scripts, and devDependencies are dropped.
  *
+ * It also exports the rules and helpers the smoke test and the tests share
+ * with the publish workflow (`publishCheckScript`).
+ *
  * Usage: bun run build:sdk
  */
 import { spawnSync } from "node:child_process";
@@ -30,9 +33,65 @@ export const PACKAGE_DIR = join(SDK_DIR, "dist", "package");
 /** The only package this repository publishes. The publish workflow checks it too. */
 export const PACKAGE_NAME = "@coumtech/synxed-solana-protocol";
 
-/** Files allowed in the published package. Anything else fails the build. */
+/** The publish job's check step, whose heredoc writes `check.cjs`. */
+export const PUBLISH_CHECK_STEP = "Check the sha256, the file names, and the manifest";
+const CHECK_OPENER = `cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'`;
+
+/**
+ * The publish job's tarball check, `check.cjs`, exactly as the job writes it.
+ * Reads the workflow as YAML, takes the `run` block of the publish job's check
+ * step, and cuts the heredoc the way bash does: the lines after the opener up
+ * to the first line that is exactly `CHECK`. Refuses a workflow where the
+ * opener appears more than once, or where the body holds a `${{ }}`
+ * expression that GitHub would substitute only in the job.
+ */
+export function publishCheckScript(
+  text = readFileSync(join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"), "utf8"),
+): string {
+  if (text.split(CHECK_OPENER).length !== 2) {
+    throw new Error("publish-sdk.yml must write check.cjs exactly once");
+  }
+  const run = publishJobStep(text, PUBLISH_CHECK_STEP).run;
+  if (typeof run !== "string") {
+    throw new Error(`the "${PUBLISH_CHECK_STEP}" step has no run block`);
+  }
+  const lines = run.split("\n");
+  const start = lines.indexOf(CHECK_OPENER);
+  const end = lines.indexOf("CHECK", start + 1);
+  if (start === -1 || end === -1) {
+    throw new Error(`the "${PUBLISH_CHECK_STEP}" step does not write check.cjs`);
+  }
+  const body = lines.slice(start + 1, end).join("\n");
+  if (body.includes("${{")) {
+    throw new Error("check.cjs must not contain a GitHub expression");
+  }
+  return `${body}\n`;
+}
+
+/** A step of the publish job, by name, from the workflow's YAML. */
+export function publishJobStep(workflowText: string, name: string): Record<string, unknown> {
+  const parsed: unknown = Bun.YAML.parse(workflowText);
+  const steps: unknown = Reflect.get(Reflect.get(Reflect.get(parsed ?? {}, "jobs") ?? {}, "publish") ?? {}, "steps");
+  if (!Array.isArray(steps)) {
+    throw new Error("publish-sdk.yml has no publish job steps");
+  }
+  const matches = steps.filter(
+    (step): step is Record<string, unknown> =>
+      typeof step === "object" && step !== null && Reflect.get(step, "name") === name,
+  );
+  if (matches.length !== 1) {
+    throw new Error(`publish-sdk.yml must have exactly one "${name}" step`);
+  }
+  return matches[0];
+}
+
+/**
+ * Files allowed in the published package. Anything else fails the build.
+ * `server.js` is excluded because npm adds a `start` script to the manifest
+ * of any package that ships one.
+ */
 export const ALLOWED_PACKAGE_FILE =
-  /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
+  /^(?:(?!server\.js$)[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
 
 /** Workspace manifest fields copied verbatim into the published manifest. */
 const COPIED_FIELDS = [

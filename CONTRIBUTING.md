@@ -70,18 +70,24 @@ One-time setup, in repository and npm settings, before the first release:
    check for `main` inside the workflow file only catches mistakes, because a
    branch can edit its own copy.
 2. Publish the first version by hand, because a trusted publisher can only be
-   added to a package that exists. Run the workflow as a dry run and, within
+   added to a package that exists. Run the workflow from `main` as a dry run,
+   and check that the run's commit is the head of `main` (a dry run from any
+   other branch runs that branch's copy of the workflow and its checks). Within
    seven days (the artifact's retention), download its `sdk-tarball` artifact.
    It arrives as a zip; extract the `.tgz` and compare its sha256 with the one
-   in the run summary. Then, from the folder that holds the `.tgz`, on a
-   machine logged in (`npm login`) to an npm account that is a member of the
-   `@coumtech` organization with permission to create packages, run
-   `npm publish --provenance=false ./<tarball file>`. The override is needed
-   because the package asks for provenance, which only CI can generate, and
-   the leading `./` stops npm from reading the path as a GitHub repository.
-   This one version carries no provenance. Straight after, set the package's
-   publishing access on npmjs.com to require two-factor authentication and
-   disallow tokens; trusted publishing keeps working under that setting.
+   in the run summary. The dry run's `verify` job ran the publish job's tarball
+   check on that exact file, inside the smoke test; unlike the publish job,
+   `verify` had already run dependency code by then, so read its result as a
+   strong check, not as the publish job's guarantee. Then, from the folder that
+   holds the `.tgz`, on a machine logged in (`npm login`) to an npm account
+   that is a member of the `@coumtech` organization with permission to create
+   packages, run `npm publish --provenance=false ./<tarball file>`. The
+   override is needed because the package asks for provenance, which only CI
+   can generate, and the leading `./` stops npm from reading the path as a
+   GitHub repository. This one version carries no provenance. Straight after,
+   set the package's publishing access on npmjs.com to require two-factor
+   authentication and disallow tokens; trusted publishing keeps working under
+   that setting.
 3. When the next release is ready to run (its version bump merged to `main`),
    add a trusted publisher to the package on npmjs.com: GitHub Actions,
    repository `coumtech/synxed-solana-protocol`, workflow `publish-sdk.yml`,

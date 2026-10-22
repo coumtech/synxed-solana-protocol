@@ -237,15 +237,16 @@ jobs:
           fi
           # --ignore-zeros reads past a lone zero block, as npm's own tar reader
           # does, so entries hidden behind one are seen (and refused) here too.
-          # The check script then reads the tarball again with npm's own tar
-          # library, which must see exactly the same entries and manifest.
+          # The check script then reads the tarball again with the tar library
+          # npm itself resolves, which must see exactly the same entries and
+          # package.json bytes.
           tar --ignore-zeros -tzf "$TARBALL" > "$RUNNER_TEMP/entries.txt"
           tar --ignore-zeros -tvzf "$TARBALL" | cut -c1 > "$RUNNER_TEMP/types.txt"
           cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'
           const fs = require("node:fs");
-          const [entriesFile, typesFile, tarball, npmTarPath] = process.argv.slice(2);
+          const [entriesFile, typesFile, tarball, npmDir] = process.argv.slice(2);
           const problems = [];
-          const allowedFile = /^(?:[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
+          const allowedFile = /^(?:(?!server\.js$)[a-z][a-z0-9-]*\.(?:js|js\.map|d\.ts)|package\.json|README\.md|LICENSE)$/;
           const registryRange = /^[\^~]?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
           const expectedKeys = ["author","bugs","dependencies","description","engines","exports","files","homepage","keywords","license","main","name","peerDependencies","publishConfig","repository","sideEffects","type","types","version"];
           const lines = (file) => fs.readFileSync(file, "utf8").split("\n").filter((line) => line !== "");
@@ -260,9 +261,19 @@ jobs:
           // npm stages and installs what its own tar library reads, and that can
           // differ from GNU tar on a malformed header: node-tar rejects a signed
           // checksum and reads the entry's data as further entries. Read the
-          // tarball again with the library this npm bundles, strictly, so any
-          // header it would warn about fails, and require the same entries.
-          const npmTar = require(npmTarPath);
+          // tarball again with the tar that npm's pacote resolves (its own copy
+          // if it nests one), strictly, so any header it would warn about
+          // fails, and require exactly the same entries, in the same order.
+          // The library must come from inside npm's own directory.
+          const path = require("node:path");
+          const npmRoot = fs.realpathSync(npmDir);
+          const pacoteDir = fs.realpathSync(path.join(npmRoot, "node_modules", "pacote"));
+          const tarPath = require("node:module").createRequire(path.join(pacoteDir, "package.json")).resolve("tar");
+          if (!tarPath.startsWith(path.join(npmRoot, "node_modules") + path.sep)) {
+            console.error("npm's tar library resolves outside npm: " + tarPath);
+            process.exit(1);
+          }
+          const npmTar = require(tarPath);
           const npmEntries = [];
           const npmManifest = [];
           try {
@@ -271,11 +282,20 @@ jobs:
               if (entry.path === "package/package.json") entry.on("data", (chunk) => npmManifest.push(chunk));
             } });
           } catch (error) { problems.push("npm's tar reader refuses the tarball: " + error.message); }
-          if (problems.length === 0 && JSON.stringify(npmEntries) !== JSON.stringify(entries.map((entry) => "File " + entry))) problems.push("npm's tar reader sees different entries: " + npmEntries.join(", "));
+          const sameEntries = npmEntries.length === entries.length
+            && npmEntries.every((entry, index) => entry === "File " + entries[index]);
+          if (problems.length === 0 && !sameEntries) {
+            problems.push("npm's tar reader sees different entries: " + npmEntries.join(", "));
+          }
           if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
-          const manifestText = require("node:child_process").execFileSync("tar", ["--ignore-zeros", "-xzOf", tarball, "package/package.json"], { encoding: "utf8" });
-          if (manifestText !== Buffer.concat(npmManifest).toString("utf8")) problems.push("npm's tar reader sees a different package.json");
-          const m = JSON.parse(manifestText);
+          const manifestBytes = require("node:child_process").execFileSync(
+            "tar", ["--ignore-zeros", "-xzOf", tarball, "package/package.json"],
+            { maxBuffer: 16 * 1024 * 1024 },
+          );
+          if (Buffer.compare(manifestBytes, Buffer.concat(npmManifest)) !== 0) {
+            problems.push("npm's tar reader sees a different package.json");
+          }
+          const m = JSON.parse(manifestBytes.toString("utf8"));
           if (JSON.stringify(Object.keys(m).sort()) !== JSON.stringify(expectedKeys)) problems.push("unexpected manifest keys " + Object.keys(m).sort().join(","));
           if (m.name !== process.env.PACKAGE_NAME) problems.push("name is " + m.name);
           if (m.version !== process.env.VERSION) problems.push("version is " + m.version);
@@ -293,7 +313,7 @@ jobs:
           if (problems.length > 0) { console.error(problems.join("\n")); process.exit(1); }
           console.log(m.name + "@" + m.version + ": " + entries.length + " files checked");
           CHECK
-          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/types.txt" "$TARBALL" "$(npm root -g)/npm/node_modules/tar"
+          node "$RUNNER_TEMP/check.cjs" "$RUNNER_TEMP/entries.txt" "$RUNNER_TEMP/types.txt" "$TARBALL" "$(npm root -g)/npm"
 
       # Needs a trusted publisher on npmjs.com for this repository, this
       # workflow file, and the npm-publish environment, allowed to stage. There
