@@ -18,9 +18,9 @@ const AMOUNT_ATOMIC = 20_000n;
 const UNITS_PER_ATOMIC = 1_000n;
 // Rent for the 41-byte settlement record plus fees.
 const FUNDING_OVERHEAD = 1_200_000n;
-// Rent for the 98-byte namespace at the default rent rate (devnet charges
-// less), paid once, on the wallet's first settlement.
-const NAMESPACE_RENT = 1_572_960n;
+// Size of a namespace account; its rent is paid once, on the wallet's first
+// settlement, and asked from the cluster.
+const NAMESPACE_ACCOUNT_SIZE = 98;
 // Each wallet settles in its own namespace under this label, so nobody else
 // can claim one of its event ids.
 const NAMESPACE_LABEL = "synxed-wallet-demo";
@@ -158,10 +158,11 @@ export function App(): React.JSX.Element {
         ...(existing === null ? { createNamespaceId: namespaceId } : {}),
       });
       const balance = BigInt(await connection.getBalance(publicKey, "confirmed"));
-      const required =
-        prepared.lamportsTotal +
-        FUNDING_OVERHEAD +
-        (existing === null ? NAMESPACE_RENT : 0n);
+      const namespaceRent =
+        existing === null
+          ? BigInt(await connection.getMinimumBalanceForRentExemption(NAMESPACE_ACCOUNT_SIZE))
+          : 0n;
+      const required = prepared.lamportsTotal + FUNDING_OVERHEAD + namespaceRent;
       if (balance < required) {
         throw new Error(
           `Wallet needs at least ${formatSol(required)} SOL on devnet; current balance is ${formatSol(balance)} SOL. Fund it at faucet.solana.com.`,
@@ -420,7 +421,7 @@ function persistEvidence(
 ): void {
   try {
     localStorage.setItem(
-      `synxed:settlement-evidence:v1:${signature}`,
+      `synxed:settlement-evidence:v2:${signature}`,
       JSON.stringify({ version: 1, reconciliation }),
     );
   } catch {

@@ -49,6 +49,12 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 | `occurredAt` | RFC 3339 | From the originating `SettlementRequest` |
 | `settledAt` | RFC 3339 | Block time of the transaction |
 
+Rows written before the move to settlement namespaces are version 1, without
+`namespace` and `authority`; keep them as they are. The SDK no longer
+reconciles the retired instructions those rows came from, so a ledger rebuilt
+from chain history covers only namespaced settlements (see "Upgrading from the
+retired instructions" in [integration.md](integration.md)).
+
 ### `PayoutLine`
 
 One row per recipient per settlement.

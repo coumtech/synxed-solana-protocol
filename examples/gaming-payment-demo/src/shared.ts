@@ -195,8 +195,9 @@ export function parseProgramId(): PublicKey | undefined {
 
 /**
  * Lamports to keep on top of the settlement itself: program mode also pays
- * rent for the 41-byte settlement record (~1,176,240 lamports), on the first
- * run rent for the 98-byte namespace (~1,572,960 lamports), plus fees.
+ * rent for the 41-byte settlement record, on the first run rent for the
+ * 98-byte namespace, plus fees. 2,800,000 covers both at the default rent
+ * rate (devnet charged 858,520 and 1,148,080 lamports on 21 October 2026).
  */
 export function fundingOverhead(programId: PublicKey | undefined): bigint {
   return programId !== undefined ? 2_800_000n : 1_000_000n;

@@ -53,8 +53,9 @@ bun run demo:wallet
 Open the printed local URL in a browser with a Solana wallet, switch that
 wallet to **devnet**, and fund it from the Solana devnet faucet. The example
 requires approximately 0.022 SOL: 0.020 SOL for the reference split, settlement
-record rent, and the transaction fee, plus about 0.0012 SOL once for the
-wallet's settlement namespace.
+record rent, and the transaction fee, plus the namespace's rent once, on the
+wallet's first settlement (0.00114808 SOL on devnet on 21 October 2026; the
+demo asks the cluster for the current figure).
 
 The recipient fields are intentionally visible and editable. Public demo
 addresses are prefilled so the flow is reproducible; replace them with devnet
@@ -82,7 +83,7 @@ memo, share configuration, accounts, and exact inner transfers. Only a full
 match is displayed or saved.
 
 Successful evidence is stored under the versioned browser key
-`synxed:settlement-evidence:v1:<signature>`. It contains public devnet data
+`synxed:settlement-evidence:v2:<signature>`. It contains public devnet data
 only and can be cleared through normal browser storage controls.
 
 ## Security boundary

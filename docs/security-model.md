@@ -36,7 +36,7 @@ Report vulnerabilities privately, as described in [SECURITY.md](../SECURITY.md).
 | Any other Solana account holder | Nothing | Can open its own namespace and settle in it with its own funds; cannot settle in yours |
 | RPC provider | Availability and truthful chain data for submission and reconciliation | Known limitation 5 |
 | Program upgrade authority | Everything: it can replace the program | Known limitation 3 |
-| Browser wallet (wallet demo) | Holding keys and signing | The demo never receives key material. It writes each reconciled result to local storage (`synxed:settlement-evidence:v1:<signature>`) and never reads it back; the user and any script on the page can edit that copy, so reconcile again before relying on it |
+| Browser wallet (wallet demo) | Holding keys and signing | The demo never receives key material. It writes each reconciled result to local storage (`synxed:settlement-evidence:v2:<signature>`) and never reads it back; the user and any script on the page can edit that copy, so reconcile again before relying on it |
 
 ## What the program enforces
 
@@ -55,11 +55,12 @@ against it; CI runs the suite on every pull request.
 | The namespace authority signs every settlement and every rotation | `MissingRequiredSignature` | `namespace.rs`: `outsiders_cannot_settle_in_a_namespace_they_do_not_control`, `a_separate_authority_must_sign_alongside_the_payer`, `token_settlements_need_the_namespace_authority`, `only_the_current_authority_can_rotate` |
 | The namespace account is owned by this program and has the namespace size and type byte | `IllegalOwner`, `InvalidAccountData` | `namespace.rs`: `rejects_an_account_that_is_not_a_namespace`, `rejects_program_owned_accounts_without_the_namespace_layout` |
 | The signer is the namespace's current authority | `IncorrectAuthority` | `namespace.rs`: `outsiders_cannot_settle_in_a_namespace_they_do_not_control`, `token_settlements_need_the_namespace_authority`, `rotation_moves_the_right_to_settle_and_keeps_idempotency`, `only_the_current_authority_can_rotate` |
-| A namespace is opened once, at `["namespace", creator, namespace_id]`, signed by its creator, with an authority other than the all-zero key (also on rotation) | `AccountAlreadyInitialized`, `InvalidSeeds`, `MissingRequiredSignature`, `InvalidArgument` | `namespace.rs`: `rejects_opening_the_same_namespace_twice`, `rejects_a_namespace_at_the_wrong_address`, `rejects_a_creator_that_did_not_sign`, `rejects_the_all_zero_key_as_authority` |
+| A namespace is opened once, at `["namespace", creator, namespace_id]`, signed by its creator and funded by its payer, with an authority other than the all-zero key (also on rotation) | `AccountAlreadyInitialized`, `InvalidSeeds`, `MissingRequiredSignature`, `InvalidArgument` | `namespace.rs`: `rejects_opening_the_same_namespace_twice`, `rejects_a_namespace_at_the_wrong_address`, `rejects_a_creator_that_did_not_sign`, `a_separate_payer_opens_the_creators_namespace`, `opening_a_prefunded_namespace_still_needs_the_payer_to_sign`, `rejects_the_all_zero_key_as_authority` |
 | A pre-funded namespace address is topped up; one owned by another program is refused | Opens normally; `InvalidAccountData` | `namespace.rs`: `survives_a_prefunded_namespace_address`, `rejects_a_namespace_address_owned_by_another_program` |
-| A rotation needs a writable namespace and keeps every existing record | `InvalidAccountData` | `namespace.rs`: `only_the_current_authority_can_rotate`, `rotation_moves_the_right_to_settle_and_keeps_idempotency` |
+| A rotation needs a writable namespace and the new authority's signature, so a namespace can never be handed to a key nobody can sign for; it keeps every existing record | `InvalidAccountData`, `MissingRequiredSignature`, `InvalidArgument` | `namespace.rs`: `only_the_current_authority_can_rotate`, `rotation_needs_the_new_authority_to_sign`, `rotation_moves_the_right_to_settle_and_keeps_idempotency` |
+| The namespace instructions take exact account lists | `NotEnoughAccountKeys` | `namespace.rs`: `namespace_instructions_take_exact_account_lists` |
 | Exact account list: n + 5 accounts for native settlement, n + 8 for token settlement | `NotEnoughAccountKeys` | `settle.rs`: `rejects_extra_trailing_accounts`; `settle_n.rs`: `rejects_a_recipient_count_that_does_not_match_the_shares`; `settle_token_n.rs`: `rejects_a_wrong_token_account_count` |
-| The payer signs | `MissingRequiredSignature` | `settle.rs`: `rejects_a_payer_that_did_not_sign` |
+| The payer signs, even beside a separate authority that does | `MissingRequiredSignature` | `namespace.rs`: `rejects_a_payer_that_did_not_sign_beside_a_signing_authority` |
 | Every native recipient, every token destination, and the record are writable | `InvalidAccountData` | `settle_n.rs`: `rejects_a_read_only_recipient_and_a_wrong_system_program`; `settle_token_n.rs`: `rejects_a_read_only_token_destination`; `settle.rs`: `rejects_a_read_only_record` |
 | The system program is the real system program | `IncorrectProgramId` | `settle_n.rs`: `rejects_a_read_only_recipient_and_a_wrong_system_program` |
 | The token program is classic SPL Token; Token-2022 and anything else are rejected | `IncorrectProgramId` | `settle_token_n.rs`: `rejects_token_2022_and_any_other_token_program` |
@@ -142,36 +143,45 @@ event ids nor create one of your records
 instructions are refused (`refuses_the_retired_instructions`). Event ids no
 longer need to be secret for this; the memo still publishes them.
 
-What remains is the authority key itself. Anyone who holds it can settle
-your unsettled event ids, to wallets of their choosing and with any payer
-that signs alongside it, and can rotate the namespace to a key you do not
-hold. Keep the authority key at least as well protected as the payer key.
-A separate authority (a hardware or multisig key) means a stolen payer key
-alone cannot settle in the namespace; it adds the authority's key and
-signature to every transaction (96 bytes). Rotate with
-`SetNamespaceAuthority` while you still hold the key; rotation keeps every
-record, so settled events stay settled
-(`rotation_moves_the_right_to_settle_and_keeps_idempotency`).
+What remains is the authority key itself. Anyone who holds it can settle your
+unsettled event ids, to wallets of their choosing and with any payer that
+signs alongside it, and can rotate the namespace to a key you do not hold.
+Keep the authority key at least as well protected as the payer key. A separate
+authority means a stolen payer key alone cannot settle in the namespace; it
+adds the authority's key and signature to every transaction (96 bytes). A
+hardware key signs directly. A multisig (for example a Squads vault) signs
+through its own program, so its settlements are inner instructions, which the
+SDK's reconcile functions do not read: reconcile them by hand, as below.
+Rotate with `SetNamespaceAuthority` while you still hold the key; the new
+authority signs too, so a rotation cannot hand the namespace to a key nobody
+holds, and rotation keeps every record, so settled events stay settled
+(`rotation_moves_the_right_to_settle_and_keeps_idempotency`,
+`rotation_needs_the_new_authority_to_sign`). Nobody can recover a namespace
+whose authority key is lost.
 
 Before sending any settlement, persist its request together with its event id,
-its attempt number, and the parameters you built it with (program id,
-namespace, scale, and for tokens the mint and decimals), and keep that record
-permanently. A retry under the same event id resends the latest stored request
-unchanged. If a failure means the request itself must change (a frozen token
-account, or a share below the rent-exempt minimum for a new account), store
-the changed request beside the old one and send it under the same event id,
-attempt number, program id, and namespace: the program settles at most one
-transaction per event id in a namespace, so the old and the changed request
-can never both pay. If you sign the transaction separately from sending it
-(`buildSettlementNTransaction`, `buildTokenSettlementNTransaction`), also
-persist its signature before sending. The `submit` functions, like a wallet's
-`sendTransaction`, sign and send in one call and return the signature only
-afterwards, so persist the request before calling them and the signature when
-they return.
+its attempt number, the parameters you built it with (program id, namespace,
+scale, and for tokens the mint and decimals), and the beneficiary ids that
+label its ledger rows, and keep that record permanently. A retry under the
+same event id resends the latest stored request unchanged. If a failure means
+the request itself must change (a frozen token account, or a share below the
+rent-exempt minimum for a new account), store the changed request beside the
+old one and send it under the same event id, attempt number, program id, and
+namespace: the program settles at most one transaction per event id in a
+namespace, so the old and the changed request can never both pay. If you sign
+the transaction separately from sending it (`buildSettlementNTransaction`,
+`buildTokenSettlementNTransaction`), also persist its signature before
+sending. The `submit` functions, like a wallet's `sendTransaction`, sign and
+send in one call and return the signature only afterwards, so persist the
+request before calling them and the signature when they return.
 
-`AccountAlreadyInitialized` now means that your namespace's authority settled
-the event before: usually your own earlier attempt that landed after you
-treated it as failed. Decide from the transaction that created the record:
+`AccountAlreadyInitialized` from the settlement instruction now means that
+your namespace's authority settled the event before: usually your own earlier
+attempt that landed after you treated it as failed. (In a wallet's first
+settlement, the same error from the first instruction, `CreateNamespace`,
+only means the namespace was opened meanwhile; build the settlement again
+without `createNamespaceId`.) Decide from the transaction that created the
+record:
 
 1. List the record address's transactions with `getSignaturesForAddress`,
    paging until the end, from an endpoint that keeps full transaction history
@@ -191,24 +201,25 @@ treated it as failed. Decide from the transaction that created the record:
    transaction against the request that matched, with its `beneficiaryIds`.
 3. If each stored request fails with a field mismatch (`NAMESPACE_MISMATCH`,
    `EVENT_MISMATCH`, `AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`,
-   `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`, `MEMO_MISMATCH`,
-   `MEMO_MISSING`) on both providers' copies, or none is stored, do not mark
-   the event paid and do not settle it again: raise an incident,
-   because your authority key or your own system settled something you did
-   not record. Rotate the authority if the key may be exposed.
+   `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`, `MEMO_MISMATCH`, `MEMO_MISSING`)
+   on both providers' copies, or none is stored, do not mark the event paid
+   and do not settle it again: raise an incident, because your authority key
+   or your own system settled something you did not record. Rotate the
+   authority if the key may be exposed.
 4. Anything else is unresolved: the transaction is not finalized or cannot be
    found, the two providers disagree, an endpoint fails (`CLUSTER_MISMATCH`,
    `TX_NOT_FOUND`, `TX_FAILED`, `TX_SIGNATURE`, `BLOCK_TIME_MISSING`, errors
    from the RPC call itself), or the SDK cannot read the transaction or the
    stored request (`PROGRAM_INSTRUCTION`, `INSTRUCTION_DATA`,
    `ACCOUNT_LAYOUT`, any other error, a settlement made through another
-   program, which you compare by hand).
-   Retry later and escalate to a person if it stays unresolved.
+   program, which you compare by hand). The same difference found by hand in
+   both providers' copies counts as a mismatch (step 3). Retry the rest later
+   and escalate to a person if it stays unresolved.
 
 The SDK's fetching reconcile functions read a transaction with exactly one
-top-level `SettleN` or `SettleTokenN` instruction, alongside at most the
-`CreateNamespace` a wallet's first settlement carries. For a settlement made
-through another program, read its stack height and resolve its account
+top-level `SettleN` or `SettleTokenN` instruction, alongside at most one
+`CreateNamespace`, which a wallet's first settlement carries. For a settlement
+made through another program, read its stack height and resolve its account
 indexes against the transaction's static keys, then
 `meta.loadedAddresses.writable`, then `meta.loadedAddresses.readonly`, or
 request the `jsonParsed` encoding.
@@ -219,9 +230,15 @@ transactions (`tests/ledger.test.ts`: refuses a settlement made with a
 retired instruction). A namespaced settlement does not see them, so after the
 program is upgraded in place, an event that was settled before the upgrade
 could be settled a second time. Before retrying any event first attempted
-before the upgrade, check its old record address
-(`findLegacySettlementRecordPda`); if an account exists there, the event is
-paid. Events first attempted after the upgrade need no such check.
+before the upgrade, call `fetchLegacySettlementRecord`. It reports a record
+only when the program owns the account and it holds that event's record;
+anyone can send lamports to the address, so an account merely existing there
+proves nothing. A record means the event was settled before namespaces,
+possibly by someone else to wallets of their choosing, since the retired
+instructions let anyone settle any event id: compare its creating
+transaction's recipients by hand before marking the event paid, and never
+settle it again. Events first attempted after the upgrade need no such
+check.
 
 ### 2. Records are permanent and cost rent per settlement
 
@@ -305,8 +322,8 @@ web3.js refuses to serialize an oversized transaction, so nothing is sent.
 For more token shares, or a long event id or memo, create the recipient token
 accounts in a separate transaction first and build the settlement with
 `createRecipientAccounts: false`. Native settlements fit eight shares in all
-four cases (804 to 886 bytes, or 876 to 958 when the transaction also opens
-the namespace).
+four cases (804 to 886 bytes at 1,000 lamports per atomic unit, or 876 to 958
+when the transaction also opens the namespace).
 
 ## Operating a payer key
 
@@ -318,9 +335,12 @@ the namespace).
   commitment, and alert on any reconciliation mismatch or unexplained
   `AccountAlreadyInitialized`.
 - The namespace authority decides what is settled in your namespace. Protect
-  it at least as well as the payer, prefer a separate hardware or multisig
-  authority for production, and rotate it with `SetNamespaceAuthority` if it
-  may be exposed.
+  it at least as well as the payer, prefer a separate hardware key (or a
+  multisig, reconciled by hand) for production, keep it backed up, and rotate
+  it with `SetNamespaceAuthority` if it may be exposed.
+- Idempotency is per namespace: pin the namespace address in production
+  configuration and open namespaces only deliberately (`ensureNamespace` with
+  `create: false`), because settling in a new namespace starts afresh.
 - Rotate the key if it was ever pasted into chat, logs, CI output, or a pull
   request.
 

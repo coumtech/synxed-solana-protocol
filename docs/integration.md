@@ -140,24 +140,59 @@ await submitSettlement({ connection, payer, request,
 - **Address:** the namespace is a program account at
   `["namespace", creator, namespace_id]`, so it is fixed by your key and the
   id you chose. `ensureNamespace` opens it on first use (rent for 98 bytes,
-  about 0.00157 SOL on devnet, paid once) and afterwards only checks that it
-  exists and that its authority is the one you expect. Keep the address in
-  your configuration.
+  0.00114808 SOL on devnet on 21 October 2026, paid once) and afterwards
+  only checks that it exists and that its authority is the one you expect.
+- **Idempotency is per namespace.** An event settled in one namespace can be
+  settled again in another, so a different label, payer key, or program id
+  silently starts afresh. Pin the namespace address in your production
+  configuration and call `ensureNamespace` with `create: false` there, so a
+  missing namespace is an error instead of a new one.
 - **Environments:** use one namespace per environment (for example
   `studio-payouts-staging` and `studio-payouts`), so the same event id can be
   settled independently in each.
 - **A separate authority:** pass `authority` to `ensureNamespace`, then the
   authority's `Keypair` as `authority` to the submit functions; both the
   payer and the authority sign. A wallet that builds its own transaction
-  passes the authority's public key to `buildSettlementNTransaction`.
-- **Rotating the key:** the current authority signs
-  `buildSetNamespaceAuthorityInstruction`. The namespace address and its
-  records stay the same, so events settled before the rotation stay settled.
+  passes the authority's public key to `buildSettlementNTransaction`. A
+  hardware key signs the transaction directly. A multisig (for example a
+  Squads vault) signs through its own program, so its settlements are inner
+  instructions that the SDK's reconcile functions do not read: reconcile
+  those by hand, as described in known limitation 1 of
+  [security-model.md](security-model.md).
+- **Rotating the key:** the current and the new authority both sign
+  `buildSetNamespaceAuthorityInstruction`, so the namespace can never be
+  handed to a key nobody holds. The namespace address and its records stay
+  the same, so events settled before the rotation stay settled.
+- **Losing the authority key:** nobody can recover a namespace whose
+  authority key is lost; the creator has no override. Keep the authority
+  backed up. If you must move to a new namespace, first check each pending
+  event's record in the old namespace (`findSettlementRecordPda` with the old
+  address) so that nothing already settled there is settled again.
 - **Wallets:** `fetchNamespace` reports whether the namespace exists;
   passing `createNamespaceId` to `buildSettlementNTransaction` opens it in the
-  same transaction as the first settlement, so the user approves once.
+  same transaction as the first settlement, so the user approves once. If
+  that transaction fails with `AccountAlreadyInitialized` in its first
+  instruction (`CreateNamespace`), the namespace was opened meanwhile: build
+  the settlement again without `createNamespaceId`.
 
-## 6. Operational notes
+## 6. Upgrading from the retired instructions
+
+The reference deployment once ran instructions that keyed the settlement
+record on the event id alone (tags 0 to 2). The program now refuses them, and
+this SDK neither builds nor reconciles them.
+
+- Events settled before the upgrade have their records at the old address,
+  which a namespaced settlement does not see. Before retrying an event first
+  attempted before the upgrade, call `fetchLegacySettlementRecord`. If it
+  reports a record, the event was settled before namespaces, possibly by
+  someone else to wallets of their choosing: compare its creating
+  transaction's recipients by hand, and never settle it again.
+- Ledger rows written before the upgrade are `SettlementRecord` schema
+  version 1, without `namespace` and `authority`; keep them as they are. This
+  SDK cannot reconcile those transactions again, so a ledger rebuilt from
+  chain history covers only settlements made after the upgrade.
+
+## 7. Operational notes
 
 - Use one `eventId` per billable event. In program mode the chain rejects a
   second settlement of the same id in your namespace

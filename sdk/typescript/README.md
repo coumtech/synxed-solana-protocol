@@ -88,18 +88,17 @@ console.log(submission.explorerUrl, reconciliation.record.slot);
 ```
 
 Passing `programId` and `namespace` selects program mode: the settlement
-program checks that the namespace's authority signed, re-validates the split on
-chain, pays every share in one instruction, and refuses a second settlement of
-the same event id in that namespace. Nobody else can settle your event ids. Without it, the client sends plain system
-transfers plus a memo, with no on-chain validation and no idempotency; that
-fallback exists for devnet demonstrations only, and reconciliation needs
-program mode.
+program checks that the namespace's authority signed, re-validates the split
+on chain, pays every share in one instruction, and refuses a second
+settlement of the same event id in that namespace. Nobody else can settle
+your event ids. Without a program id, the client sends plain system transfers
+plus a memo, with no on-chain validation and no idempotency; that fallback
+exists for devnet demonstrations only, and reconciliation needs program mode.
 
 `reconcileSettlementN` waits for finality, decodes the instruction, checks the
 namespace, derives the event's settlement record, and compares the memo,
-shares, accounts, and
-every inner transfer with the request. Any mismatch throws a `LedgerError`
-instead of producing a ledger entry.
+shares, accounts, and every inner transfer with the request. Any mismatch
+throws a `LedgerError` instead of producing a ledger entry.
 
 ## Entry points
 
@@ -107,7 +106,7 @@ instead of producing a ledger entry.
 | --- | --- |
 | `@coumtech/synxed-solana-protocol` | Everything below, plus the split math and instruction codec (`computeSettlementN`, `encodeSettleNData`, `buildSettleNInstruction`, `buildCreateNamespaceInstruction`, `buildSetNamespaceAuthorityInstruction`, `eventIdSeed`, `findNamespacePda`, `findSettlementRecordPda`) |
 | `@coumtech/synxed-solana-protocol/types` | Request and result types, protocol constants, `ProtocolError` |
-| `@coumtech/synxed-solana-protocol/client` | Transaction builders and submitters, including SPL Token settlement, and namespace helpers (`ensureNamespace`, `fetchNamespace`, `findNamespacePda`, `namespaceIdFromLabel`) |
+| `@coumtech/synxed-solana-protocol/client` | Transaction builders and submitters, including SPL Token settlement, namespace helpers (`ensureNamespace`, `fetchNamespace`, `findNamespacePda`, `namespaceIdFromLabel`), and `fetchLegacySettlementRecord` for events settled before namespaces |
 | `@coumtech/synxed-solana-protocol/ledger` | Payout ledger types, reconciliation, pool allocation |
 
 Unsigned builders such as `buildSettlementNTransaction` return a transaction

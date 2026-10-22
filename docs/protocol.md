@@ -98,11 +98,12 @@ Instruction data (65 bytes): tag `3`, `namespace_id` (`[u8; 32]`), initial
 | 2 | namespace | no | yes | PDA `["namespace", creator, namespace_id]` |
 | 3 | system program | no | no | account creation |
 
-A creator that did not sign returns `MissingRequiredSignature`; the all-zero
-key as authority (nobody can sign for it) returns `InvalidArgument`; a wrong
-namespace address returns `InvalidSeeds`; opening an existing namespace
-returns `AccountAlreadyInitialized`. The account is created the same
-pre-funding-tolerant way as a settlement record (see Idempotency).
+A creator or payer that did not sign returns `MissingRequiredSignature`; the
+all-zero key as authority (nobody can sign for it) returns `InvalidArgument`;
+a wrong namespace address returns `InvalidSeeds`; opening an existing
+namespace returns `AccountAlreadyInitialized`; an account list that is not
+exactly these four returns `NotEnoughAccountKeys`. The account is created the
+same pre-funding-tolerant way as a settlement record (see Idempotency).
 
 ### `SetNamespaceAuthority` (tag 4)
 
@@ -112,12 +113,18 @@ Instruction data (33 bytes): tag `4`, `new_authority` (32-byte public key).
 | --- | --- | --- | --- | --- |
 | 0 | current authority | yes | no | must match the namespace |
 | 1 | namespace | no | yes | the namespace to update |
+| 2 | new authority | yes | no | must equal `new_authority` |
 
-The namespace's address and its records do not change, so rotating the key
-does not reset idempotency: an event settled before the rotation stays
-settled. A read-only namespace returns `InvalidAccountData`, and the all-zero
-key as the new authority returns `InvalidArgument`. The authority checks are
-those below.
+Both the current and the new authority sign, so a namespace can never be
+handed to a key nobody can sign for, which would lock it for good. The
+namespace's address and its records do not change, so rotating the key does
+not reset idempotency: an event settled before the rotation stays settled. A
+read-only namespace returns `InvalidAccountData`; the all-zero key as the new
+authority, or a third account other than `new_authority`, returns
+`InvalidArgument`; a new authority that did not sign returns
+`MissingRequiredSignature`; an account list that is not exactly these three
+returns `NotEnoughAccountKeys`. The current authority's checks are those
+below.
 
 ### Authority checks
 
@@ -215,11 +222,16 @@ could settle it first, to wallets of their choosing, and the real settlement
 then failed with `AccountAlreadyInitialized`. The program now refuses those
 tags with `InvalidInstructionData`, logging that they are retired. Records
 they created stay on chain at their old addresses and are not reused: a
-namespaced record has a different address. So the program cannot tell that
-an event settled before the upgrade is settled: before retrying an event first
-attempted before namespaces, check its old record address
-(`findLegacySettlementRecordPda` in the SDK); if an account exists there, the
-event is settled and must not be settled again.
+namespaced record has a different address. So the program cannot tell that an
+event settled before the upgrade is settled. Before retrying an event first
+attempted before namespaces, check its old record with
+`fetchLegacySettlementRecord` in the SDK. It reports a record only when this
+program owns the account and it holds that event's record (anyone can send
+lamports to the address, so an account merely existing there proves nothing).
+A record means the event was settled before namespaces, possibly by someone
+else to wallets of their choosing, because the retired instructions let
+anyone settle any event id: compare its creating transaction's recipients by
+hand before treating the event as paid, and never settle it again.
 
 ## Idempotency
 
@@ -238,29 +250,29 @@ cannot be settled twice in a namespace. The same event id in another
 namespace is a different record and does not affect yours.
 
 The record is created as transfer + allocate + assign rather than a single
-`create_account`. `create_account` fails when the target address already
-holds lamports, which would let anyone permanently block a record or
-namespace address by parking a small deposit (the rent floor for an empty account, 0.00065024 SOL
-on devnet on 20 October 2026) on its PDA before settlement. With the three-step
-creation, a pre-funded PDA is simply topped up to rent exemption (the payer
-pays only the shortfall), then allocated and assigned under the program's
-signer seeds. Because only the system program can allocate or assign a
-system-owned account and both require the PDA's signature, no third party
-can put a record-shaped account at that address ahead of the program. Any
-account at the address that already carries data is rejected with
-`AccountAlreadyInitialized`; a data-less account owned by anything other
-than the system program is rejected with `InvalidAccountData`. Namespaces are
+`create_account`. `create_account` fails when the target address already holds
+lamports, which would let anyone permanently block a record or namespace
+address by parking a small deposit (the rent floor for an empty account,
+0.00065024 SOL on devnet on 20 October 2026) on its PDA before settlement.
+With the three-step creation, a pre-funded PDA is simply topped up to rent
+exemption (the payer pays only the shortfall), then allocated and assigned
+under the program's signer seeds. Because only the system program can allocate
+or assign a system-owned account and both require the PDA's signature, no
+third party can put a record-shaped account at that address ahead of the
+program. Any account at the address that already carries data is rejected with
+`AccountAlreadyInitialized`; a data-less account owned by anything other than
+the system program is rejected with `InvalidAccountData`. Namespaces are
 created the same way.
 
 ## Client fallback mode
 
 When no program id is configured, the TypeScript client settles with one
-`SystemProgram.transfer` instruction per nonzero share in a single
-transaction (up to eight), computed with the identical split function, plus
-a memo instruction recording the event id. Same amounts, same conservation guarantee, weaker atomicity semantics
-(no on-chain re-validation, no idempotency record). It exists so the demo
-produces a real devnet transaction without requiring anyone to deploy the
-program first.
+`SystemProgram.transfer` instruction per nonzero share in a single transaction
+(up to eight), computed with the identical split function, plus a memo
+instruction recording the event id. Same amounts, same conservation guarantee,
+weaker atomicity semantics (no on-chain re-validation, no idempotency record).
+It exists so the demo produces a real devnet transaction without requiring
+anyone to deploy the program first.
 
 ## Assets
 
