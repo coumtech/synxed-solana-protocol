@@ -139,7 +139,7 @@ describe("namespace instruction builders", () => {
     );
   });
 
-  test("SetNamespaceAuthority orders the signing authority, then the writable namespace", () => {
+  test("SetNamespaceAuthority orders the authority, the writable namespace, then the new authority, both signing", () => {
     const authority = key("authority");
     const namespace = key("namespace");
     const instruction = buildSetNamespaceAuthorityInstruction(
@@ -154,6 +154,7 @@ describe("namespace instruction builders", () => {
     expect(metas).toEqual([
       [authority.toBase58(), true, false],
       [namespace.toBase58(), false, true],
+      [DESCENDING_KEY.toBase58(), true, false],
     ]);
     expect(Array.from(instruction.data)).toEqual(
       Array.from(encodeSetNamespaceAuthorityData(DESCENDING_KEY)),

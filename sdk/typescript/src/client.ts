@@ -34,8 +34,11 @@ import {
   buildSettleTokenNInstruction,
   decodeNamespaceAccount,
   eventIdSeed,
+  findLegacySettlementRecordPda,
   findNamespacePda,
   type NamespaceAccount,
+  SETTLEMENT_RECORD_DISCRIMINATOR,
+  SETTLEMENT_RECORD_SIZE,
   U64_MAX,
 } from "./instruction.ts";
 import {
@@ -68,7 +71,24 @@ export const APPROX_RENT_EXEMPT_MIN_LAMPORTS = 890_880n;
 
 export type SettlementMode = "program" | "program-token" | "system-transfer";
 
-export interface SubmitSettlementOptions {
+/** System-transfer mode: no program, so no namespace and no authority. */
+export interface TransferModeOptions {
+  programId?: undefined;
+  namespace?: undefined;
+  authority?: undefined;
+}
+
+/** Program mode: settle through the deployed program, in `namespace`. */
+export interface ProgramModeOptions<Authority> {
+  /** The deployed settlement program. */
+  programId: PublicKey;
+  /** The settlement namespace to settle in (see `ensureNamespace`). */
+  namespace: PublicKey;
+  /** The namespace's authority, when it is not the payer. It signs too. */
+  authority?: Authority;
+}
+
+interface SubmitSettlementBase {
   connection: Connection;
   payer: Keypair;
   request: SettlementRequest;
@@ -78,13 +98,11 @@ export interface SubmitSettlementOptions {
    * minimum for a fresh account.
    */
   lamportsPerAtomicUnit?: bigint;
-  /** If set, settle through the deployed program instead of raw transfers. */
-  programId?: PublicKey;
-  /** The settlement namespace. Required with `programId`. */
-  namespace?: PublicKey;
-  /** The namespace's authority, if it is not the payer. */
-  authority?: Keypair;
 }
+
+/** Without `programId`, system transfers; with it, `SettleN` in `namespace`. */
+export type SubmitSettlementOptions = SubmitSettlementBase &
+  (TransferModeOptions | ProgramModeOptions<Keypair>);
 
 export interface SettlementSubmission {
   signature: string;
@@ -95,33 +113,39 @@ export interface SettlementSubmission {
   lamportsByRole: readonly [bigint, bigint, bigint];
 }
 
-export interface SubmitSettlementNOptions {
+interface SubmitSettlementNBase {
   connection: Connection;
   payer: Keypair;
   request: SettlementRequestN;
   lamportsPerAtomicUnit?: bigint;
-  programId?: PublicKey;
-  /** The settlement namespace. Required with `programId`. */
-  namespace?: PublicKey;
-  /** The namespace's authority, if it is not the payer. */
-  authority?: Keypair;
 }
 
-export interface BuildSettlementNOptions {
+/** Without `programId`, system transfers; with it, `SettleN` in `namespace`. */
+export type SubmitSettlementNOptions = SubmitSettlementNBase &
+  (TransferModeOptions | ProgramModeOptions<Keypair>);
+
+interface BuildSettlementNBase {
   payer: PublicKey;
   request: SettlementRequestN;
   lamportsPerAtomicUnit?: bigint;
-  programId?: PublicKey;
-  /** The settlement namespace. Required with `programId`. */
-  namespace?: PublicKey;
-  /** The namespace's authority, which must also sign. Defaults to the payer. */
-  authority?: PublicKey;
-  /**
-   * Open the namespace in the same transaction first: its namespace id, with
-   * the payer as creator. `namespace` must be the address it derives.
-   */
-  createNamespaceId?: Uint8Array;
 }
+
+/**
+ * Without `programId`, system transfers; with it, `SettleN` in `namespace`,
+ * signed by the payer and the authority (the payer unless given).
+ */
+export type BuildSettlementNOptions = BuildSettlementNBase &
+  (
+    | (TransferModeOptions & { createNamespaceId?: undefined })
+    | (ProgramModeOptions<PublicKey> & {
+        /**
+         * Open the namespace in the same transaction first: its namespace
+         * id, with the payer as creator and `authority` (or the payer) as
+         * authority. `namespace` must be the address it derives.
+         */
+        createNamespaceId?: Uint8Array;
+      })
+  );
 
 export interface PreparedSettlementN {
   transaction: Transaction;
@@ -176,14 +200,32 @@ export interface EnsureNamespaceOptions {
   namespaceId: Uint8Array;
   /** The key allowed to settle in the namespace. Defaults to the payer. */
   authority?: PublicKey;
+  /**
+   * Open the namespace when it does not exist (the default). Pass false once
+   * the namespace's address is pinned in your configuration: settling in a
+   * fresh namespace starts idempotency afresh, so a missing namespace is then
+   * an error, never something to open silently.
+   */
+  create?: boolean;
 }
 
 export interface EnsuredNamespace {
   address: PublicKey;
   authority: PublicKey;
-  /** True when this call opened the namespace. */
+  /**
+   * True when this call's transaction opened the namespace. False when it
+   * already existed or another run opened it first, and also when this
+   * call's own transaction landed but confirming it failed.
+   */
   created: boolean;
   signature: string | null;
+}
+
+/** A settlement record that a retired instruction (tags 0 to 2) created. */
+export interface LegacySettlementRecord {
+  address: PublicKey;
+  /** The gross amount the record stores, in on-chain units. */
+  amount: bigint;
 }
 
 export interface PreparedTokenSettlementN {
@@ -260,6 +302,12 @@ export async function ensureNamespace(
   if (existing !== null) {
     return { address, authority: expectAuthority(existing), created: false, signature: null };
   }
+  if (options.create === false) {
+    throw new ProtocolError(
+      "NAMESPACE_ACCOUNT",
+      `namespace ${address.toBase58()} does not exist, and create is false`,
+    );
+  }
   const transaction = new Transaction().add(
     buildCreateNamespaceInstruction(
       {
@@ -281,6 +329,43 @@ export async function ensureNamespace(
     }
     return { address, authority: expectAuthority(raced), created: false, signature: null };
   }
+}
+
+/**
+ * The record a retired instruction (tags 0 to 2) created for `eventSeed`, or
+ * null when there is none. Only an account this program owns that holds this
+ * event's record counts: anyone can send lamports to the address, so an
+ * account merely existing there proves nothing. A record means the event was
+ * settled before namespaces, possibly by someone else to wallets of their
+ * choosing (the old program let anyone settle any event id), so compare its
+ * creating transaction's recipients by hand before treating the event as
+ * paid. Check it before retrying any event first attempted before the
+ * upgrade to namespaces.
+ */
+export async function fetchLegacySettlementRecord(
+  connection: Connection,
+  programId: PublicKey,
+  eventSeed: Uint8Array,
+): Promise<LegacySettlementRecord | null> {
+  const [address] = findLegacySettlementRecordPda(programId, eventSeed);
+  const account = await connection.getAccountInfo(address, "confirmed");
+  if (account === null || !account.owner.equals(programId)) {
+    return null;
+  }
+  const data = Uint8Array.from(account.data);
+  const sameEvent = data.length === SETTLEMENT_RECORD_SIZE &&
+    data[0] === SETTLEMENT_RECORD_DISCRIMINATOR &&
+    data.slice(1, 33).every((byte, index) => byte === eventSeed[index]);
+  if (!sameEvent) {
+    throw new ProtocolError(
+      "LEGACY_RECORD",
+      `${address.toBase58()} is owned by the program but is not this event's record`,
+    );
+  }
+  return {
+    address,
+    amount: new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(33, true),
+  };
 }
 
 /** Settle a three-way request through `SettleN` (or system transfers). */
@@ -357,18 +442,31 @@ export async function submitSettlement(
 export async function submitSettlementN(
   options: SubmitSettlementNOptions,
 ): Promise<SettlementSubmissionN> {
-  const prepared = buildSettlementNTransaction({
+  const base = {
     payer: options.payer.publicKey,
     request: options.request,
     ...(options.lamportsPerAtomicUnit !== undefined
       ? { lamportsPerAtomicUnit: options.lamportsPerAtomicUnit }
       : {}),
-    ...(options.programId !== undefined ? { programId: options.programId } : {}),
-    ...(options.namespace !== undefined ? { namespace: options.namespace } : {}),
-    ...(options.authority !== undefined
-      ? { authority: options.authority.publicKey }
-      : {}),
-  });
+  };
+  if (options.programId === undefined && (options.namespace !== undefined || options.authority !== undefined)) {
+    throw new ProtocolError(
+      "NAMESPACE_REQUIRED",
+      "namespace and authority apply only with a programId",
+    );
+  }
+  const prepared = buildSettlementNTransaction(
+    options.programId === undefined
+      ? base
+      : {
+          ...base,
+          programId: options.programId,
+          namespace: requireNamespace(options.namespace),
+          ...(options.authority !== undefined
+            ? { authority: options.authority.publicKey }
+            : {}),
+        },
+  );
   const signature = await send(
     options.connection,
     options.payer,
@@ -419,7 +517,7 @@ export function buildSettlementNTransaction(
     );
     if (options.namespace === undefined || !derived.equals(options.namespace)) {
       throw new ProtocolError(
-        "NAMESPACE_REQUIRED",
+        "NAMESPACE_ADDRESS",
         "namespace must be the address createNamespaceId derives for the payer",
       );
     }

@@ -17,6 +17,8 @@ import {
 } from "../sdk/typescript/src/index.ts";
 
 const PAYER = "6k3KRgAuv4CwanjLGwYH1rzwTeZwSRbeLETHfen4h51s";
+// The namespace authority, deliberately not the payer.
+const AUTHORITY = "48fB8mLhZJNZxVjyebuEhu5nvKPSyM31asQE6kkjqhA9";
 // The record of the pre-namespace reference transaction below.
 const LEGACY_RECORD = "4xrJM7aoaSkbmzXRgARZP8WSBzdd1nqrSqk45KJhE7n3";
 const RECIPIENTS = [
@@ -94,7 +96,7 @@ function observation(): ProgramSettlementObservation {
     blockTime: 1_789_200_000,
     programId: PROGRAM_ID.toBase58(),
     payer: PAYER,
-    authority: PAYER,
+    authority: AUTHORITY,
     namespace: NAMESPACE.toBase58(),
     record: RECORD,
     eventSeedHex: toHex(eventIdSeed(EVENT_ID)),
@@ -138,6 +140,7 @@ describe("ledger reconciliation", () => {
     data: string,
     memo: Readonly<Record<string, unknown>>,
     leading: readonly unknown[] = [],
+    leadingInner: ReadonlyArray<{ index: number; instructions: unknown[] }> = [],
   ): ParsedTransactionWithMeta {
     const settleIndex = leading.length + 1;
     return {
@@ -162,6 +165,7 @@ describe("ledger reconciliation", () => {
       meta: {
         err: null,
         innerInstructions: [
+          ...leadingInner,
           {
             index: settleIndex,
             instructions: RECIPIENTS.map((destination, index) => ({
@@ -183,7 +187,7 @@ describe("ledger reconciliation", () => {
   );
   const settleNAccounts = (namespace: PublicKey = NAMESPACE): PublicKey[] => [
     new PublicKey(PAYER),
-    new PublicKey(PAYER),
+    new PublicKey(AUTHORITY),
     namespace,
     ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
     new PublicKey(RECORD),
@@ -201,7 +205,7 @@ describe("ledger reconciliation", () => {
     expect(observed.bps).toEqual(BPS);
     expect(observed.recipients).toEqual(RECIPIENTS);
     expect(observed.payer).toBe(PAYER);
-    expect(observed.authority).toBe(PAYER);
+    expect(observed.authority).toBe(AUTHORITY);
     expect(observed.namespace).toBe(NAMESPACE.toBase58());
     expect(observed.record).toBe(RECORD);
     expect(observed.transfers.map((transfer) => transfer.amountOnChain)).toEqual(
@@ -222,8 +226,17 @@ describe("ledger reconciliation", () => {
       data: base58(Uint8Array.from([3, ...namespaceIdFromLabel("synxed-demo"), ...new PublicKey(PAYER).toBytes()])),
       programId: PROGRAM_ID,
     };
+    // CreateNamespace carries its own inner rent transfer, which is not a payout.
+    const rent = {
+      index: 0,
+      instructions: [{
+        parsed: { info: { destination: NAMESPACE.toBase58(), lamports: 1_148_080, source: PAYER }, type: "transfer" },
+        program: "system",
+        programId: SYSTEM_PROGRAM,
+      }],
+    };
     const observed = observeProgramSettlement(
-      parsedSettlement(settleNAccounts(), settleNData, observation().memo, [createNamespace]),
+      parsedSettlement(settleNAccounts(), settleNData, observation().memo, [createNamespace], [rent]),
       "fixture-signature",
       PROGRAM_ID,
     );
@@ -332,7 +345,7 @@ describe("ledger reconciliation", () => {
     expect(result.record.schemaVersion).toBe(2);
     expect(result.record.programId).toBe(PROGRAM_ID.toBase58());
     expect(result.record.namespace).toBe(NAMESPACE.toBase58());
-    expect(result.record.authority).toBe(PAYER);
+    expect(result.record.authority).toBe(AUTHORITY);
     expect(result.record.payer).toBe(PAYER);
     expect(result.record.settlementRecord).toBe(RECORD);
     expect(result.record.payouts.map((line) => line.role)).toEqual([

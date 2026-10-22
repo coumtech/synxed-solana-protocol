@@ -43,6 +43,9 @@ export const SETTLE_TOKEN_N_HEADER_LENGTH = 1 + 32 + 8 + 1 + 1;
  */
 export const NAMESPACE_ACCOUNT_SIZE = 1 + 1 + 32 + 32 + 32;
 export const NAMESPACE_DISCRIMINATOR = 2;
+/** Settlement record layout: discriminator, event id, amount (u64 LE). */
+export const SETTLEMENT_RECORD_SIZE = 1 + 32 + 8;
+export const SETTLEMENT_RECORD_DISCRIMINATOR = 1;
 
 export const U64_MAX = 0xffff_ffff_ffff_ffffn;
 
@@ -273,7 +276,8 @@ export interface SetNamespaceAuthorityAccounts {
 
 /**
  * Build `SetNamespaceAuthority`. Account order must match the program:
- * current authority, namespace.
+ * current authority, namespace, new authority. Both authorities sign, so a
+ * namespace can never be handed to a key nobody can sign for.
  */
 export function buildSetNamespaceAuthorityInstruction(
   accounts: SetNamespaceAuthorityAccounts,
@@ -284,6 +288,7 @@ export function buildSetNamespaceAuthorityInstruction(
     keys: [
       { pubkey: accounts.authority, isSigner: true, isWritable: false },
       { pubkey: accounts.namespace, isSigner: false, isWritable: true },
+      { pubkey: newAuthority, isSigner: true, isWritable: false },
     ],
     data: Buffer.from(encodeSetNamespaceAuthorityData(newAuthority)),
   });

@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
 import {
+  LedgerError,
+  MEMO_PROGRAM_ID,
   SETTLE_TOKEN_N_HEADER_LENGTH,
   ProtocolError,
+  buildCreateNamespaceInstruction,
+  buildSettleTokenNInstruction,
   buildSettlementNTransaction,
   buildTokenSettlementNTransaction,
   encodeSettleTokenNData,
@@ -11,10 +15,13 @@ import {
   findNamespacePda,
   findSettlementRecordPda,
   namespaceIdFromLabel,
+  observeProgramTokenSettlement,
   reconcileObservedTokenSettlementN,
+  type LedgerErrorCode,
   type ProgramTokenSettlementObservation,
   type SettlementRequestN,
 } from "../sdk/typescript/src/index.ts";
+import { base58 } from "./base58.ts";
 
 const PROGRAM_ID = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
 const PAYER = new PublicKey("6k3KRgAuv4CwanjLGwYH1rzwTeZwSRbeLETHfen4h51s");
@@ -95,13 +102,44 @@ describe("SettleTokenN", () => {
     const [record] = findSettlementRecordPda(PROGRAM_ID, NAMESPACE, eventIdSeed(request().eventId));
     // payer, authority (the payer by default), namespace, source, four
     // destinations, mint, record, system program, token program.
-    expect(settle?.keys.slice(0, 4).map((meta) => [meta.pubkey.toBase58(), meta.isSigner, meta.isWritable])).toEqual([
+    expect(settle?.keys.map((meta) => [meta.pubkey.toBase58(), meta.isSigner, meta.isWritable])).toEqual([
       [PAYER.toBase58(), true, true],
       [PAYER.toBase58(), true, false],
       [NAMESPACE.toBase58(), false, false],
       [prepared.sourceTokenAccount.toBase58(), false, true],
+      ...prepared.recipientTokenAccounts.map((account) => [account.toBase58(), false, true]),
+      [MINT.toBase58(), false, false],
+      [record.toBase58(), false, true],
+      ["11111111111111111111111111111111", false, false],
+      ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", false, false],
     ]);
-    expect(settle?.keys[9].pubkey.equals(record)).toBe(true);
+  });
+
+  test("refuses the record or the namespace as a token destination", () => {
+    const [record] = findSettlementRecordPda(PROGRAM_ID, NAMESPACE, eventIdSeed("evt_token_guard"));
+    const destinations = RECIPIENTS.map((recipient) => getAssociatedTokenAddressSync(MINT, new PublicKey(recipient)));
+    const build = (swap: PublicKey) =>
+      buildSettleTokenNInstruction(
+        {
+          programId: PROGRAM_ID,
+          payer: PAYER,
+          authority: PAYER,
+          namespace: NAMESPACE,
+          sourceTokenAccount: getAssociatedTokenAddressSync(MINT, PAYER),
+          recipientTokenAccounts: [destinations[0], destinations[1], destinations[2], swap],
+          mint: MINT,
+        },
+        { eventSeed: eventIdSeed("evt_token_guard"), amount: 20_000n, decimals: 6, bps: BPS },
+      );
+    for (const [swap, code] of [[record, "RECIPIENT_IS_RECORD"], [NAMESPACE, "RECIPIENT_IS_NAMESPACE"]] as const) {
+      try {
+        build(swap);
+        throw new Error(`expected ${code}`);
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(ProtocolError);
+        expect((error as ProtocolError).code).toBe(code);
+      }
+    }
   });
 
   test("signs with a separate namespace authority when one is given", () => {
@@ -253,5 +291,148 @@ describe("SettleTokenN", () => {
         decimals: 6,
       }),
     ).toThrow("settled in namespace");
+  });
+});
+
+// The token evidence reader, end to end: a parsed transaction built from the
+// SDK's own token builder, with an authority separate from the payer and the
+// CreateNamespace a first wallet settlement carries.
+describe("token settlement evidence", () => {
+  const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+  const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+  const authority = Keypair.generate().publicKey;
+  const namespaceId = namespaceIdFromLabel("token-evidence");
+  const namespace = findNamespacePda(PROGRAM_ID, PAYER, namespaceId)[0];
+  const prepared = buildTokenSettlementNTransaction({
+    payer: PAYER,
+    authority,
+    request: request(),
+    mint: MINT,
+    decimals: 6,
+    programId: PROGRAM_ID,
+    namespace,
+  });
+  const settle = prepared.transaction.instructions.at(-1);
+  if (settle === undefined) throw new Error("no settlement instruction");
+  const record = settle.keys[9].pubkey.toBase58();
+  const createIx = buildCreateNamespaceInstruction(
+    { programId: PROGRAM_ID, payer: PAYER, creator: PAYER },
+    { namespaceId, authority },
+  );
+
+  // Every instruction as getParsedTransaction returns it; `createCount`
+  // CreateNamespace instructions lead, each with its own rent transfer.
+  function parsed(options: { createCount?: number; settleAccounts?: PublicKey[] } = {}): ParsedTransactionWithMeta {
+    const createCount = options.createCount ?? 1;
+    const top: unknown[] = [];
+    const inner: { index: number; instructions: unknown[] }[] = [];
+    for (let i = 0; i < createCount; i += 1) {
+      inner.push({
+        index: top.length,
+        instructions: [{
+          parsed: { type: "transfer", info: { source: PAYER.toBase58(), destination: namespace.toBase58(), lamports: 1_148_080 } },
+          program: "system",
+          programId: SYSTEM_PROGRAM,
+        }],
+      });
+      top.push({ accounts: createIx.keys.map((meta) => meta.pubkey), data: base58(createIx.data), programId: PROGRAM_ID });
+    }
+    for (const ix of prepared.transaction.instructions) {
+      if (ix === settle) {
+        inner.push({
+          index: top.length,
+          instructions: [
+            {
+              parsed: { type: "transfer", info: { source: PAYER.toBase58(), destination: record, lamports: 858_520 } },
+              program: "system",
+              programId: SYSTEM_PROGRAM,
+            },
+            ...prepared.recipientTokenAccounts.map((destination, index) => ({
+              parsed: {
+                type: "transferChecked",
+                info: {
+                  source: prepared.sourceTokenAccount.toBase58(),
+                  destination: destination.toBase58(),
+                  mint: MINT.toBase58(),
+                  authority: PAYER.toBase58(),
+                  tokenAmount: { amount: String(prepared.tokenAmountsByShare[index]), decimals: 6 },
+                },
+              },
+              program: "spl-token",
+              programId: TOKEN_PROGRAM,
+            })),
+          ],
+        });
+        top.push({
+          accounts: options.settleAccounts ?? ix.keys.map((meta) => meta.pubkey),
+          data: base58(ix.data),
+          programId: PROGRAM_ID,
+        });
+      } else if (ix.programId.equals(MEMO_PROGRAM_ID)) {
+        top.push({ parsed: ix.data.toString("utf8"), program: "spl-memo", programId: ix.programId });
+      } else {
+        top.push({ parsed: { type: "createIdempotent", info: {} }, program: "spl-associated-token-account", programId: ix.programId });
+      }
+    }
+    return {
+      slot: 1,
+      blockTime: 1_790_000_000,
+      transaction: { signatures: ["token-evidence"], message: { accountKeys: [], recentBlockhash: "x", instructions: top } },
+      meta: { err: null, innerInstructions: inner },
+    } as unknown as ParsedTransactionWithMeta;
+  }
+
+  function expectLedgerCode(fn: () => unknown, code: LedgerErrorCode): void {
+    try {
+      fn();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LedgerError);
+      expect((error as LedgerError).code).toBe(code);
+      return;
+    }
+    throw new Error(`expected LedgerError ${code}, but nothing was thrown`);
+  }
+
+  test("reads every account of the n + 8 layout and reconciles", () => {
+    const observed = observeProgramTokenSettlement(parsed(), "token-evidence", PROGRAM_ID);
+    expect(observed.payer).toBe(PAYER.toBase58());
+    expect(observed.authority).toBe(authority.toBase58());
+    expect(observed.namespace).toBe(namespace.toBase58());
+    expect(observed.sourceTokenAccount).toBe(prepared.sourceTokenAccount.toBase58());
+    expect(observed.recipientTokenAccounts).toEqual(prepared.recipientTokenAccounts.map((account) => account.toBase58()));
+    expect(observed.mint).toBe(MINT.toBase58());
+    expect(observed.record).toBe(record);
+    expect(observed.amountOnChain).toBe(20_000n);
+    const result = reconcileObservedTokenSettlementN({
+      observation: observed,
+      request: request(),
+      namespace,
+      tokenBaseUnitsPerAtomicUnit: 1n,
+      mint: MINT,
+      decimals: 6,
+    });
+    expect(result.record.schemaVersion).toBe(2);
+    expect(result.record.authority).toBe(authority.toBase58());
+    expect(result.record.payer).toBe(PAYER.toBase58());
+    expect(result.record.namespace).toBe(namespace.toBase58());
+    expect(result.record.settlementRecord).toBe(record);
+  });
+
+  test("refuses a record that is not derived from the namespace in the instruction", () => {
+    const other = findNamespacePda(PROGRAM_ID, MINT, namespaceId)[0];
+    const accounts = settle.keys.map((meta) => meta.pubkey);
+    accounts[2] = other;
+    expectLedgerCode(
+      () => observeProgramTokenSettlement(parsed({ settleAccounts: accounts }), "token-evidence", PROGRAM_ID),
+      "ACCOUNT_LAYOUT",
+    );
+  });
+
+  test("allows one CreateNamespace beside the settlement, not two", () => {
+    expect(() => observeProgramTokenSettlement(parsed({ createCount: 0 }), "token-evidence", PROGRAM_ID)).not.toThrow();
+    expectLedgerCode(
+      () => observeProgramTokenSettlement(parsed({ createCount: 2 }), "token-evidence", PROGRAM_ID),
+      "PROGRAM_INSTRUCTION",
+    );
   });
 });

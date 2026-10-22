@@ -93,10 +93,13 @@ describe("submitSettlementN input guards", () => {
       )[0].toBase58(),
     }));
     const [namespace] = findNamespacePda(programId, payerKey, namespaceIdFromLabel("a"));
+    // The types refuse both; plain JavaScript callers meet the runtime guard.
     expect(() =>
+      // @ts-expect-error program mode needs a namespace
       buildSettlementNTransaction({ payer: payerKey, request: valid, programId }),
     ).toThrow(expect.objectContaining({ code: "NAMESPACE_REQUIRED" }));
     expect(() =>
+      // @ts-expect-error a namespace needs a program
       buildSettlementNTransaction({ payer: payerKey, request: valid, namespace }),
     ).toThrow(expect.objectContaining({ code: "NAMESPACE_REQUIRED" }));
     // createNamespaceId must derive the namespace being settled in.
@@ -108,7 +111,7 @@ describe("submitSettlementN input guards", () => {
         namespace,
         createNamespaceId: namespaceIdFromLabel("b"),
       }),
-    ).toThrow(expect.objectContaining({ code: "NAMESPACE_REQUIRED" }));
+    ).toThrow(expect.objectContaining({ code: "NAMESPACE_ADDRESS" }));
   });
 
   test("rejects scaled totals beyond u64", async () => {

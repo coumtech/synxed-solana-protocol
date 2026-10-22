@@ -918,6 +918,12 @@ function findSettlementInstruction(
   const settlements = raw.filter(
     ({ instruction }) => instructionTag(instruction.data) !== CREATE_NAMESPACE_TAG,
   );
+  if (raw.length - settlements.length > 1) {
+    throw new LedgerError(
+      "PROGRAM_INSTRUCTION",
+      `expected at most one CreateNamespace beside the settlement for program ${programId.toBase58()}`,
+    );
+  }
   if (settlements.length !== 1) {
     throw new LedgerError(
       "PROGRAM_INSTRUCTION",
