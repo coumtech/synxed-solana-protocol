@@ -252,9 +252,10 @@ by compare-and-set (insert only if it has none) before sending; every run and
 retry reads it back instead of generating one, because two runs that each
 generate their own random id settle two different records and pay the event
 twice. The memo of every settlement publishes its application event id, so a
-guessable scheme is exposed by the first settlement. This stops guessing and enumeration; it
-does not stop an observer of the pending transaction, so prefer a private or
-trusted submission path (your own RPC node or a provider you trust).
+guessable scheme is exposed by the first settlement. This stops guessing and
+enumeration; it does not stop an observer of the pending transaction, so
+prefer a private or trusted submission path (your own RPC node or a provider
+you trust).
 
 Planned fix, before any mainnet deployment: bind each record to an integrator
 namespace whose authority must sign, for example a record derived from
@@ -328,20 +329,20 @@ bytes:
 | `evt_` and a UUID, same memo | 1,203 | too large | too large |
 | A 64-character id, same memo | 1,227 | too large | too large |
 
-The memo is JSON that carries the event id and `request.memo`, so what
-counts is their combined length. With plain ASCII text, six shares fit while
-the two together stay within 88 characters, and seven only while they stay
-within 11 (1,232 bytes, the limit, with an 11-character id and an empty
-memo). A 64-character id with a 30-character memo is already too large for
-six shares (1,238 bytes). The `USDC` label is 10 bytes shorter than
-`SPL_STABLECOIN`, a 43-character mint address is 1 byte shorter, and quotes,
-backslashes, control characters, and non-ASCII characters take more than one
-byte each. The table uses a 20,000 base-unit amount; every further digit of
-the amount or of the decimals, every character of `occurredAt` beyond 24, and
-any extra instruction, such as a priority fee, use the same margin. Without
-account creation each share costs 35 bytes, and eight shares fit in the same
-cases (931 to 1,013 bytes). web3.js refuses to serialize an oversized
-transaction, so nothing is sent. For seven or eight token shares, or a long event id or
+The memo is JSON that carries the event id and `request.memo`, so what counts
+is their combined length. With plain ASCII text, six shares fit while the two
+together stay within 88 characters, and seven only while they stay within 11
+(1,232 bytes, the limit, with an 11-character id and an empty memo). A
+64-character id with a 30-character memo is already too large for six shares
+(1,238 bytes). The `USDC` label is 10 bytes shorter than `SPL_STABLECOIN`, a
+43-character mint address is 1 byte shorter, and quotes, backslashes, control
+characters, and non-ASCII characters take more than one byte each. The table
+uses a 20,000 base-unit amount; every further digit of the amount or of the
+decimals, every character of `occurredAt` beyond 24, and any extra
+instruction, such as a priority fee, use the same margin. Without account
+creation each share costs 35 bytes, and eight shares fit in the same cases
+(931 to 1,013 bytes). web3.js refuses to serialize an oversized transaction,
+so nothing is sent. For seven or eight token shares, or a long event id or
 memo, create the recipient token accounts in a separate transaction first and
 build the settlement with `createRecipientAccounts: false`.
 
