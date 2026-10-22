@@ -72,4 +72,5 @@ this protocol.
 The payer wallet (the platform operator) is trusted to submit truthful
 events and amounts — the program verifies the *split*, not the *event*.
 Verifying event authenticity (oracles, attestation, reconciliation) is
-future work and out of scope here.
+future work and out of scope here. The full trust model, the on-chain checks,
+and the known limitations are in [security-model.md](security-model.md).

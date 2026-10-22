@@ -160,8 +160,8 @@ examples/gaming-payment-demo  CLI demo: fake impression -> devnet settlement
 tests/                        Bun test suite (SDK)
 programs/synxed-settlement/svm-tests
                               In-process SVM tests of the compiled program
-docs/                         architecture, protocol spec, integration guide,
-                              payout ledger proposal, demo script
+docs/                         architecture, protocol spec, security model,
+                              integration guide, payout ledger, demo script
 ```
 
 ## Scope and roadmap
@@ -205,6 +205,8 @@ docs/                         architecture, protocol spec, integration guide,
   standards
 - [SECURITY.md](SECURITY.md) — private vulnerability reporting; never
   commit keypairs or `.env`
+- [docs/security-model.md](docs/security-model.md): what the program
+  enforces, what integrators must check, and known limitations
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## License
