@@ -156,17 +156,18 @@ record, so settled events stay settled
 Before sending any settlement, persist its request together with its event id,
 its attempt number, and the parameters you built it with (program id,
 namespace, scale, and for tokens the mint and decimals), and keep that record
-permanently. A retry under the same event id resends that stored request
+permanently. A retry under the same event id resends the latest stored request
 unchanged. If a failure means the request itself must change (a frozen token
-account, or a share below the rent-exempt minimum for a new account), first
-wait until every transaction you signed for that event id has failed or its
-blockhash has expired, then store the changed request beside the old one and
-send it under the same event id. If you sign the transaction separately from
-sending it (`buildSettlementNTransaction`,
-`buildTokenSettlementNTransaction`), also persist its signature before
-sending. The `submit` functions, like a wallet's `sendTransaction`, sign and
-send in one call and return the signature only afterwards, so persist the
-request before calling them and the signature when they return.
+account, or a share below the rent-exempt minimum for a new account), store
+the changed request beside the old one and send it under the same event id,
+attempt number, program id, and namespace: the program settles at most one
+transaction per event id in a namespace, so the old and the changed request
+can never both pay. If you sign the transaction separately from sending it
+(`buildSettlementNTransaction`, `buildTokenSettlementNTransaction`), also
+persist its signature before sending. The `submit` functions, like a wallet's
+`sendTransaction`, sign and send in one call and return the signature only
+afterwards, so persist the request before calling them and the signature when
+they return.
 
 `AccountAlreadyInitialized` now means that your namespace's authority settled
 the event before: usually your own earlier attempt that landed after you
@@ -187,12 +188,12 @@ treated it as failed. Decide from the transaction that created the record:
    rows (`reconcileSettlementN`, `reconcileTokenSettlementN`), on both
    providers' copies. If one request matches on both, the event is paid:
    never settle it again, and write its ledger rows by reconciling the
-   transaction as usual, with your `beneficiaryIds`.
-3. If it fails with a field mismatch (`NAMESPACE_MISMATCH`, `EVENT_MISMATCH`,
-   `AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`,
+   transaction against the request that matched, with its `beneficiaryIds`.
+3. If each stored request fails with a field mismatch (`NAMESPACE_MISMATCH`,
+   `EVENT_MISMATCH`, `AMOUNT_MISMATCH`, `ASSET_MISMATCH`, `SHARES_MISMATCH`,
    `RECIPIENT_MISMATCH`, `TRANSFER_MISMATCH`, `MEMO_MISMATCH`,
-   `MEMO_MISSING`) on both providers' copies, or no stored request matches,
-   do not mark the event paid and do not settle it again: raise an incident,
+   `MEMO_MISSING`) on both providers' copies, or none is stored, do not mark
+   the event paid and do not settle it again: raise an incident,
    because your authority key or your own system settled something you did
    not record. Rotate the authority if the key may be exposed.
 4. Anything else is unresolved: the transaction is not finalized or cannot be
