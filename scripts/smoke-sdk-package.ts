@@ -358,8 +358,10 @@ function main(): void {
   try {
     // 1 and 2. Obtain the tarball and inspect its contents.
     const tarball = obtainTarball(work);
-    // The file list first: a duplicate package.json would make the manifest
-    // ambiguous, so it must be refused before the manifest is read.
+    // The file list first: a duplicate package.json that tar can see would
+    // make the manifest ambiguous, so it is refused before the manifest is
+    // read. One that only npm's tar reader sees is refused by the publish
+    // job's check, which runs before anything is installed.
     const files = tarballFiles(tarball);
     if (new Set(files).size !== files.length) {
       fail("tarball contains duplicate entries");

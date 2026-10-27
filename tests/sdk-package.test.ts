@@ -1,6 +1,6 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,8 +16,9 @@ import {
 } from "../scripts/build-sdk-package.ts";
 
 // Several tests spawn the smoke script or node; give them room on a loaded
-// machine (their own child processes time out at 60 seconds).
-setDefaultTimeout(60_000);
+// machine. Their own child processes time out at 60 seconds, so a hung child
+// reports its own error before the test itself times out.
+setDefaultTimeout(90_000);
 
 // The published manifest is generated from sdk/typescript/package.json by
 // scripts/build-sdk-package.ts. These tests pin the rules that keep the npm
@@ -319,31 +320,81 @@ describe("release configuration stays consistent", () => {
     ]);
   });
 
-  // An `if`, `continue-on-error`, `shell`, or an extra step would neutralize
-  // the check without touching its commands, so the job's shape is pinned.
-  test("the publish job's steps and their settings are exactly these", () => {
+  // Any change to the publish job (an `if`, `continue-on-error`, an env
+  // variable such as NODE_OPTIONS, a line in another step, a missing `needs`)
+  // could neutralize the check, so the whole job is pinned. The check script
+  // itself is replaced by a placeholder here; the tests below run it.
+  test("the publish job is exactly this", () => {
     const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
-    const job: unknown = Reflect.get(Reflect.get(parsed ?? {}, "jobs") ?? {}, "publish");
-    expect(Object.keys(job ?? {}).sort()).toEqual([
-      "environment", "if", "name", "needs", "permissions", "runs-on", "steps", "timeout-minutes",
-    ]);
-    const steps: unknown = Reflect.get(job ?? {}, "steps");
-    expect(Array.isArray(steps)).toBe(true);
-    const shape = (Array.isArray(steps) ? steps : []).map((step: unknown) => [
-      String(Reflect.get(step ?? {}, "name")),
-      Object.keys(step ?? {}).sort().join(","),
-    ]);
-    expect(shape).toEqual([
-      ["Require main", "name,run"],
-      ["Setup Node", "name,uses,with"],
-      ["Check npm supports staged trusted publishing", "name,run"],
-      ["Download the tarball", "name,uses,with"],
-      [PUBLISH_CHECK_STEP, "env,name,run"],
-      ["Stage on npm", "env,name,run"],
-    ]);
-    for (const step of Array.isArray(steps) ? steps : []) {
-      expect(String(Reflect.get(step ?? {}, "run") ?? "")).not.toMatch(/GITHUB_ENV|GITHUB_PATH/);
+    expect(Object.keys(parsed ?? {}).sort()).toEqual(["concurrency", "env", "jobs", "name", "on", "permissions"]);
+    expect(Reflect.get(parsed ?? {}, "env")).toEqual({
+      PACKAGE_NAME,
+      NODE_VERSION: "24.22.0",
+    });
+    const job = JSON.parse(JSON.stringify(Reflect.get(Reflect.get(parsed ?? {}, "jobs") ?? {}, "publish")));
+    for (const step of job.steps) {
+      if (step.name === PUBLISH_CHECK_STEP) {
+        step.run = step.run.replace(publishCheckScript(), "<check.cjs>\n");
+      }
     }
+    expect(job).toEqual({
+      "name": "publish",
+      "needs": [
+        "package",
+        "verify"
+      ],
+      "if": "${{ inputs.publish }}",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "environment": "npm-publish",
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "steps": [
+        {
+          "name": "Require main",
+          "run": "if [ \"$GITHUB_REF\" != \"refs/heads/main\" ]; then\n  echo \"Releases are only allowed from main (this run is on $GITHUB_REF).\"\n  exit 1\nfi\n"
+        },
+        {
+          "name": "Setup Node",
+          "uses": "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
+          "with": {
+            "node-version": "${{ env.NODE_VERSION }}",
+            "package-manager-cache": false,
+            "registry-url": "https://registry.npmjs.org"
+          }
+        },
+        {
+          "name": "Check npm supports staged trusted publishing",
+          "run": "npm --version\nnode -e 'const [a, b] = process.argv[1].split(\".\").map(Number); if (a < 11 || (a === 11 && b < 15)) { console.error(\"npm 11.15.0 or later is required for npm stage\"); process.exit(1); }' \"$(npm --version)\"\n"
+        },
+        {
+          "name": "Download the tarball",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "sdk-tarball",
+            "path": "${{ runner.temp }}/sdk-tarball"
+          }
+        },
+        {
+          "name": "Check the sha256, the file names, and the manifest",
+          "env": {
+            "TARBALL": "${{ runner.temp }}/sdk-tarball/${{ needs.package.outputs.tarball }}",
+            "EXPECTED": "${{ needs.package.outputs.sha256 }}",
+            "VERSION": "${{ needs.package.outputs.version }}"
+          },
+          "run": "actual=$(sha256sum \"$TARBALL\" | cut -d' ' -f1)\nif [ \"$actual\" != \"$EXPECTED\" ]; then\n  echo \"sha256 mismatch: packed $EXPECTED, downloaded $actual\"\n  exit 1\nfi\n# --ignore-zeros reads past a lone zero block, as npm's own tar reader\n# does, so entries hidden behind one are seen (and refused) here too.\n# The check script then reads the tarball again with the tar library\n# npm itself resolves, which must see exactly the same entries and\n# package.json bytes.\ntar --ignore-zeros -tzf \"$TARBALL\" > \"$RUNNER_TEMP/entries.txt\"\ntar --ignore-zeros -tvzf \"$TARBALL\" | cut -c1 > \"$RUNNER_TEMP/types.txt\"\ncat > \"$RUNNER_TEMP/check.cjs\" <<'CHECK'\n<check.cjs>\nCHECK\nnode \"$RUNNER_TEMP/check.cjs\" \"$RUNNER_TEMP/entries.txt\" \"$RUNNER_TEMP/types.txt\" \"$TARBALL\" \"$(npm root -g)/npm\"\n"
+        },
+        {
+          "name": "Stage on npm",
+          "env": {
+            "TARBALL": "${{ runner.temp }}/sdk-tarball/${{ needs.package.outputs.tarball }}"
+          },
+          "run": "npm stage publish --provenance --access public \"$TARBALL\""
+        }
+      ]
+    });
   });
 
   test("the check script is read from the publish job's step, and only there", () => {
@@ -363,6 +414,14 @@ describe("release configuration stays consistent", () => {
     );
     expect(expression).not.toBe(real);
     expect(() => publishCheckScript(expression)).toThrow("GitHub expression");
+    // A folded block parses differently across YAML parsers. The publish
+    // job's check step is the last one that starts this way.
+    const literal = "        run: |\n          actual=$(sha256sum";
+    const at = real.lastIndexOf(literal);
+    expect(at).toBeGreaterThan(real.indexOf(`      - name: ${PUBLISH_CHECK_STEP}`));
+    const folded = `${real.slice(0, at)}        run: >${real.slice(at + "        run: |".length)}`;
+    expect(folded).not.toBe(real);
+    expect(() => publishCheckScript(folded)).toThrow("literal block");
   });
 
   test("CI tests the minimum Node version the package declares", () => {
@@ -615,6 +674,7 @@ describe("publish job tarball check", () => {
         [join(dir, "check.cjs"), join(dir, "entries.txt"), join(dir, "types.txt"), tarball, npmDir],
         {
           encoding: "utf8",
+          timeout: 60_000,
           env: { ...env, HOME: home, PACKAGE_NAME, VERSION: String(workspace.version), ...extraEnv },
         },
       );
@@ -801,7 +861,71 @@ exports.t = (options) => {
         NODE_PATH: join(npmDirectory, "node_modules"),
       });
       expect(result.status).not.toBe(0);
-      expect(result.output).not.toContain("files checked");
+      expect(result.output).toContain("npm's tar library resolves outside npm");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses a tar library in a sibling directory whose name extends npm's", () => {
+    // NODE_PATH points at <dir>-x/node_modules, which starts with <dir>.
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-sibling-"));
+    const sibling = `${dir}-x`;
+    try {
+      mkdirSync(join(dir, "node_modules", "pacote"), { recursive: true });
+      mkdirSync(join(sibling, "node_modules", "tar"), { recursive: true });
+      writeFileSync(
+        join(sibling, "node_modules", "tar", "index.js"),
+        `module.exports = require(${JSON.stringify(npmTarLibrary)});\n`,
+      );
+      const result = runCheck({}, [], dir, [], undefined, { NODE_PATH: join(sibling, "node_modules") });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("npm's tar library resolves outside npm");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts npm's directory reached through a symbolic link", () => {
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-link-"));
+    try {
+      mkdirSync(join(dir, "real", "node_modules", "pacote"), { recursive: true });
+      mkdirSync(join(dir, "real", "node_modules", "tar"));
+      writeFileSync(
+        join(dir, "real", "node_modules", "tar", "index.js"),
+        `module.exports = require(${JSON.stringify(npmTarLibrary)});\n`,
+      );
+      symlinkSync(join(dir, "real"), join(dir, "link"));
+      const result = runCheck({}, [], join(dir, "link"));
+      expect(result.output).toContain("files checked");
+      expect(result.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses pacote linked from outside npm's directory, as pacote would read its own neighbour", () => {
+    // pacote really lives in <dir>/outside, next to a tar of its own; npm's
+    // directory only links to it. At run time pacote loads the tar beside its
+    // real location, which is not npm's.
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-pacote-link-"));
+    try {
+      mkdirSync(join(dir, "outside", "node_modules", "pacote"), { recursive: true });
+      mkdirSync(join(dir, "outside", "node_modules", "tar"));
+      writeFileSync(
+        join(dir, "outside", "node_modules", "tar", "index.js"),
+        `module.exports = require(${JSON.stringify(npmTarLibrary)});\n`,
+      );
+      mkdirSync(join(dir, "npm", "node_modules", "tar"), { recursive: true });
+      writeFileSync(
+        join(dir, "npm", "node_modules", "tar", "index.js"),
+        `module.exports = require(${JSON.stringify(npmTarLibrary)});\n`,
+      );
+      symlinkSync(join(dir, "outside", "node_modules", "pacote"), join(dir, "npm", "node_modules", "pacote"));
+      const result = runCheck({}, [], join(dir, "npm"));
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("npm's tar library resolves outside npm");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
