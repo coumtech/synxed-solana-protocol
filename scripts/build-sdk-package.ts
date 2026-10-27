@@ -42,8 +42,10 @@ const CHECK_OPENER = `cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'`;
  * Reads the workflow as YAML, takes the `run` block of the publish job's check
  * step, and cuts the heredoc the way bash does: the lines after the opener up
  * to the first line that is exactly `CHECK`. Refuses a workflow where the
- * opener appears more than once, or where the body holds a `${{ }}`
- * expression that GitHub would substitute only in the job.
+ * opener appears more than once, where the step's `run` is not a literal (`|`)
+ * block whose raw text matches the parsed value (YAML parsers disagree on
+ * folded blocks), or where the body holds a `${{ }}` expression that GitHub
+ * would substitute only in the job.
  */
 export function publishCheckScript(
   text = readFileSync(join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"), "utf8"),
@@ -54,6 +56,9 @@ export function publishCheckScript(
   const run = publishJobStep(text, PUBLISH_CHECK_STEP).run;
   if (typeof run !== "string") {
     throw new Error(`the "${PUBLISH_CHECK_STEP}" step has no run block`);
+  }
+  if (rawRunBlock(text, PUBLISH_CHECK_STEP) !== run.replace(/\n+$/, "")) {
+    throw new Error(`the "${PUBLISH_CHECK_STEP}" step's run must be a literal block that parses as written`);
   }
   const lines = run.split("\n");
   const start = lines.indexOf(CHECK_OPENER);
@@ -66,6 +71,37 @@ export function publishCheckScript(
     throw new Error("check.cjs must not contain a GitHub expression");
   }
   return `${body}\n`;
+}
+
+/**
+ * The text of a step's `run: |` block as it stands in the file: the lines after
+ * `run: |`, with the block's ten-space indentation removed, up to the next
+ * line indented less. Throws unless the step has exactly one such literal
+ * block.
+ */
+function rawRunBlock(text: string, name: string): string {
+  const lines = text.split("\n");
+  const header = lines.indexOf(`      - name: ${name}`);
+  if (header === -1 || lines.indexOf(`      - name: ${name}`, header + 1) !== -1) {
+    throw new Error(`publish-sdk.yml must have exactly one "${name}" step`);
+  }
+  let end = header + 1;
+  while (end < lines.length && (lines[end] === "" || lines[end].startsWith("        "))) {
+    end += 1;
+  }
+  const step = lines.slice(header + 1, end);
+  const runs = step.filter((line) => /^ {8}run:/.test(line));
+  if (runs.length !== 1 || runs[0] !== "        run: |") {
+    throw new Error(`the "${name}" step's run must be a single literal block (run: |)`);
+  }
+  const block: string[] = [];
+  for (const line of step.slice(step.indexOf("        run: |") + 1)) {
+    if (line !== "" && !line.startsWith(" ".repeat(10))) {
+      break;
+    }
+    block.push(line.slice(10));
+  }
+  return block.join("\n").replace(/\n+$/, "");
 }
 
 /** A step of the publish job, by name, from the workflow's YAML. */
