@@ -41,15 +41,20 @@ const CHECK_OPENER = `cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'`;
  * The publish job's tarball check, `check.cjs`, exactly as the job writes it.
  * Reads the workflow as YAML, takes the `run` block of the publish job's check
  * step, and cuts the heredoc the way bash does: the lines after the opener up
- * to the first line that is exactly `CHECK`. Refuses a workflow where the
- * opener appears more than once, where the step's `run` is not a literal (`|`)
- * block whose raw text matches the parsed value (YAML parsers disagree on
- * folded blocks), or where the body holds a `${{ }}` expression that GitHub
- * would substitute only in the job.
+ * to the first line that is exactly `CHECK`. Refuses a workflow that is not
+ * printable ASCII with LF line endings (GitHub's YAML parser breaks lines at
+ * NEL, LS, PS and CR, where Bun's and JavaScript's do not), where the opener
+ * appears more than once, where the step's `run` is not a literal (`|`) block
+ * whose raw text matches the parsed value (YAML parsers disagree on folded
+ * blocks), or where the body holds a `${{ }}` expression that GitHub would
+ * substitute only in the job.
  */
 export function publishCheckScript(
   text = readFileSync(join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"), "utf8"),
 ): string {
+  if (/[^\n\x20-\x7e]/.test(text)) {
+    throw new Error("publish-sdk.yml must be printable ASCII with LF line endings");
+  }
   if (text.split(CHECK_OPENER).length !== 2) {
     throw new Error("publish-sdk.yml must write check.cjs exactly once");
   }
@@ -74,19 +79,34 @@ export function publishCheckScript(
 }
 
 /**
- * The text of a step's `run: |` block as it stands in the file: the lines after
- * `run: |`, with the block's ten-space indentation removed, up to the next
- * line indented less. Throws unless the step has exactly one such literal
- * block.
+ * The text of a publish job step's `run: |` block as it stands in the file:
+ * the lines after `run: |`, with the block's ten-space indentation removed,
+ * up to the next line indented less. Only the publish job's own lines are
+ * searched, so a step of the same name elsewhere cannot stand in for it.
+ * Throws unless the step has exactly one such literal block.
  */
 function rawRunBlock(text: string, name: string): string {
-  const lines = text.split("\n");
+  const all = text.split("\n");
+  const job = all.indexOf("  publish:");
+  if (job === -1 || all.indexOf("  publish:", job + 1) !== -1) {
+    throw new Error("publish-sdk.yml must have exactly one publish job");
+  }
+  let jobEnd = job + 1;
+  while (jobEnd < all.length && !/^ {0,2}\S/.test(all[jobEnd])) {
+    jobEnd += 1;
+  }
+  const lines = all.slice(job + 1, jobEnd);
   const header = lines.indexOf(`      - name: ${name}`);
   if (header === -1 || lines.indexOf(`      - name: ${name}`, header + 1) !== -1) {
-    throw new Error(`publish-sdk.yml must have exactly one "${name}" step`);
+    throw new Error(`the publish job must have exactly one "${name}" step`);
   }
+  // A comment line, at any indentation, does not end the step for YAML, so
+  // it does not end it here: a second run key after one is still seen.
   let end = header + 1;
-  while (end < lines.length && (lines[end] === "" || lines[end].startsWith("        "))) {
+  while (
+    end < lines.length &&
+    (lines[end] === "" || lines[end].startsWith("        ") || /^\s*#/.test(lines[end]))
+  ) {
     end += 1;
   }
   const step = lines.slice(header + 1, end);
