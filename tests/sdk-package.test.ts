@@ -323,7 +323,10 @@ describe("release configuration stays consistent", () => {
   // Any change to the publish job (an `if`, `continue-on-error`, an env
   // variable such as NODE_OPTIONS, a line in another step, a missing `needs`)
   // could neutralize the check, so the whole job is pinned. The check script
-  // itself is replaced by a placeholder here; the tests below run it.
+  // itself is replaced by a placeholder here; the tests below run it. This
+  // includes the action SHAs: a Dependabot bump of setup-node or
+  // download-artifact fails here until a person updates the pin, which is the
+  // review the credentialed job deserves.
   test("the publish job is exactly this", () => {
     const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
     expect(Object.keys(parsed ?? {}).sort()).toEqual(["concurrency", "env", "jobs", "name", "on", "permissions"]);
@@ -421,7 +424,119 @@ describe("release configuration stays consistent", () => {
     expect(at).toBeGreaterThan(real.indexOf(`      - name: ${PUBLISH_CHECK_STEP}`));
     const folded = `${real.slice(0, at)}        run: >${real.slice(at + "        run: |".length)}`;
     expect(folded).not.toBe(real);
-    expect(() => publishCheckScript(folded)).toThrow("literal block");
+    expect(() => publishCheckScript(folded)).toThrow("single literal block (run: |)");
+    // Chomping and indentation indicators parse to the same script here, so
+    // only the header check refuses them.
+    for (const header of ["|-", "|+", "|2"]) {
+      const variant = `${real.slice(0, at)}        run: ${header}${real.slice(at + "        run: |".length)}`;
+      expect(String(Reflect.get(publishJobStep(variant, PUBLISH_CHECK_STEP), "run")).replace(/\n+$/, "")).toBe(
+        String(Reflect.get(publishJobStep(real, PUBLISH_CHECK_STEP), "run")).replace(/\n+$/, ""),
+      );
+      expect(() => publishCheckScript(variant)).toThrow("single literal block (run: |)");
+    }
+  });
+
+  // The check step's run block, as raw lines, and the text around it.
+  function splitCheckStep(text: string): { before: string; header: string; block: string[]; after: string } {
+    const header = `      - name: ${PUBLISH_CHECK_STEP}\n`;
+    const start = text.indexOf(header);
+    const run = text.indexOf("        run: |\n", start) + "        run: |\n".length;
+    const next = text.indexOf("\n      - name: ", run);
+    return {
+      before: text.slice(0, start),
+      header: text.slice(start, run),
+      block: text.slice(run, next).split("\n"),
+      after: text.slice(next),
+    };
+  }
+
+  test("refuses a workflow that is not printable ASCII with LF line endings", () => {
+    const real = workflow("publish-sdk.yml");
+    // NEL ends a line for GitHub's YAML parser but not for Bun's or for
+    // JavaScript, so this comment would become a heredoc terminator in the job.
+    const anchor = '          const fs = require("node:fs");\n';
+    for (const character of ["\u0085", "\u2028", "\u2029", "\r", "\t", "\ufeff"]) {
+      const injected = real.replace(
+        anchor,
+        `${anchor}          // a comment${character}          CHECK${character}          cat > /dev/null <<'CHECK'\n`,
+      );
+      expect(injected).not.toBe(real);
+      expect(() => publishCheckScript(injected)).toThrow("printable ASCII");
+    }
+  });
+
+  test("refuses a run block whose raw text differs from its parsed value", () => {
+    // Indented deeper than ten spaces, the block still parses to the same
+    // script, but its raw lines do not: only the raw-equals-parsed check
+    // refuses it.
+    const real = workflow("publish-sdk.yml");
+    const step = splitCheckStep(real);
+    const deeper = step.block.map((line) => (line === "" ? line : `  ${line}`)).join("\n");
+    const indented = `${step.before}${step.header}${deeper}${step.after}`;
+    expect(indented).not.toBe(real);
+    expect(Reflect.get(publishJobStep(indented, PUBLISH_CHECK_STEP), "run")).toBe(
+      Reflect.get(publishJobStep(real, PUBLISH_CHECK_STEP), "run"),
+    );
+    expect(() => publishCheckScript(indented)).toThrow("parses as written");
+  });
+
+  test("reads a blank line inside the check script", () => {
+    const real = workflow("publish-sdk.yml");
+    const anchor = '          const fs = require("node:fs");\n';
+    const spaced = real.replace(anchor, `${anchor}\n`);
+    expect(spaced).not.toBe(real);
+    expect(publishCheckScript(spaced)).toBe(publishCheckScript(real).replace(
+      'const fs = require("node:fs");\n',
+      'const fs = require("node:fs");\n\n',
+    ));
+  });
+
+  test("refuses a check step with two run keys, or a second step of its name", () => {
+    const real = workflow("publish-sdk.yml");
+    const step = splitCheckStep(real);
+    // A repeated key with the same value: Bun keeps the last, GitHub refuses
+    // the file. The second copy is double-quoted with its opener escaped, so
+    // only the count of run keys can refuse it.
+    const run = String(Reflect.get(publishJobStep(real, PUBLISH_CHECK_STEP), "run"));
+    const quotedRun = JSON.stringify(run).replaceAll("<<'CHECK'", "\\x3c\\x3c'CHECK'");
+    // Directly after the block, and after the comment lines that follow it.
+    const afterContent = step.block.length -
+      [...step.block].reverse().findIndex((line) => line.startsWith(" ".repeat(10)));
+    expect(afterContent).toBeLessThan(step.block.length);
+    for (const at of [afterContent, step.block.length]) {
+      const lines = [...step.block.slice(0, at), `        run: ${quotedRun}`, ...step.block.slice(at)];
+      const twice = `${step.before}${step.header}${lines.join("\n")}${step.after}`;
+      expect(Reflect.get(publishJobStep(twice, PUBLISH_CHECK_STEP), "run")).toBe(run);
+      expect(() => publishCheckScript(twice)).toThrow("single literal block");
+    }
+    const repeated = real.replace(
+      "\n      - name: Stage on npm\n",
+      `\n      - name: ${PUBLISH_CHECK_STEP}\n        run: echo\n      - name: Stage on npm\n`,
+    );
+    expect(repeated).not.toBe(real);
+    expect(() => publishCheckScript(repeated)).toThrow("exactly one");
+  });
+
+  test("does not read a step of the same name from another job", () => {
+    // The real step is written with a quoted name and a double-quoted run
+    // (its opener escaped), and a never-run copy in the verify job carries
+    // the plain header and the literal block. The raw text must come from
+    // the publish job itself.
+    const real = workflow("publish-sdk.yml");
+    const step = splitCheckStep(real);
+    const run = String(Reflect.get(publishJobStep(real, PUBLISH_CHECK_STEP), "run"));
+    const quotedRun = JSON.stringify(run).replaceAll("<<'CHECK'", "\\x3c\\x3c'CHECK'");
+    const quotedHeader = step.header
+      .replace(`      - name: ${PUBLISH_CHECK_STEP}`, `      - name: "${PUBLISH_CHECK_STEP}"`)
+      .replace("        run: |\n", `        run: ${quotedRun}\n`);
+    const disguised = `${step.before}${quotedHeader}${step.after.slice(1)}`;
+    const decoy = disguised.replace(
+      "\n      - name: Smoke-test the exact tarball\n",
+      `\n      - name: ${PUBLISH_CHECK_STEP}\n        if: false\n        run: |\n${step.block.join("\n")}\n      - name: Smoke-test the exact tarball\n`,
+    );
+    expect(decoy).not.toBe(disguised);
+    expect(Reflect.get(publishJobStep(decoy, PUBLISH_CHECK_STEP), "run")).toBe(run);
+    expect(() => publishCheckScript(decoy)).toThrow("exactly one");
   });
 
   test("CI tests the minimum Node version the package declares", () => {
@@ -475,6 +590,7 @@ describe("smoke test against a given tarball", () => {
     // which its own listing hides but npm's tar reader sees as files.
     const tar = spawnSync("tar", ["-czf", tarball, "-C", dir, ...entries], {
       env: { ...process.env, COPYFILE_DISABLE: "1" },
+      timeout: 60_000,
     });
     expect(tar.status).toBe(0);
     return { dir, tarball };
@@ -657,8 +773,8 @@ describe("publish job tarball check", () => {
       writeFileSync(tarball, Bun.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)])));
       inspect?.(tarball);
       // The same two listings the workflow step writes.
-      const entries = spawnSync("tar", ["--ignore-zeros", "-tzf", tarball], { encoding: "utf8" }).stdout;
-      const types = spawnSync("tar", ["--ignore-zeros", "-tvzf", tarball], { encoding: "utf8" })
+      const entries = spawnSync("tar", ["--ignore-zeros", "-tzf", tarball], { encoding: "utf8", timeout: 60_000 }).stdout;
+      const types = spawnSync("tar", ["--ignore-zeros", "-tvzf", tarball], { encoding: "utf8", timeout: 60_000 })
         .stdout.split("\n")
         .filter((line) => line !== "")
         .map((line) => line.charAt(0))
@@ -887,6 +1003,25 @@ exports.t = (options) => {
     }
   });
 
+  test("refuses a tar library in a directory whose name extends npm's node_modules", () => {
+    // NODE_PATH points at <dir>/node_modules-x, which starts with
+    // <dir>/node_modules but is outside it: the guard needs the separator.
+    const dir = mkdtempSync(join(tmpdir(), "synxed-npm-separator-"));
+    try {
+      mkdirSync(join(dir, "node_modules", "pacote"), { recursive: true });
+      mkdirSync(join(dir, "node_modules-x", "tar"), { recursive: true });
+      writeFileSync(
+        join(dir, "node_modules-x", "tar", "index.js"),
+        `module.exports = require(${JSON.stringify(npmTarLibrary)});\n`,
+      );
+      const result = runCheck({}, [], dir, [], undefined, { NODE_PATH: join(dir, "node_modules-x") });
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("npm's tar library resolves outside npm");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("accepts npm's directory reached through a symbolic link", () => {
     const dir = mkdtempSync(join(tmpdir(), "synxed-npm-link-"));
     try {
@@ -947,7 +1082,7 @@ exports.t = (options) => {
             npmTarLibrary,
             tarball,
           ],
-          { encoding: "utf8" },
+          { encoding: "utf8", timeout: 60_000 },
         );
         chunks = Number(counted.stdout.trim());
       },
