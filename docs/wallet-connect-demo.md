@@ -21,8 +21,8 @@ reference devnet program and the public devnet RPC; nothing in the bundle is
 secret. To use it you need a Solana wallet: a Wallet Standard browser wallet
 (Phantom, Solflare, and others) or Solflare's web wallet, switched to
 **devnet** (Phantom: Settings → Developer Settings →
-Testnet Mode, then choose Solana Devnet) and funded from <https://faucet.solana.com> (about 0.022 SOL is
-spent per settlement). On an iPhone, open the page inside your wallet app's
+Testnet Mode, then choose Solana Devnet) and funded from <https://faucet.solana.com> (a settlement
+spends about 0.021 SOL, and a wallet's first one about 0.022 SOL). On an iPhone, open the page inside your wallet app's
 built-in browser; on Android, Chrome hands off to an installed wallet app
 through Mobile Wallet Adapter. Evidence of a successful settlement stays in
 your browser's local storage only.
@@ -51,11 +51,13 @@ bun run demo:wallet
 ```
 
 Open the printed local URL in a browser with a Solana wallet, switch that
-wallet to **devnet**, and fund it from the Solana devnet faucet. The example
-requires approximately 0.022 SOL: 0.020 SOL for the reference split, settlement
-record rent, and the transaction fee, plus the namespace's rent once, on the
-wallet's first settlement (0.00114808 SOL on devnet on 21 October 2026; the
-demo asks the cluster for the current figure).
+wallet to **devnet**, and fund it from the Solana devnet faucet. Before it asks
+for a signature, the demo checks that the wallet holds the 0.020 SOL reference
+split, the settlement record's rent, the transaction fee, and the wallet's own
+rent-exempt minimum, which stays in the wallet. That is about 0.0215 SOL on
+devnet (28 October 2026). The wallet's first settlement also opens its
+namespace and pays that account's rent once, about 0.0227 SOL in all. The demo
+asks the cluster for each rent figure, so these can change.
 
 The recipient fields are intentionally visible and editable. Public demo
 addresses are prefilled so the flow is reproducible; replace them with devnet

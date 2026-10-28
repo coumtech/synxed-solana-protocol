@@ -16,11 +16,9 @@ const DEFAULT_RPC = "https://api.devnet.solana.com";
 const DEFAULT_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
 const AMOUNT_ATOMIC = 20_000n;
 const UNITS_PER_ATOMIC = 1_000n;
-// Rent for the 41-byte settlement record plus fees.
-const FUNDING_OVERHEAD = 1_200_000n;
-// Size of a namespace account; its rent is paid once, on the wallet's first
-// settlement, and asked from the cluster.
-const NAMESPACE_ACCOUNT_SIZE = 98;
+// The fee for one signature, with room to spare. Rent figures are asked from
+// the cluster, which can change them.
+const FEE_MARGIN = 10_000n;
 // Each wallet settles in its own namespace under this label, so nobody else
 // can claim one of its event ids.
 const NAMESPACE_LABEL = "synxed-wallet-demo";
@@ -115,6 +113,8 @@ export function App(): React.JSX.Element {
       setRun({ status: "working", message: "Validating the four-way settlement…" });
       const [
         {
+          NAMESPACE_ACCOUNT_SIZE,
+          SETTLEMENT_RECORD_SIZE,
           buildSettlementNTransaction,
           fetchNamespace,
           findNamespacePda,
@@ -158,11 +158,21 @@ export function App(): React.JSX.Element {
         ...(existing === null ? { createNamespaceId: namespaceId } : {}),
       });
       const balance = BigInt(await connection.getBalance(publicKey, "confirmed"));
-      const namespaceRent =
+      // The split, the record's rent, the namespace's rent the first time,
+      // and the fee; the wallet must also keep its own rent-exempt minimum.
+      const [recordRent, namespaceRent, walletMinimum] = await Promise.all([
+        connection.getMinimumBalanceForRentExemption(SETTLEMENT_RECORD_SIZE),
         existing === null
-          ? BigInt(await connection.getMinimumBalanceForRentExemption(NAMESPACE_ACCOUNT_SIZE))
-          : 0n;
-      const required = prepared.lamportsTotal + FUNDING_OVERHEAD + namespaceRent;
+          ? connection.getMinimumBalanceForRentExemption(NAMESPACE_ACCOUNT_SIZE)
+          : Promise.resolve(0),
+        connection.getMinimumBalanceForRentExemption(0),
+      ]);
+      const required =
+        prepared.lamportsTotal +
+        BigInt(recordRent) +
+        BigInt(namespaceRent) +
+        BigInt(walletMinimum) +
+        FEE_MARGIN;
       if (balance < required) {
         throw new Error(
           `Wallet needs at least ${formatSol(required)} SOL on devnet; current balance is ${formatSol(balance)} SOL. Fund it at faucet.solana.com.`,
@@ -422,7 +432,7 @@ function persistEvidence(
   try {
     localStorage.setItem(
       `synxed:settlement-evidence:v2:${signature}`,
-      JSON.stringify({ version: 1, reconciliation }),
+      JSON.stringify({ version: 2, reconciliation }),
     );
   } catch {
     // Display remains authoritative even when private browsing blocks storage.

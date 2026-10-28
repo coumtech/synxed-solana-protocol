@@ -155,14 +155,17 @@ async function main(): Promise<void> {
   await ensureFunds(connection, payer, lamportsTotal + fundingOverhead(programId));
   const namespace =
     programId !== undefined ? await demoNamespace(connection, payer, programId) : undefined;
+  // Built as one value so the pair type-checks with or without
+  // exactOptionalPropertyTypes; spreading the two keys separately does not.
+  const programMode =
+    programId !== undefined && namespace !== undefined ? { programId, namespace } : {};
 
   const submission = await submitSettlementN({
     connection,
     payer,
     request,
     lamportsPerAtomicUnit: scale,
-    ...(programId !== undefined ? { programId } : {}),
-    ...(namespace !== undefined ? { namespace } : {}),
+    ...programMode,
   });
 
   console.log(`\nSettled on devnet (${submission.mode} mode, ${shares.length}-way)`);
