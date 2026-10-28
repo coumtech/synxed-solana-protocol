@@ -663,7 +663,8 @@ fn rotation_needs_the_new_authority_to_sign() {
         .expect_err("the new authority must sign");
     assert!(err.contains("MissingRequiredSignature"), "got {err}");
 
-    // The namespace's own address: a key nobody can sign for.
+    // The case the rule exists for: the namespace's own address, which nobody
+    // can sign for. The same signature check refuses it.
     let mut unsignable =
         f.set_namespace_authority_instruction(&payer.pubkey(), namespace, namespace);
     unsignable.accounts[2].is_signer = false;
@@ -903,27 +904,47 @@ fn opening_a_prefunded_namespace_still_needs_the_payer_to_sign() {
     assert!(err.contains("MissingRequiredSignature"), "got {err}");
 }
 
+/// `CreateNamespace` takes exactly four accounts and `SetNamespaceAuthority`
+/// exactly three: one more or one fewer is refused before anything else.
 #[test]
 fn namespace_instructions_take_exact_account_lists() {
     let mut f = Fixture::new();
     let payer = f.payer.insecure_clone();
-    let mut open = f.create_namespace_instruction(&payer, &payer, [15u8; 32], payer.pubkey());
-    open.accounts
+    let open = f.create_namespace_instruction(&payer, &payer, [15u8; 32], payer.pubkey());
+    let mut longer = open.clone();
+    longer
+        .accounts
         .push(AccountMeta::new(Pubkey::new_unique(), false));
-    let err = f
-        .send(&[open], &[&payer], &payer.pubkey())
-        .expect_err("an extra account is refused");
-    assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+    let mut shorter = open;
+    shorter.accounts.pop();
+    for ix in [longer, shorter] {
+        let err = f
+            .send(&[ix], &[&payer], &payer.pubkey())
+            .expect_err("a different account count is refused");
+        assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+    }
 
     let new = Keypair::new();
     let namespace = f.namespace;
-    let mut rotate =
-        f.set_namespace_authority_instruction(&payer.pubkey(), namespace, new.pubkey());
-    rotate
+    let rotate = f.set_namespace_authority_instruction(&payer.pubkey(), namespace, new.pubkey());
+    let mut longer = rotate.clone();
+    longer
         .accounts
         .push(AccountMeta::new(Pubkey::new_unique(), false));
-    let err = f
-        .send(&[rotate], &[&payer, &new], &payer.pubkey())
-        .expect_err("an extra account is refused");
-    assert!(err.contains("NotEnoughAccountKeys"), "got {err}");
+    let mut shorter = rotate;
+    shorter.accounts.pop();
+    let (err_longer, err_shorter) = (
+        f.send(&[longer], &[&payer, &new], &payer.pubkey())
+            .expect_err("an extra account is refused"),
+        f.send(&[shorter], &[&payer], &payer.pubkey())
+            .expect_err("a missing account is refused"),
+    );
+    assert!(
+        err_longer.contains("NotEnoughAccountKeys"),
+        "got {err_longer}"
+    );
+    assert!(
+        err_shorter.contains("NotEnoughAccountKeys"),
+        "got {err_shorter}"
+    );
 }

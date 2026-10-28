@@ -3,7 +3,8 @@
 
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::rent::Rent;
-use solana_sdk::signature::Signer;
+use solana_sdk::signature::{Keypair, Signer};
+use solana_system_interface::program::ID as SYSTEM_PROGRAM_ID;
 use synxed_settlement_svm_tests::{event, Fixture, AMOUNT, BPS, FEE, RECORD_SIZE};
 
 const REWARDS_BPS: [u16; 4] = [3_500, 3_500, 2_000, 1_000];
@@ -193,8 +194,24 @@ fn skips_zero_lamport_shares_without_touching_new_accounts() {
     let mut f = Fixture::new();
     let idle = Pubkey::new_unique();
     let recipients = [f.artist, f.studio, idle];
-    f.settle_n(event(40), AMOUNT, &[6_000, 4_000, 0], &recipients)
+    let record = f.record_pda(&event(40));
+    let ix = f.settle_n_instruction(event(40), AMOUNT, &[6_000, 4_000, 0], &recipients, record);
+    let signers = f.settlement_signers();
+    let refs: Vec<&Keypair> = signers.iter().collect();
+    let payer = f.payer.pubkey();
+    let inner = f
+        .send_traced(&[ix], &refs, &payer)
         .expect("zero share is allowed");
+    // Every system transfer (tag 2, then the lamports): the record's rent,
+    // then one per nonzero share. A 0-lamport transfer to the idle share would
+    // leave no account behind, but reconciliation refuses the evidence.
+    let transfers: Vec<u64> = inner
+        .iter()
+        .filter(|(program, data)| *program == SYSTEM_PROGRAM_ID && data[..4] == 2u32.to_le_bytes())
+        .map(|(_, data)| u64::from_le_bytes(data[4..12].try_into().expect("lamports")))
+        .collect();
+    let rent = Rent::default().minimum_balance(RECORD_SIZE);
+    assert_eq!(transfers, vec![rent, 12_000_000, 8_000_000]);
     assert_eq!(f.balance(&f.artist), 12_000_000);
     assert_eq!(f.balance(&f.studio), 8_000_000);
     assert!(

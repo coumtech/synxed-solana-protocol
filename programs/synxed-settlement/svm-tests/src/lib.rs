@@ -337,25 +337,30 @@ impl Fixture {
     }
 
     /// Send a transaction; returns Ok(()) or the debug-formatted error.
+    /// Sign `ixs` against a fresh blockhash, so byte-identical retries are
+    /// not deduplicated as "already processed" before the program runs.
+    fn signed(
+        &mut self,
+        ixs: &[Instruction],
+        signers: &[&Keypair],
+        fee_payer: &Pubkey,
+    ) -> Transaction {
+        self.svm.expire_blockhash();
+        Transaction::new_signed_with_payer(
+            ixs,
+            Some(fee_payer),
+            signers,
+            self.svm.latest_blockhash(),
+        )
+    }
+
     pub fn send(
         &mut self,
         ixs: &[Instruction],
         signers: &[&Keypair],
         fee_payer: &Pubkey,
     ) -> Result<(), String> {
-        // Each send gets a fresh blockhash so byte-identical retries are not
-        // deduplicated as "already processed" before the program runs.
-        self.svm.expire_blockhash();
-        let tx = Transaction::new_signed_with_payer(
-            ixs,
-            Some(fee_payer),
-            signers,
-            self.svm.latest_blockhash(),
-        );
-        self.svm
-            .send_transaction(tx)
-            .map(|_| ())
-            .map_err(|failed| format!("{:?}", failed.err))
+        self.send_logged(ixs, signers, fee_payer).0
     }
 
     /// Like `send`, but also returns the transaction's log lines, whether it
@@ -366,13 +371,7 @@ impl Fixture {
         signers: &[&Keypair],
         fee_payer: &Pubkey,
     ) -> (Result<(), String>, Vec<String>) {
-        self.svm.expire_blockhash();
-        let tx = Transaction::new_signed_with_payer(
-            ixs,
-            Some(fee_payer),
-            signers,
-            self.svm.latest_blockhash(),
-        );
+        let tx = self.signed(ixs, signers, fee_payer);
         match self.svm.send_transaction(tx) {
             Ok(meta) => (Ok(()), meta.logs),
             Err(failed) => (Err(format!("{:?}", failed.err)), failed.meta.logs),
@@ -387,13 +386,7 @@ impl Fixture {
         signers: &[&Keypair],
         fee_payer: &Pubkey,
     ) -> Result<Vec<(Pubkey, Vec<u8>)>, String> {
-        self.svm.expire_blockhash();
-        let tx = Transaction::new_signed_with_payer(
-            ixs,
-            Some(fee_payer),
-            signers,
-            self.svm.latest_blockhash(),
-        );
+        let tx = self.signed(ixs, signers, fee_payer);
         let keys = tx.message.account_keys.clone();
         self.svm
             .send_transaction(tx)
