@@ -101,7 +101,7 @@ describe("submitSettlementN input guards", () => {
     expect(() =>
       // @ts-expect-error a namespace needs a program
       buildSettlementNTransaction({ payer: payerKey, request: valid, namespace }),
-    ).toThrow(expect.objectContaining({ code: "NAMESPACE_REQUIRED" }));
+    ).toThrow(expect.objectContaining({ code: "PROGRAM_ID_REQUIRED" }));
     // createNamespaceId must derive the namespace being settled in.
     expect(() =>
       buildSettlementNTransaction({

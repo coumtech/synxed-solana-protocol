@@ -15,11 +15,14 @@ import {
   eventIdSeed,
   fetchLegacySettlementRecord,
   fetchNamespace,
+  fetchSettlementRecord,
   findLegacySettlementRecordPda,
   findNamespacePda,
+  findSettlementRecordPda,
   namespaceIdFromLabel,
   submitSettlement,
   submitSettlementN,
+  submitTokenSettlementN,
   type ProtocolErrorCode,
   type SettlementRequest,
   type SettlementRequestN,
@@ -183,30 +186,76 @@ describe("submitting in a namespace", () => {
     expect(settle?.data[0]).toBe(5);
     expect(settle?.data[41]).toBe(3);
     expect(settle?.keys).toHaveLength(3 + 5);
+    expect(settle?.keys[1].pubkey.equals(authority.publicKey)).toBe(true);
+    expect(settle?.keys[1].isSigner).toBe(true);
     expect(settle?.keys[2].pubkey.equals(namespace)).toBe(true);
-    expect(sent[0].signers).toHaveLength(2);
+    expect(sent[0].signers.map((signer) => signer.toBase58())).toEqual([
+      payer.publicKey.toBase58(),
+      authority.publicKey.toBase58(),
+    ]);
+  });
+
+  test("submitTokenSettlementN signs with a separate authority and names it", async () => {
+    const authority = Keypair.generate();
+    const sent: Sent[] = [];
+    await submitTokenSettlementN({
+      connection: stubConnection(new Map(), sent),
+      payer,
+      request: { ...requestN(), asset: "SPL_STABLECOIN" },
+      mint: key("mint"),
+      decimals: 6,
+      programId: PROGRAM_ID,
+      namespace,
+      authority,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].signers.map((signer) => signer.toBase58())).toEqual([
+      payer.publicKey.toBase58(),
+      authority.publicKey.toBase58(),
+    ]);
+    const settle = sent[0].transaction.instructions.find((instruction) =>
+      instruction.programId.equals(PROGRAM_ID),
+    );
+    expect(settle?.data[0]).toBe(6);
+    expect(settle?.keys[1].pubkey.equals(authority.publicKey)).toBe(true);
+    expect(settle?.keys[1].isSigner).toBe(true);
+    expect(settle?.keys[2].pubkey.equals(namespace)).toBe(true);
   });
 
   test("submitSettlement and submitSettlementN refuse a half-configured program mode", async () => {
-    const connection = stubConnection(new Map());
+    const sent: Sent[] = [];
+    const connection = stubConnection(new Map(), sent);
     // Plain JavaScript callers bypass the types; the guards still refuse.
+    // Without them, a stray namespace or authority would settle by plain
+    // transfers, which no on-chain record guards against repeating.
     const loose = (options: object) => options as never;
+    for (const submit of [
+      () => submitSettlement(loose({ connection, payer, request: request3(), programId: PROGRAM_ID })),
+      () => submitSettlementN(loose({ connection, payer, request: requestN(), programId: PROGRAM_ID })),
+    ]) {
+      await expectCode(submit(), "NAMESPACE_REQUIRED");
+    }
+    for (const submit of [
+      () => submitSettlement(loose({ connection, payer, request: request3(), namespace })),
+      () => submitSettlement(loose({ connection, payer, request: request3(), authority: payer })),
+      () => submitSettlementN(loose({ connection, payer, request: requestN(), namespace })),
+      () => submitSettlementN(loose({ connection, payer, request: requestN(), authority: payer })),
+    ]) {
+      await expectCode(submit(), "PROGRAM_ID_REQUIRED");
+    }
+    expect(sent).toHaveLength(0);
+  });
+
+  test("the guards also catch a loosely typed config that type-checks", async () => {
+    // A spread of an optional `namespace` passes the type checker, so the
+    // runtime guard is the real enforcement. No cast is used here.
+    const sent: Sent[] = [];
+    const config: { programId: PublicKey; namespace?: PublicKey } = { programId: PROGRAM_ID };
     await expectCode(
-      submitSettlement(loose({ connection, payer, request: request3(), programId: PROGRAM_ID })),
+      submitSettlementN({ connection: stubConnection(new Map(), sent), payer, request: requestN(), ...config }),
       "NAMESPACE_REQUIRED",
     );
-    await expectCode(
-      submitSettlement(loose({ connection, payer, request: request3(), namespace })),
-      "NAMESPACE_REQUIRED",
-    );
-    await expectCode(
-      submitSettlementN(loose({ connection, payer, request: requestN(), programId: PROGRAM_ID })),
-      "NAMESPACE_REQUIRED",
-    );
-    await expectCode(
-      submitSettlementN(loose({ connection, payer, request: requestN(), authority: payer })),
-      "NAMESPACE_REQUIRED",
-    );
+    expect(sent).toHaveLength(0);
   });
 });
 
@@ -249,12 +298,12 @@ describe("buildSettlementNTransaction in a namespace", () => {
   test("refuses an authority or a namespace to open without a program", () => {
     expectSyncCode(
       () => buildSettlementNTransaction(loose({ payer, request: requestN(), authority: payer })),
-      "NAMESPACE_REQUIRED",
+      "PROGRAM_ID_REQUIRED",
     );
     expectSyncCode(
       () =>
         buildSettlementNTransaction(loose({ payer, request: requestN(), createNamespaceId: NAMESPACE_ID })),
-      "NAMESPACE_REQUIRED",
+      "PROGRAM_ID_REQUIRED",
     );
   });
 });
@@ -305,9 +354,133 @@ describe("fetchNamespace and ensureNamespace", () => {
         namespaceId: NAMESPACE_ID,
         create: false,
       }),
-      "NAMESPACE_ACCOUNT",
+      "NAMESPACE_MISSING",
     );
     expect(sent).toHaveLength(0);
+  });
+
+  test("a deposit at the namespace address does not block opening it", async () => {
+    // Anyone can send lamports to the address first. The program opens a
+    // namespace there all the same, so the SDK must not treat it as taken.
+    const funded = new Map([[address.toBase58(), account(SYSTEM_PROGRAM, Buffer.alloc(0))]]);
+    expect(await fetchNamespace(stubConnection(funded), PROGRAM_ID, address)).toBeNull();
+    const sent: Sent[] = [];
+    const ensured = await ensureNamespace({
+      connection: stubConnection(funded, sent),
+      payer,
+      programId: PROGRAM_ID,
+      namespaceId: NAMESPACE_ID,
+    });
+    expect(ensured.created).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].transaction.instructions[0].data[0]).toBe(3);
+  });
+
+  test("ensureNamespace checks a pinned address before anything else", async () => {
+    const sent: Sent[] = [];
+    await expectCode(
+      ensureNamespace({
+        connection: stubConnection(new Map(), sent),
+        payer,
+        programId: PROGRAM_ID,
+        namespaceId: NAMESPACE_ID,
+        expectedAddress: key("pinned elsewhere"),
+      }),
+      "NAMESPACE_ADDRESS",
+    );
+    expect(sent).toHaveLength(0);
+  });
+
+  test("ensureNamespace finds a namespace another creator opened, and never opens one for it", async () => {
+    // A replaced hot payer: the namespace's creator is the old payer key.
+    const creator = Keypair.generate().publicKey;
+    const pinned = findNamespacePda(PROGRAM_ID, creator, NAMESPACE_ID)[0];
+    const accounts = new Map([[pinned.toBase58(), account(PROGRAM_ID, namespaceData(creator, payer.publicKey))]]);
+    const ensured = await ensureNamespace({
+      connection: stubConnection(accounts),
+      payer,
+      programId: PROGRAM_ID,
+      namespaceId: NAMESPACE_ID,
+      creator,
+      expectedAddress: pinned,
+      create: false,
+    });
+    expect(ensured.address.equals(pinned)).toBe(true);
+    expect(ensured.created).toBe(false);
+    const sent: Sent[] = [];
+    await expectCode(
+      ensureNamespace({
+        connection: stubConnection(new Map(), sent),
+        payer,
+        programId: PROGRAM_ID,
+        namespaceId: NAMESPACE_ID,
+        creator,
+      }),
+      "NAMESPACE_MISSING",
+    );
+    expect(sent).toHaveLength(0);
+  });
+
+  test("ensureNamespace opens the namespace with a separate authority, at the payer's address", async () => {
+    const authority = Keypair.generate().publicKey;
+    const sent: Sent[] = [];
+    const ensured = await ensureNamespace({
+      connection: stubConnection(new Map(), sent),
+      payer,
+      programId: PROGRAM_ID,
+      namespaceId: NAMESPACE_ID,
+      authority,
+    });
+    const create = sent[0].transaction.instructions[0];
+    expect(new PublicKey(create.data.subarray(33, 65)).equals(authority)).toBe(true);
+    expect(create.keys[2].pubkey.equals(address)).toBe(true);
+    expect(ensured.address.equals(address)).toBe(true);
+    expect(ensured.authority.equals(authority)).toBe(true);
+    expect(sent[0].signers.map((signer) => signer.toBase58())).toEqual([payer.publicKey.toBase58()]);
+  });
+
+  test("ensureNamespace accepts an existing namespace whose authority is the one asked for", async () => {
+    const authority = Keypair.generate().publicKey;
+    const accounts = new Map([[address.toBase58(), account(PROGRAM_ID, namespaceData(payer.publicKey, authority))]]);
+    const sent: Sent[] = [];
+    const ensured = await ensureNamespace({
+      connection: stubConnection(accounts, sent),
+      payer,
+      programId: PROGRAM_ID,
+      namespaceId: NAMESPACE_ID,
+      authority,
+    });
+    expect(ensured.created).toBe(false);
+    expect(ensured.authority.equals(authority)).toBe(true);
+    expect(sent).toHaveLength(0);
+  });
+
+  test("ensureNamespace refuses a namespace another run opened with another authority", async () => {
+    const accounts = new Map<string, AccountInfo<Buffer>>();
+    const connection = stubConnection(accounts, [], () => {
+      accounts.set(address.toBase58(), account(PROGRAM_ID, namespaceData(payer.publicKey, key("someone"))));
+      throw new Error("AccountAlreadyInitialized");
+    });
+    await expectCode(
+      ensureNamespace({ connection, payer, programId: PROGRAM_ID, namespaceId: NAMESPACE_ID }),
+      "NAMESPACE_AUTHORITY",
+    );
+  });
+
+  test("ensureNamespace reports the send error when nothing was opened", async () => {
+    const failure = new Error("blockhash not found");
+    for (const accounts of [
+      new Map<string, AccountInfo<Buffer>>(),
+      // A deposit at the address is still not a namespace.
+      new Map([[address.toBase58(), account(SYSTEM_PROGRAM, Buffer.alloc(0))]]),
+    ]) {
+      const connection = stubConnection(accounts, [], () => {
+        throw failure;
+      });
+      await expect(
+        ensureNamespace({ connection, payer, programId: PROGRAM_ID, namespaceId: NAMESPACE_ID }),
+      ).rejects.toBe(failure);
+    }
   });
 
   test("ensureNamespace accepts a namespace another run opened first", async () => {
@@ -322,33 +495,73 @@ describe("fetchNamespace and ensureNamespace", () => {
   });
 });
 
+function recordData(eventSeed: Uint8Array): Buffer {
+  const data = Buffer.alloc(41);
+  data[0] = 1;
+  data.set(eventSeed, 1);
+  data.writeBigUInt64LE(20_000_000n, 33);
+  return data;
+}
+
+describe("fetchSettlementRecord", () => {
+  const seed = eventIdSeed("evt_in_a_namespace");
+  const namespace = findNamespacePda(PROGRAM_ID, key("creator"), NAMESPACE_ID)[0];
+  const [address] = findSettlementRecordPda(PROGRAM_ID, namespace, seed);
+
+  test("reports a record the program owns for this event", async () => {
+    const accounts = new Map([[address.toBase58(), account(PROGRAM_ID, recordData(seed))]]);
+    const found = await fetchSettlementRecord(stubConnection(accounts), PROGRAM_ID, namespace, seed);
+    expect(found?.address.equals(address)).toBe(true);
+    expect(found?.amount).toBe(20_000_000n);
+  });
+
+  test("returns null for no account and for a plain transfer to the address", async () => {
+    expect(await fetchSettlementRecord(stubConnection(new Map()), PROGRAM_ID, namespace, seed)).toBeNull();
+    // Anyone can send lamports to the address; that proves nothing.
+    const funded = new Map([[address.toBase58(), account(SYSTEM_PROGRAM, Buffer.alloc(0))]]);
+    expect(await fetchSettlementRecord(stubConnection(funded), PROGRAM_ID, namespace, seed)).toBeNull();
+  });
+
+  test("refuses anything else at the address", async () => {
+    const cases = [
+      account(PROGRAM_ID, recordData(eventIdSeed("evt_other"))),
+      account(PROGRAM_ID, recordData(seed).subarray(0, 40)),
+      account(PROGRAM_ID, Buffer.from([2, ...recordData(seed).subarray(1)])),
+      account(key("another program"), recordData(seed)),
+      account(SYSTEM_PROGRAM, recordData(seed)),
+    ];
+    for (const found of cases) {
+      const accounts = new Map([[address.toBase58(), found]]);
+      await expectCode(
+        fetchSettlementRecord(stubConnection(accounts), PROGRAM_ID, namespace, seed),
+        "SETTLEMENT_RECORD",
+      );
+    }
+  });
+});
+
 describe("fetchLegacySettlementRecord", () => {
   const seed = eventIdSeed("evt_before_namespaces");
   const [address] = findLegacySettlementRecordPda(PROGRAM_ID, seed);
-  const record = (eventSeed: Uint8Array): Buffer => {
-    const data = Buffer.alloc(41);
-    data[0] = 1;
-    data.set(eventSeed, 1);
-    data.writeBigUInt64LE(20_000_000n, 33);
-    return data;
-  };
 
   test("reports a record the program owns for this event", async () => {
-    const accounts = new Map([[address.toBase58(), account(PROGRAM_ID, record(seed))]]);
+    const accounts = new Map([[address.toBase58(), account(PROGRAM_ID, recordData(seed))]]);
     const found = await fetchLegacySettlementRecord(stubConnection(accounts), PROGRAM_ID, seed);
     expect(found?.address.equals(address)).toBe(true);
     expect(found?.amount).toBe(20_000_000n);
   });
 
-  test("ignores nothing and a plain transfer to the address", async () => {
+  test("returns null for no account and for a plain transfer to the address", async () => {
     expect(await fetchLegacySettlementRecord(stubConnection(new Map()), PROGRAM_ID, seed)).toBeNull();
     // Anyone can send lamports to the address; that proves nothing.
     const funded = new Map([[address.toBase58(), account(SYSTEM_PROGRAM, Buffer.alloc(0))]]);
     expect(await fetchLegacySettlementRecord(stubConnection(funded), PROGRAM_ID, seed)).toBeNull();
   });
 
-  test("refuses a program-owned account that is not this event's record", async () => {
-    const other = new Map([[address.toBase58(), account(PROGRAM_ID, record(eventIdSeed("evt_other")))]]);
+  test("refuses an account that is not this event's record", async () => {
+    const other = new Map([[address.toBase58(), account(PROGRAM_ID, recordData(eventIdSeed("evt_other")))]]);
     await expectCode(fetchLegacySettlementRecord(stubConnection(other), PROGRAM_ID, seed), "LEGACY_RECORD");
+    const foreign = new Map([[address.toBase58(), account(key("another program"), recordData(seed))]]);
+    await expectCode(fetchLegacySettlementRecord(stubConnection(foreign), PROGRAM_ID, seed), "LEGACY_RECORD");
   });
 });

@@ -36,6 +36,7 @@ import {
   eventIdSeed,
   findLegacySettlementRecordPda,
   findNamespacePda,
+  findSettlementRecordPda,
   type NamespaceAccount,
   SETTLEMENT_RECORD_DISCRIMINATOR,
   SETTLEMENT_RECORD_SIZE,
@@ -54,7 +55,12 @@ import {
 
 // Re-exported so the `./client` entry point alone can open and address a
 // namespace (the wallet demo loads only this module and `./ledger`).
-export { findNamespacePda, namespaceIdFromLabel } from "./instruction.ts";
+export {
+  NAMESPACE_ACCOUNT_SIZE,
+  SETTLEMENT_RECORD_SIZE,
+  findNamespacePda,
+  namespaceIdFromLabel,
+} from "./instruction.ts";
 
 export const DEVNET_RPC_URL = "https://api.devnet.solana.com";
 
@@ -207,6 +213,14 @@ export interface EnsureNamespaceOptions {
    * an error, never something to open silently.
    */
   create?: boolean;
+  /**
+   * The namespace's creator, when it is not this payer (for example after
+   * the payer key was replaced). Only the creator can open a namespace, so a
+   * missing namespace with another creator is an error.
+   */
+  creator?: PublicKey;
+  /** The pinned namespace address; a different derived address is an error. */
+  expectedAddress?: PublicKey;
 }
 
 export interface EnsuredNamespace {
@@ -221,12 +235,15 @@ export interface EnsuredNamespace {
   signature: string | null;
 }
 
-/** A settlement record that a retired instruction (tags 0 to 2) created. */
-export interface LegacySettlementRecord {
+/** A settlement record read from the chain. */
+export interface SettlementRecordAccount {
   address: PublicKey;
   /** The gross amount the record stores, in on-chain units. */
   amount: bigint;
 }
+
+/** A settlement record that a retired instruction (tags 0 to 2) created. */
+export type LegacySettlementRecord = SettlementRecordAccount;
 
 export interface PreparedTokenSettlementN {
   transaction: Transaction;
@@ -255,8 +272,10 @@ export function explorerAddressUrl(
 }
 
 /**
- * Read a namespace account. Returns null when the address holds no account,
- * and throws when it holds something other than a namespace of `programId`.
+ * Read a namespace account. Returns null when the namespace does not exist:
+ * no account at the address, or only lamports someone sent to it (the program
+ * opens a namespace at a pre-funded address all the same). Throws when the
+ * address holds anything else that is not a namespace of `programId`.
  */
 export async function fetchNamespace(
   connection: Connection,
@@ -264,7 +283,7 @@ export async function fetchNamespace(
   address: PublicKey,
 ): Promise<FetchedNamespace | null> {
   const account = await connection.getAccountInfo(address, "confirmed");
-  if (account === null) {
+  if (account === null || isPlainSystemAccount(account)) {
     return null;
   }
   if (!account.owner.equals(programId)) {
@@ -284,11 +303,14 @@ export async function ensureNamespace(
   options: EnsureNamespaceOptions,
 ): Promise<EnsuredNamespace> {
   const authority = options.authority ?? options.payer.publicKey;
-  const [address] = findNamespacePda(
-    options.programId,
-    options.payer.publicKey,
-    options.namespaceId,
-  );
+  const creator = options.creator ?? options.payer.publicKey;
+  const [address] = findNamespacePda(options.programId, creator, options.namespaceId);
+  if (options.expectedAddress !== undefined && !options.expectedAddress.equals(address)) {
+    throw new ProtocolError(
+      "NAMESPACE_ADDRESS",
+      `the namespace derives to ${address.toBase58()}, not the pinned ${options.expectedAddress.toBase58()}`,
+    );
+  }
   const expectAuthority = (found: FetchedNamespace): PublicKey => {
     if (!found.authority.equals(authority)) {
       throw new ProtocolError(
@@ -304,8 +326,14 @@ export async function ensureNamespace(
   }
   if (options.create === false) {
     throw new ProtocolError(
-      "NAMESPACE_ACCOUNT",
+      "NAMESPACE_MISSING",
       `namespace ${address.toBase58()} does not exist, and create is false`,
+    );
+  }
+  if (!creator.equals(options.payer.publicKey)) {
+    throw new ProtocolError(
+      "NAMESPACE_MISSING",
+      `namespace ${address.toBase58()} does not exist, and only its creator can open it`,
     );
   }
   const transaction = new Transaction().add(
@@ -323,7 +351,13 @@ export async function ensureNamespace(
     return { address, authority, created: true, signature };
   } catch (error) {
     // Another run may have opened it first; that is fine if it matches.
-    const raced = await fetchNamespace(options.connection, options.programId, address);
+    // Otherwise the send error is the one worth reporting.
+    let raced: FetchedNamespace | null;
+    try {
+      raced = await fetchNamespace(options.connection, options.programId, address);
+    } catch {
+      throw error;
+    }
     if (raced === null) {
       throw error;
     }
@@ -332,15 +366,33 @@ export async function ensureNamespace(
 }
 
 /**
+ * The record that marks `eventSeed` as settled in `namespace`, or null when
+ * the event is not settled there. Only an account this program owns that
+ * holds this event's record counts: anyone can send lamports to the address,
+ * so an account merely existing there proves nothing. A record means the
+ * namespace's authority settled the event; reconcile its creating transaction
+ * (`findSettlementTransaction`) before treating the event as paid.
+ */
+export async function fetchSettlementRecord(
+  connection: Connection,
+  programId: PublicKey,
+  namespace: PublicKey,
+  eventSeed: Uint8Array,
+): Promise<SettlementRecordAccount | null> {
+  const [address] = findSettlementRecordPda(programId, namespace, eventSeed);
+  return readSettlementRecord(connection, programId, address, eventSeed, "SETTLEMENT_RECORD");
+}
+
+/**
  * The record a retired instruction (tags 0 to 2) created for `eventSeed`, or
  * null when there is none. Only an account this program owns that holds this
  * event's record counts: anyone can send lamports to the address, so an
- * account merely existing there proves nothing. A record means the event was
- * settled before namespaces, possibly by someone else to wallets of their
- * choosing (the old program let anyone settle any event id), so compare its
- * creating transaction's recipients by hand before treating the event as
- * paid. Check it before retrying any event first attempted before the
- * upgrade to namespaces.
+ * account merely existing there proves nothing. Confirm a null with a second
+ * RPC provider before settling an event first attempted before namespaces.
+ * A record means the event was settled before namespaces, possibly by
+ * someone else to wallets of their choosing (the old program let anyone
+ * settle any event id); docs/integration.md, "Upgrading from the retired
+ * instructions", gives the decision for each case.
  */
 export async function fetchLegacySettlementRecord(
   connection: Connection,
@@ -348,24 +400,40 @@ export async function fetchLegacySettlementRecord(
   eventSeed: Uint8Array,
 ): Promise<LegacySettlementRecord | null> {
   const [address] = findLegacySettlementRecordPda(programId, eventSeed);
+  return readSettlementRecord(connection, programId, address, eventSeed, "LEGACY_RECORD");
+}
+
+async function readSettlementRecord(
+  connection: Connection,
+  programId: PublicKey,
+  address: PublicKey,
+  eventSeed: Uint8Array,
+  code: "SETTLEMENT_RECORD" | "LEGACY_RECORD",
+): Promise<SettlementRecordAccount | null> {
   const account = await connection.getAccountInfo(address, "confirmed");
-  if (account === null || !account.owner.equals(programId)) {
+  if (account === null || isPlainSystemAccount(account)) {
     return null;
   }
   const data = Uint8Array.from(account.data);
-  const sameEvent = data.length === SETTLEMENT_RECORD_SIZE &&
+  const sameEvent = account.owner.equals(programId) &&
+    data.length === SETTLEMENT_RECORD_SIZE &&
     data[0] === SETTLEMENT_RECORD_DISCRIMINATOR &&
     data.slice(1, 33).every((byte, index) => byte === eventSeed[index]);
   if (!sameEvent) {
     throw new ProtocolError(
-      "LEGACY_RECORD",
-      `${address.toBase58()} is owned by the program but is not this event's record`,
+      code,
+      `${address.toBase58()} holds something other than this event's settlement record`,
     );
   }
   return {
     address,
     amount: new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(33, true),
   };
+}
+
+// Lamports sent to an address leave a system-owned account with no data.
+function isPlainSystemAccount(account: { owner: PublicKey; data: Uint8Array }): boolean {
+  return account.owner.equals(SystemProgram.programId) && account.data.length === 0;
 }
 
 /** Settle a three-way request through `SettleN` (or system transfers). */
@@ -389,13 +457,8 @@ export async function submitSettlement(
     memoInstruction(request, lamportsTotal),
   );
   let mode: SettlementMode;
+  refuseProgramOptionsWithoutProgram(options);
   if (options.programId === undefined) {
-    if (options.namespace !== undefined || options.authority !== undefined) {
-      throw new ProtocolError(
-        "NAMESPACE_REQUIRED",
-        "namespace and authority apply only with a programId",
-      );
-    }
     mode = "system-transfer";
     addTransfers(
       transaction,
@@ -449,12 +512,7 @@ export async function submitSettlementN(
       ? { lamportsPerAtomicUnit: options.lamportsPerAtomicUnit }
       : {}),
   };
-  if (options.programId === undefined && (options.namespace !== undefined || options.authority !== undefined)) {
-    throw new ProtocolError(
-      "NAMESPACE_REQUIRED",
-      "namespace and authority apply only with a programId",
-    );
-  }
+  refuseProgramOptionsWithoutProgram(options);
   const prepared = buildSettlementNTransaction(
     options.programId === undefined
       ? base
@@ -502,13 +560,8 @@ export function buildSettlementNTransaction(
   );
 
   const transaction = new Transaction();
-  if (options.createNamespaceId !== undefined) {
-    if (options.programId === undefined) {
-      throw new ProtocolError(
-        "NAMESPACE_REQUIRED",
-        "createNamespaceId needs a programId",
-      );
-    }
+  refuseProgramOptionsWithoutProgram(options);
+  if (options.createNamespaceId !== undefined && options.programId !== undefined) {
     const authority = options.authority ?? options.payer;
     const [derived] = findNamespacePda(
       options.programId,
@@ -531,12 +584,6 @@ export function buildSettlementNTransaction(
   transaction.add(memoInstruction(request, lamportsTotal));
   let mode: SettlementMode;
   if (options.programId === undefined) {
-    if (options.namespace !== undefined || options.authority !== undefined) {
-      throw new ProtocolError(
-        "NAMESPACE_REQUIRED",
-        "namespace and authority apply only with a programId",
-      );
-    }
     mode = "system-transfer";
     addTransfers(
       transaction,
@@ -768,6 +815,30 @@ function addTransfers(
       );
     }
   });
+}
+
+/**
+ * The types tie these options to a programId, but a spread or plain
+ * JavaScript can pass them without one. Refuse that instead of settling by
+ * plain transfers, which no on-chain record guards against repeating.
+ */
+function refuseProgramOptionsWithoutProgram(options: {
+  programId?: PublicKey | undefined;
+  namespace?: PublicKey | undefined;
+  authority?: unknown;
+  createNamespaceId?: Uint8Array | undefined;
+}): void {
+  if (
+    options.programId === undefined &&
+    (options.namespace !== undefined ||
+      options.authority !== undefined ||
+      options.createNamespaceId !== undefined)
+  ) {
+    throw new ProtocolError(
+      "PROGRAM_ID_REQUIRED",
+      "namespace, authority and createNamespaceId apply only with a programId",
+    );
+  }
 }
 
 function requireNamespace(namespace: PublicKey | undefined): PublicKey {

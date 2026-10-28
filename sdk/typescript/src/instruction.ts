@@ -109,9 +109,10 @@ export function findSettlementRecordPda(
  * Address of the record a retired instruction (tags 0 to 2) created for an
  * event id: `["settlement", event_id]`. Those records stay on chain after the
  * program moves to namespaces, but a namespaced settlement uses a different
- * address, so it does not see them. Before retrying an event first attempted
- * before namespaces, check that no account exists here: if one does, the
- * event was already settled and must not be settled again.
+ * address, so it does not see them. Anyone can send lamports to this address,
+ * so an account merely existing there proves nothing: check it with
+ * `fetchLegacySettlementRecord`, which requires a program-owned record for
+ * the event.
  */
 export function findLegacySettlementRecordPda(
   programId: PublicKey,

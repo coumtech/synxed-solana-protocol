@@ -1,13 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
+import {
+  PublicKey,
+  type ConfirmedSignatureInfo,
+  type Connection,
+  type ParsedTransactionWithMeta,
+} from "@solana/web3.js";
 import {
   LedgerError,
   allocatePoolPayout,
   assertLedgerCluster,
   encodeSettleNData,
   eventIdSeed,
+  findLegacySettlementTransaction,
   findNamespacePda,
   findSettlementRecordPda,
+  findSettlementTransaction,
   namespaceIdFromLabel,
   observeProgramSettlement,
   reconcileObservedSettlementN,
@@ -270,6 +277,23 @@ describe("ledger reconciliation", () => {
     }
   });
 
+  test("refuses a CreateNamespace for a namespace other than the settlement's", () => {
+    const createOther = {
+      accounts: [new PublicKey(PAYER), new PublicKey(PAYER), otherNamespace, SYSTEM_PROGRAM],
+      data: base58(Uint8Array.from([3, ...new Uint8Array(32), ...new PublicKey(PAYER).toBytes()])),
+      programId: PROGRAM_ID,
+    };
+    expectLedgerCode(
+      () =>
+        observeProgramSettlement(
+          parsedSettlement(settleNAccounts(), settleNData, observation().memo, [createOther]),
+          "fixture-signature",
+          PROGRAM_ID,
+        ),
+      "PROGRAM_INSTRUCTION",
+    );
+  });
+
   test("refuses a record that is not derived from the namespace in the instruction", () => {
     expectLedgerCode(
       () =>
@@ -437,5 +461,229 @@ describe("ledger reconciliation", () => {
       2_000_000n,
     );
     expect(entries[0].entryId).not.toBe(entries[1].entryId);
+  });
+
+  describe("finding the transaction that created a record", () => {
+    interface HistoryEntry {
+      signature: string;
+      err: unknown;
+      transaction: ParsedTransactionWithMeta | null;
+    }
+
+    function signed(transaction: ParsedTransactionWithMeta, signature: string): ParsedTransactionWithMeta {
+      return {
+        ...transaction,
+        transaction: { ...transaction.transaction, signatures: [signature] },
+      } as ParsedTransactionWithMeta;
+    }
+
+    // A plain lamport transfer to the record address, which anyone can send.
+    function deposit(signature: string, destination: string): ParsedTransactionWithMeta {
+      return {
+        slot: 491_725_000,
+        blockTime: 1_788_310_000,
+        transaction: {
+          signatures: [signature],
+          message: {
+            accountKeys: [],
+            recentBlockhash: "fixture",
+            instructions: [{
+              parsed: { info: { destination, lamports: 890_880, source: PAYER }, type: "transfer" },
+              program: "system",
+              programId: SYSTEM_PROGRAM,
+            }],
+          },
+        },
+        meta: { err: null, innerInstructions: [] },
+      } as unknown as ParsedTransactionWithMeta;
+    }
+
+    /** Answers the two history calls from `history`, newest first, and logs them. */
+    function historyConnection(
+      history: readonly HistoryEntry[],
+      calls: { address: string; limit: number; before?: string; commitment?: string }[] = [],
+    ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransaction"> {
+      return {
+        getSignaturesForAddress: async (address, options, commitment) => {
+          const limit = options?.limit ?? 1_000;
+          const start = options?.before === undefined
+            ? 0
+            : history.findIndex((entry) => entry.signature === options.before) + 1;
+          calls.push({
+            address: address.toBase58(),
+            limit,
+            ...(options?.before !== undefined ? { before: options.before } : {}),
+            ...(commitment !== undefined ? { commitment } : {}),
+          });
+          return history.slice(start, start + limit).map((entry, index) => ({
+            signature: entry.signature,
+            slot: 491_725_036 - start - index,
+            err: entry.err,
+            memo: null,
+            blockTime: null,
+          })) as ConfirmedSignatureInfo[];
+        },
+        getParsedTransaction: async (signature: string) =>
+          history.find((entry) => entry.signature === signature)?.transaction ?? null,
+      } as Pick<Connection, "getSignaturesForAddress" | "getParsedTransaction">;
+    }
+
+    const settlement = (signature: string) =>
+      signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), signature);
+
+    test("finds the one settlement among a failed retry and a deposit", async () => {
+      const calls: { address: string; limit: number; before?: string; commitment?: string }[] = [];
+      const found = await findSettlementTransaction({
+        connection: historyConnection(
+          [
+            { signature: "failed-retry", err: { InstructionError: [1, { Custom: 0 }] }, transaction: null },
+            { signature: "settled", err: null, transaction: settlement("settled") },
+            { signature: "deposit", err: null, transaction: deposit("deposit", RECORD) },
+          ],
+          calls,
+        ),
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        eventId: EVENT_ID,
+      });
+      expect(found).toEqual({ signature: "settled", slot: 491_725_036, topLevel: true });
+      expect(calls).toEqual([{ address: RECORD, limit: 1_000, commitment: "finalized" }]);
+    });
+
+    test("finds a settlement another program invoked, and says so", async () => {
+      const invoked = signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), "invoked");
+      const message = invoked.transaction.message;
+      const settle = message.instructions.at(-1);
+      // A multisig program's instruction stands where the settlement was, and
+      // the settlement runs inside it. Any other program id stands in for it.
+      const multisig = { accounts: [], data: "1", programId: new PublicKey(RECIPIENTS[0]) };
+      const wrapped = {
+        ...invoked,
+        transaction: {
+          ...invoked.transaction,
+          message: { ...message, instructions: [...message.instructions.slice(0, -1), multisig] },
+        },
+        meta: { ...invoked.meta, innerInstructions: [{ index: message.instructions.length - 1, instructions: [settle] }] },
+      } as unknown as ParsedTransactionWithMeta;
+      const found = await findSettlementTransaction({
+        connection: historyConnection([{ signature: "invoked", err: null, transaction: wrapped }]),
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        eventId: EVENT_ID,
+      });
+      expect(found.topLevel).toBe(false);
+    });
+
+    test("refuses a history with no settlement, two settlements, or a missing transaction", async () => {
+      const cases: HistoryEntry[][] = [
+        [{ signature: "deposit", err: null, transaction: deposit("deposit", RECORD) }],
+        [
+          { signature: "one", err: null, transaction: settlement("one") },
+          { signature: "two", err: null, transaction: settlement("two") },
+        ],
+        [{ signature: "pruned", err: null, transaction: null }],
+        // An RPC answer for a different signature than the one asked for.
+        [{ signature: "asked", err: null, transaction: settlement("answered") }],
+      ];
+      for (const history of cases) {
+        await expect(
+          findSettlementTransaction({
+            connection: historyConnection(history),
+            programId: PROGRAM_ID,
+            namespace: NAMESPACE,
+            eventId: EVENT_ID,
+          }),
+        ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+      }
+    });
+
+    test("does not count a settlement in another namespace or of another event", async () => {
+      const otherEvent = base58(
+        encodeSettleNData({ eventSeed: eventIdSeed("evt_other"), amount: 20_000_000n, bps: BPS }),
+      );
+      const cases = [
+        signed(parsedSettlement(settleNAccounts(otherNamespace), settleNData, observation().memo), "elsewhere"),
+        signed(parsedSettlement(settleNAccounts(), otherEvent, observation().memo), "elsewhere"),
+      ];
+      for (const transaction of cases) {
+        await expect(
+          findSettlementTransaction({
+            connection: historyConnection([{ signature: "elsewhere", err: null, transaction }]),
+            programId: PROGRAM_ID,
+            namespace: NAMESPACE,
+            eventId: EVENT_ID,
+          }),
+        ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+      }
+    });
+
+    test("pages through a long history, and stops at maxSignatures", async () => {
+      const failures: HistoryEntry[] = Array.from({ length: 1_200 }, (_, index) => ({
+        signature: `failed-${index}`,
+        err: { InstructionError: [1, { Custom: 0 }] },
+        transaction: null,
+      }));
+      const history = [...failures, { signature: "settled", err: null, transaction: settlement("settled") }];
+      const calls: { address: string; limit: number; before?: string; commitment?: string }[] = [];
+      const found = await findSettlementTransaction({
+        connection: historyConnection(history, calls),
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        eventId: EVENT_ID,
+      });
+      expect(found.signature).toBe("settled");
+      expect(calls.map((call) => [call.limit, call.before])).toEqual([
+        [1_000, undefined],
+        [1_000, "failed-999"],
+      ]);
+      await expect(
+        findSettlementTransaction({
+          connection: historyConnection(history),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+          maxSignatures: 1_100,
+        }),
+      ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+    });
+
+    test("finds the retired instruction that created a legacy record", async () => {
+      // The devnet reference settlement from before namespaces (tag 1).
+      const legacy = signed(
+        parsedSettlement(
+          [
+            new PublicKey(PAYER),
+            ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
+            new PublicKey(LEGACY_RECORD),
+            SYSTEM_PROGRAM,
+          ],
+          "2RWubWCVYD4cdnLHpRJR1E417pZE1tKuSLFWKrYD7Zdn6cFw3z54ihSvmfeXhy7ds6eW",
+          {},
+        ),
+        "legacy",
+      );
+      const calls: { address: string; limit: number; before?: string; commitment?: string }[] = [];
+      const found = await findLegacySettlementTransaction({
+        connection: historyConnection(
+          [
+            { signature: "deposit", err: null, transaction: deposit("deposit", LEGACY_RECORD) },
+            { signature: "legacy", err: null, transaction: legacy },
+          ],
+          calls,
+        ),
+        programId: PROGRAM_ID,
+        eventId: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
+      });
+      expect(found).toEqual({ signature: "legacy", slot: 491_725_036, topLevel: true });
+      expect(calls[0].address).toBe(LEGACY_RECORD);
+      // A namespaced settlement never counts as the legacy record's creator.
+      await expect(
+        findLegacySettlementTransaction({
+          connection: historyConnection([{ signature: "settled", err: null, transaction: settlement("settled") }]),
+          programId: PROGRAM_ID,
+          eventId: EVENT_ID,
+        }),
+      ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+    });
   });
 });

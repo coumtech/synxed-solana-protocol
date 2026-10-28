@@ -422,10 +422,37 @@ describe("token settlement evidence", () => {
     const other = findNamespacePda(PROGRAM_ID, MINT, namespaceId)[0];
     const accounts = settle.keys.map((meta) => meta.pubkey);
     accounts[2] = other;
+    // No CreateNamespace here: one for the original namespace would be
+    // refused first, as the next test shows.
     expectLedgerCode(
-      () => observeProgramTokenSettlement(parsed({ settleAccounts: accounts }), "token-evidence", PROGRAM_ID),
+      () =>
+        observeProgramTokenSettlement(
+          parsed({ createCount: 0, settleAccounts: accounts }),
+          "token-evidence",
+          PROGRAM_ID,
+        ),
       "ACCOUNT_LAYOUT",
     );
+  });
+
+  test("refuses a CreateNamespace for a namespace other than the settlement's", () => {
+    // The settlement and its record move to another namespace; the
+    // CreateNamespace beside it still opens the original one.
+    const other = findNamespacePda(PROGRAM_ID, MINT, namespaceId)[0];
+    const accounts = settle.keys.map((meta) => meta.pubkey);
+    accounts[2] = other;
+    accounts[9] = findSettlementRecordPda(PROGRAM_ID, other, eventIdSeed(request().eventId))[0];
+    expectLedgerCode(
+      () => observeProgramTokenSettlement(parsed({ settleAccounts: accounts }), "token-evidence", PROGRAM_ID),
+      "PROGRAM_INSTRUCTION",
+    );
+    expect(() =>
+      observeProgramTokenSettlement(
+        parsed({ createCount: 0, settleAccounts: accounts }),
+        "token-evidence",
+        PROGRAM_ID,
+      ),
+    ).not.toThrow();
   });
 
   test("allows one CreateNamespace beside the settlement, not two", () => {
