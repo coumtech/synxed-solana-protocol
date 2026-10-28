@@ -142,11 +142,17 @@ await submitSettlement({ connection, payer, request,
   id you chose. `ensureNamespace` opens it on first use (rent for 98 bytes,
   0.00114808 SOL on devnet on 21 October 2026, paid once) and afterwards
   only checks that it exists and that its authority is the one you expect.
+  `CreateNamespace` does not ask the initial authority to sign, so check the
+  key you pass: a namespace opened with a key nobody holds can never settle,
+  and its id is used up for that creator.
 - **Idempotency is per namespace.** An event settled in one namespace can be
   settled again in another, so a different label, payer key, or program id
   silently starts afresh. Pin the namespace address in your production
-  configuration and call `ensureNamespace` with `create: false` there, so a
-  missing namespace is an error instead of a new one.
+  configuration and call `ensureNamespace` there with `create: false` and
+  `expectedAddress` set to it, so a missing namespace or a different address
+  is an error instead of a new namespace (`NAMESPACE_MISSING`,
+  `NAMESPACE_ADDRESS`). If the payer key that opened it was replaced, also
+  pass the old key as `creator`.
 - **Environments:** use one namespace per environment (for example
   `studio-payouts-staging` and `studio-payouts`), so the same event id can be
   settled independently in each.
@@ -162,18 +168,30 @@ await submitSettlement({ connection, payer, request,
 - **Rotating the key:** the current and the new authority both sign
   `buildSetNamespaceAuthorityInstruction`, so the namespace can never be
   handed to a key nobody holds. The namespace address and its records stay
-  the same, so events settled before the rotation stay settled.
+  the same, so events settled before the rotation stay settled. Rotating to
+  or from a multisig vault means the vault signs through its own program
+  while the other key signs the same transaction; this repository has not
+  tested that with any multisig, so try it on devnet before relying on it.
 - **Losing the authority key:** nobody can recover a namespace whose
   authority key is lost; the creator has no override. Keep the authority
   backed up. If you must move to a new namespace, first check each pending
-  event's record in the old namespace (`findSettlementRecordPda` with the old
-  address) so that nothing already settled there is settled again.
-- **Wallets:** `fetchNamespace` reports whether the namespace exists;
-  passing `createNamespaceId` to `buildSettlementNTransaction` opens it in the
-  same transaction as the first settlement, so the user approves once. If
-  that transaction fails with `AccountAlreadyInitialized` in its first
-  instruction (`CreateNamespace`), the namespace was opened meanwhile: build
-  the settlement again without `createNamespaceId`.
+  event in the old one with `fetchSettlementRecord`, which counts only a
+  record the program owns for that event (anyone can send lamports to a
+  record's address, so an account merely existing there proves nothing).
+  For each record found, find its creating transaction with
+  `findSettlementTransaction` and reconcile it against your stored request
+  (known limitation 1 of [security-model.md](security-model.md)) before
+  treating the event as paid. Settle in the new namespace only the events
+  with no record in the old one, and confirm each null with a second RPC
+  provider first.
+- **Wallets:** `fetchNamespace` reports whether the namespace exists (lamports
+  someone sent to its address do not count; the program opens a namespace
+  there all the same). Passing `createNamespaceId` to
+  `buildSettlementNTransaction` opens it in the same transaction as the first
+  settlement, so the user approves once. If that transaction fails with
+  `AccountAlreadyInitialized` in its first instruction (`CreateNamespace`),
+  the namespace was opened meanwhile: build the settlement again without
+  `createNamespaceId`.
 
 ## 6. Upgrading from the retired instructions
 
@@ -181,16 +199,40 @@ The reference deployment once ran instructions that keyed the settlement
 record on the event id alone (tags 0 to 2). The program now refuses them, and
 this SDK neither builds nor reconciles them.
 
-- Events settled before the upgrade have their records at the old address,
-  which a namespaced settlement does not see. Before retrying an event first
-  attempted before the upgrade, call `fetchLegacySettlementRecord`. If it
-  reports a record, the event was settled before namespaces, possibly by
-  someone else to wallets of their choosing: compare its creating
-  transaction's recipients by hand, and never settle it again.
+Events settled before the upgrade have their records at the old address,
+`["settlement", event_id]`, which a namespaced settlement does not see. The
+retired instructions let anyone settle any event id, with their own payer and
+to wallets of their choosing. Events first attempted after the upgrade need
+no check. Before retrying an event first attempted before it:
+
+1. Call `fetchLegacySettlementRecord`. It counts only an account the program
+   owns that holds this event's record; lamports sent to the address do not
+   count. If it returns null, confirm that with a second RPC provider, then
+   settle the event in your namespace as usual.
+2. For a record, find its creating transaction with
+   `findLegacySettlementTransaction`, and confirm the transaction with a
+   second provider. The SDK does not reconcile retired instructions, so
+   compare it with your stored requests by hand: the payer is the
+   instruction's first account, and the payouts are the transfers inside it.
+   Keep a list of every payer key you have used, then decide:
+
+| The creating transaction | Decision |
+| --- | --- |
+| Paid by a key you control or controlled, and matches a stored request | Paid: never settle it again |
+| Paid by a key you control or controlled, and matches no stored request | Incident: do not mark it paid, and do not settle it again |
+| Paid by someone else, to exactly your recipients and amounts | Paid by them: never settle it again, and raise an alert |
+| Paid by someone else, in any other way | Not paid by you: settle it in your namespace, and raise an alert |
+
+Anything you cannot decide (the transaction cannot be found, or the two
+providers disagree) is unresolved: retry later, and do not settle the event
+meanwhile.
+
 - Ledger rows written before the upgrade are `SettlementRecord` schema
-  version 1, without `namespace` and `authority`; keep them as they are. This
-  SDK cannot reconcile those transactions again, so a ledger rebuilt from
-  chain history covers only settlements made after the upgrade.
+  version 1, without `namespace` and `authority`, and their
+  `settlementRecord` is the old address `["settlement", event_id]`; keep them
+  as they are. This SDK cannot reconcile those transactions again, so a
+  ledger rebuilt from chain history covers only settlements made after the
+  upgrade.
 
 ## 7. Operational notes
 

@@ -38,7 +38,7 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 | `namespace` | string | Settlement namespace the event was settled in; reconciliation refuses any other |
 | `authority` | string | Namespace authority that signed the settlement |
 | `payer` | string | Funding wallet (and token source owner) that signed the settlement |
-| `settlementRecord` | string | On-chain idempotency-record PDA, derived from the namespace and the event id |
+| `settlementRecord` | string | On-chain idempotency-record PDA, derived from the namespace and the event id (in version 1 rows, from the event id alone: `["settlement", event_id]`) |
 | `mode` | `"program"` \| `"program-token"` | Only program-mode transactions are authoritative ledger inputs |
 | `asset` | string | `"SOL_LAMPORTS_STANDIN"`, `"SPL_STABLECOIN"`, or `"USDC"`; token identity is also bound by `mint` |
 | `mint` | string \| null | Classic SPL Token mint for token settlements; `null` for native SOL |

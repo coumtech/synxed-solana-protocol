@@ -183,16 +183,20 @@ only means the namespace was opened meanwhile; build the settlement again
 without `createNamespaceId`.) Decide from the transaction that created the
 record:
 
-1. List the record address's transactions with `getSignaturesForAddress`,
-   paging until the end, from an endpoint that keeps full transaction history
-   (check `getFirstAvailableBlock`) and whose genesis hash identifies the
-   expected cluster (`assertLedgerCluster`). The creating transaction is the
-   one that succeeded (`err` is null) and ran this program's `SettleN` or
-   `SettleTokenN` for your event: the 32 bytes after the instruction's
-   one-byte tag equal the on-chain event id (`eventIdSeed`), and its namespace
-   account is yours. At most one exists. Confirm it with a second provider:
-   same signature, finalized and successful, with the same instruction data
-   and accounts.
+1. Find the creating transaction, from an endpoint that keeps full
+   transaction history (check `getFirstAvailableBlock`) and whose genesis
+   hash identifies the expected cluster (`assertLedgerCluster`).
+   `findSettlementTransaction` does this: it lists the record address's
+   transactions with `getSignaturesForAddress` at finalized commitment,
+   paging to the end, and keeps the one that succeeded (`err` is null) and
+   ran this program's `SettleN` or `SettleTokenN` for your event, either as a
+   top-level instruction or as an inner instruction invoked by another
+   program (look in `meta.innerInstructions`): the 32 bytes after the
+   instruction's one-byte tag equal the on-chain event id (`eventIdSeed`),
+   and its namespace account is yours. At most one exists; it reports
+   `RECORD_HISTORY` for none or more, and `topLevel: false` for one another
+   program invoked. Confirm it with a second provider: same signature,
+   finalized and successful, with the same instruction data and accounts.
 2. Reconcile it against every request stored for that event id, with the
    stored parameters and without `beneficiaryIds`, which only label ledger
    rows (`reconcileSettlementN`, `reconcileTokenSettlementN`), on both
@@ -230,15 +234,18 @@ transactions (`tests/ledger.test.ts`: refuses a settlement made with a
 retired instruction). A namespaced settlement does not see them, so after the
 program is upgraded in place, an event that was settled before the upgrade
 could be settled a second time. Before retrying any event first attempted
-before the upgrade, call `fetchLegacySettlementRecord`. It reports a record
-only when the program owns the account and it holds that event's record;
-anyone can send lamports to the address, so an account merely existing there
-proves nothing. A record means the event was settled before namespaces,
-possibly by someone else to wallets of their choosing, since the retired
-instructions let anyone settle any event id: compare its creating
-transaction's recipients by hand before marking the event paid, and never
-settle it again. Events first attempted after the upgrade need no such
-check.
+before the upgrade, call `fetchLegacySettlementRecord`, and confirm a null
+with a second RPC provider before settling. It reports a record only when the
+program owns the account and it holds that event's record; anyone can send
+lamports to the address, so an account merely existing there proves nothing.
+A record means the event was settled before namespaces, possibly by someone
+else to wallets of their choosing, since the retired instructions let anyone
+settle any event id. Find its creating transaction with
+`findLegacySettlementTransaction` and decide by who paid and to whom:
+section 6 of [integration.md](integration.md) gives the decision for each
+case. An event someone else settled first to other wallets is still unpaid
+by you, so settle it in your namespace and raise an alert. Events first
+attempted after the upgrade need no such check.
 
 ### 2. Records are permanent and cost rent per settlement
 
@@ -340,7 +347,8 @@ when the transaction also opens the namespace).
   it with `SetNamespaceAuthority` if it may be exposed.
 - Idempotency is per namespace: pin the namespace address in production
   configuration and open namespaces only deliberately (`ensureNamespace` with
-  `create: false`), because settling in a new namespace starts afresh.
+  `create: false` and `expectedAddress` set to the pinned address), because
+  settling in a new namespace starts afresh.
 - Rotate the key if it was ever pasted into chat, logs, CI output, or a pull
   request.
 

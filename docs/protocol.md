@@ -105,6 +105,12 @@ namespace returns `AccountAlreadyInitialized`; an account list that is not
 exactly these four returns `NotEnoughAccountKeys`. The account is created the
 same pre-funding-tolerant way as a settlement record (see Idempotency).
 
+Unlike a rotation, opening a namespace does not ask the initial authority to
+sign; only the all-zero key is refused. A namespace opened with a key nobody
+holds (a mistyped key, or a program address) can never settle, and its
+`namespace_id` is used up for that creator, so clients should check the key
+before sending. The cost falls only on the creator, who loses the rent.
+
 ### `SetNamespaceAuthority` (tag 4)
 
 Instruction data (33 bytes): tag `4`, `new_authority` (32-byte public key).
@@ -230,8 +236,10 @@ program owns the account and it holds that event's record (anyone can send
 lamports to the address, so an account merely existing there proves nothing).
 A record means the event was settled before namespaces, possibly by someone
 else to wallets of their choosing, because the retired instructions let
-anyone settle any event id: compare its creating transaction's recipients by
-hand before treating the event as paid, and never settle it again.
+anyone settle any event id. `findLegacySettlementTransaction` finds its
+creating transaction; section 6 of [integration.md](integration.md) decides
+from who paid and to whom whether the event is paid, an incident, or still
+to be settled in your namespace.
 
 ## Idempotency
 
