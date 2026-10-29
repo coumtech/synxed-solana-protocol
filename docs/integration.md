@@ -152,7 +152,8 @@ await submitSettlement({ connection, payer, request,
   `expectedAddress` set to it, so a missing namespace or a different address
   is an error instead of a new namespace (`NAMESPACE_MISSING`,
   `NAMESPACE_ADDRESS`). If the payer key that opened it was replaced, also
-  pass the old key as `creator`.
+  pass the old key as `creator` and, unless you rotated the authority to the
+  new key, as `authority` (and to the submit functions).
 - **Environments:** use one namespace per environment (for example
   `studio-payouts-staging` and `studio-payouts`), so the same event id can be
   settled independently in each.
@@ -174,10 +175,16 @@ await submitSettlement({ connection, payer, request,
   tested that with any multisig, so try it on devnet before relying on it.
 - **Losing the authority key:** nobody can recover a namespace whose
   authority key is lost; the creator has no override. Keep the authority
-  backed up. If you must move to a new namespace, first check each pending
-  event in the old one with `fetchSettlementRecord`, which counts only a
-  record the program owns for that event (anyone can send lamports to a
-  record's address, so an account merely existing there proves nothing).
+  backed up. If you must move to a new namespace, first make sure nothing
+  already signed for the old one can still land: settlements never expire
+  on chain once signed, except through their blockhash. Wait until every
+  recent blockhash you signed with has expired, advance or close any durable
+  nonce you signed with, and cancel pending multisig proposals; an event
+  whose signed settlement cannot be invalidated stays unresolved. Then check
+  each pending event in the old namespace with `fetchSettlementRecord`, which
+  counts only a record the program owns for that event (anyone can send
+  lamports to a record's address, so an account merely existing there proves
+  nothing).
   For each record found, find its creating transaction with
   `findSettlementTransaction` and reconcile it against your stored request
   (known limitation 1 of [security-model.md](security-model.md)) before
@@ -214,25 +221,30 @@ no check. Before retrying an event first attempted before it:
    second provider. The SDK does not reconcile retired instructions, so
    compare it with your stored requests by hand: the payer is the
    instruction's first account, and the payouts are the transfers inside it.
-   Keep a list of every payer key you have used, then decide:
+   "Matches" means everything `reconcileSettlementN` and
+   `reconcileTokenSettlementN` would check: the same asset (lamports or
+   tokens), mint and decimals, the same recipient wallets (and their token
+   accounts for that mint), and the same on-chain amounts after scaling. The
+   retired instructions let a payer choose all of these. Keep a list of every
+   payer key you have used, including your users' wallets in a wallet flow,
+   then decide:
 
 | The creating transaction | Decision |
 | --- | --- |
 | Paid by a key you control or controlled, and matches a stored request | Paid: never settle it again |
 | Paid by a key you control or controlled, and matches no stored request | Incident: do not mark it paid, and do not settle it again |
-| Paid by someone else, to exactly your recipients and amounts | Paid by them: never settle it again, and raise an alert |
+| Paid by someone else, and matches a stored request | Paid by them: never settle it again, and raise an alert |
 | Paid by someone else, in any other way | Not paid by you: settle it in your namespace, and raise an alert |
 
 Anything you cannot decide (the transaction cannot be found, or the two
 providers disagree) is unresolved: retry later, and do not settle the event
 meanwhile.
 
-- Ledger rows written before the upgrade are `SettlementRecord` schema
-  version 1, without `namespace` and `authority`, and their
-  `settlementRecord` is the old address `["settlement", event_id]`; keep them
-  as they are. This SDK cannot reconcile those transactions again, so a
-  ledger rebuilt from chain history covers only settlements made after the
-  upgrade.
+Ledger rows written before the upgrade are `SettlementRecord` schema
+version 1, without `namespace` and `authority`, and their `settlementRecord`
+is the old address `["settlement", event_id]`; keep them as they are. This
+SDK cannot reconcile those transactions again, so a ledger rebuilt from
+chain history covers only settlements made after the upgrade.
 
 ## 7. Operational notes
 
