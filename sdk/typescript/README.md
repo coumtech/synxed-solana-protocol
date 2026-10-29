@@ -106,7 +106,7 @@ throws a `LedgerError` instead of producing a ledger entry.
 | --- | --- |
 | `@coumtech/synxed-solana-protocol` | Everything below, plus the split math and instruction codec (`computeSettlementN`, `encodeSettleNData`, `buildSettleNInstruction`, `buildCreateNamespaceInstruction`, `buildSetNamespaceAuthorityInstruction`, `eventIdSeed`, `findNamespacePda`, `findSettlementRecordPda`) |
 | `@coumtech/synxed-solana-protocol/types` | Request and result types, protocol constants, `ProtocolError` |
-| `@coumtech/synxed-solana-protocol/client` | Transaction builders and submitters, including SPL Token settlement, namespace helpers (`ensureNamespace`, `fetchNamespace`, `findNamespacePda`, `namespaceIdFromLabel`), `fetchSettlementRecord`, and `fetchLegacySettlementRecord` for events settled before namespaces |
+| `@coumtech/synxed-solana-protocol/client` | Transaction builders and submitters, including SPL Token settlement, namespace helpers (`ensureNamespace`, `fetchNamespace`, `findNamespacePda`, `namespaceIdFromLabel`, `NAMESPACE_ACCOUNT_SIZE`, `SETTLEMENT_RECORD_SIZE`), `fetchSettlementRecord`, and `fetchLegacySettlementRecord` for events settled before namespaces |
 | `@coumtech/synxed-solana-protocol/ledger` | Payout ledger types, reconciliation, pool allocation, and `findSettlementTransaction` / `findLegacySettlementTransaction` for the transaction that created a record |
 
 Unsigned builders such as `buildSettlementNTransaction` return a transaction

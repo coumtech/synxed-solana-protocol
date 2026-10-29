@@ -54,7 +54,8 @@ import {
 } from "./types.ts";
 
 // Re-exported so the `./client` entry point alone can open and address a
-// namespace (the wallet demo loads only this module and `./ledger`).
+// namespace and size its rent (the wallet demo loads only this module and
+// `./ledger`).
 export {
   NAMESPACE_ACCOUNT_SIZE,
   SETTLEMENT_RECORD_SIZE,
@@ -199,12 +200,18 @@ export interface FetchedNamespace extends NamespaceAccount {
 
 export interface EnsureNamespaceOptions {
   connection: Connection;
-  /** Pays the rent and signs as the creator, which is part of the address. */
+  /**
+   * Pays the rent and, unless `creator` names another key, signs as the
+   * creator, which is part of the address.
+   */
   payer: Keypair;
   programId: PublicKey;
   /** Any 32 bytes; `namespaceIdFromLabel` derives them from a label. */
   namespaceId: Uint8Array;
-  /** The key allowed to settle in the namespace. Defaults to the payer. */
+  /**
+   * The key allowed to settle in the namespace. Defaults to the payer, so
+   * after a payer change pass the authority the namespace still has.
+   */
   authority?: PublicKey;
   /**
    * Open the namespace when it does not exist (the default). Pass false once
@@ -296,8 +303,11 @@ export async function fetchNamespace(
 }
 
 /**
- * Open the payer's namespace under `namespaceId` unless it exists, and check
- * that its current authority is the expected one.
+ * Find the namespace that `creator` (the payer unless given) opened under
+ * `namespaceId`, check it is at `expectedAddress` when one is pinned, and
+ * check that its current authority is the expected one. When it does not
+ * exist, open it if `create` allows and the payer is its creator; otherwise
+ * throw `NAMESPACE_MISSING`.
  */
 export async function ensureNamespace(
   options: EnsureNamespaceOptions,

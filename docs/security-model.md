@@ -188,10 +188,12 @@ record:
    hash identifies the expected cluster (`assertLedgerCluster`).
    `findSettlementTransaction` does this: it lists the record address's
    transactions with `getSignaturesForAddress` at finalized commitment,
-   paging to the end, and keeps the one that succeeded (`err` is null) and
-   ran this program's `SettleN` or `SettleTokenN` for your event, either as a
-   top-level instruction or as an inner instruction invoked by another
-   program (look in `meta.innerInstructions`): the 32 bytes after the
+   paging to the end (5,000 signatures by default; raise `maxSignatures` for
+   a busy or spammed record, since anyone can add to its history), and keeps
+   the one that succeeded (`err` is null) and ran this program's `SettleN` or
+   `SettleTokenN` for your event, either as a top-level instruction or as an
+   inner instruction invoked by another program (look in
+   `meta.innerInstructions`): the 32 bytes after the
    instruction's one-byte tag equal the on-chain event id (`eventIdSeed`),
    and its namespace account is yours. At most one exists; it reports
    `RECORD_HISTORY` for none or more, and `topLevel: false` for one another
@@ -213,7 +215,8 @@ record:
 4. Anything else is unresolved: the transaction is not finalized or cannot be
    found, the two providers disagree, an endpoint fails (`CLUSTER_MISMATCH`,
    `TX_NOT_FOUND`, `TX_FAILED`, `TX_SIGNATURE`, `BLOCK_TIME_MISSING`, errors
-   from the RPC call itself), or the SDK cannot read the transaction or the
+   from the RPC call itself), the creating transaction cannot be identified
+   (`RECORD_HISTORY`), or the SDK cannot read the transaction or the
    stored request (`PROGRAM_INSTRUCTION`, `INSTRUCTION_DATA`,
    `ACCOUNT_LAYOUT`, any other error, a settlement made through another
    program, which you compare by hand). The same difference found by hand in
@@ -222,7 +225,8 @@ record:
 
 The SDK's fetching reconcile functions read a transaction with exactly one
 top-level `SettleN` or `SettleTokenN` instruction, alongside at most one
-`CreateNamespace`, which a wallet's first settlement carries. For a settlement
+`CreateNamespace` for the same namespace, which a wallet's first settlement
+carries. For a settlement
 made through another program, read its stack height and resolve its account
 indexes against the transaction's static keys, then
 `meta.loadedAddresses.writable`, then `meta.loadedAddresses.readonly`, or
@@ -284,8 +288,11 @@ succeeded, and compares every field and inner transfer. It does not verify
 transaction signatures or prove that a transaction is in a block, and for
 versioned transactions it relies on the endpoint to resolve accounts loaded
 from address lookup tables. A dishonest RPC endpoint could return fabricated
-data. Reconcile against an endpoint you operate or trust, and cross-check
-with a second provider when the amounts matter.
+data. The record readers cannot tell either: a record holds only its event
+id, so an endpoint that answers with another namespace's record for the same
+event reads as valid (the creating-transaction search then fails, so nothing
+is paid on it). Reconcile against an endpoint you operate or trust, and
+cross-check with a second provider when the amounts matter.
 
 ### 6. One failing recipient fails the whole settlement
 

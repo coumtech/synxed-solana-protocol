@@ -109,7 +109,8 @@ Unlike a rotation, opening a namespace does not ask the initial authority to
 sign; only the all-zero key is refused. A namespace opened with a key nobody
 holds (a mistyped key, or a program address) can never settle, and its
 `namespace_id` is used up for that creator, so clients should check the key
-before sending. The cost falls only on the creator, who loses the rent.
+before sending. The cost falls only on its opener: the payer's rent stays
+locked, and the creator loses that `namespace_id`.
 
 ### `SetNamespaceAuthority` (tag 4)
 

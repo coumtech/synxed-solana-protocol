@@ -118,7 +118,7 @@ export {
   reconcileSettlementN,
   reconcileTokenSettlementN,
   type ClaimBatch,
-  type FindNamespacedSettlementTransactionOptions,
+  type FindLegacySettlementTransactionOptions,
   type FindSettlementTransactionOptions,
   type LedgerCluster,
   type LedgerEntry,

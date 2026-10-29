@@ -10,7 +10,9 @@ import {
   allocatePoolPayout,
   assertLedgerCluster,
   encodeSettleNData,
+  encodeSettleTokenNData,
   eventIdSeed,
+  findLegacySettlementRecordPda,
   findLegacySettlementTransaction,
   findNamespacePda,
   findSettlementRecordPda,
@@ -498,11 +500,15 @@ describe("ledger reconciliation", () => {
       } as unknown as ParsedTransactionWithMeta;
     }
 
-    /** Answers the two history calls from `history`, newest first, and logs them. */
+    /**
+     * Answers the two history calls from `history`, newest first, logs the
+     * signature pages in `calls`, and counts transaction requests in `fetches`.
+     */
     function historyConnection(
       history: readonly HistoryEntry[],
       calls: { address: string; limit: number; before?: string; commitment?: string }[] = [],
-    ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransaction"> {
+      fetches: { requests: number } = { requests: 0 },
+    ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions"> {
       return {
         getSignaturesForAddress: async (address, options, commitment) => {
           const limit = options?.limit ?? 1_000;
@@ -523,9 +529,13 @@ describe("ledger reconciliation", () => {
             blockTime: null,
           })) as ConfirmedSignatureInfo[];
         },
-        getParsedTransaction: async (signature: string) =>
-          history.find((entry) => entry.signature === signature)?.transaction ?? null,
-      } as Pick<Connection, "getSignaturesForAddress" | "getParsedTransaction">;
+        getParsedTransactions: async (signatures: string[], config?: unknown) => {
+          // Finalized, and readable when a wallet or multisig sent a v0 transaction.
+          expect(config).toEqual({ commitment: "finalized", maxSupportedTransactionVersion: 0 });
+          fetches.requests += 1;
+          return signatures.map((signature) => history.find((entry) => entry.signature === signature)?.transaction ?? null);
+        },
+      } as Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions">;
     }
 
     const settlement = (signature: string) =>
@@ -563,7 +573,15 @@ describe("ledger reconciliation", () => {
           ...invoked.transaction,
           message: { ...message, instructions: [...message.instructions.slice(0, -1), multisig] },
         },
-        meta: { ...invoked.meta, innerInstructions: [{ index: message.instructions.length - 1, instructions: [settle] }] },
+        // An earlier instruction invoked another program first, so the
+        // settlement sits in a later inner group.
+        meta: {
+          ...invoked.meta,
+          innerInstructions: [
+            { index: 0, instructions: [deposit("unrelated", RECIPIENTS[2]).transaction.message.instructions[0]] },
+            { index: message.instructions.length - 1, instructions: [settle] },
+          ],
+        },
       } as unknown as ParsedTransactionWithMeta;
       const found = await findSettlementTransaction({
         connection: historyConnection([{ signature: "invoked", err: null, transaction: wrapped }]),
@@ -647,6 +665,74 @@ describe("ledger reconciliation", () => {
       ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
     });
 
+    test("does not count a lookalike from another program, or a transaction the RPC marks failed", async () => {
+      // Anyone can send a no-op program the settlement's data and accounts.
+      const lookalike = signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), "lookalike");
+      const message = lookalike.transaction.message;
+      const noop = {
+        ...lookalike,
+        transaction: {
+          ...lookalike.transaction,
+          message: {
+            ...message,
+            instructions: message.instructions.map((instruction, index) =>
+              index === message.instructions.length - 1
+                ? { ...instruction, programId: new PublicKey(RECIPIENTS[1]) }
+                : instruction,
+            ),
+          },
+        },
+      } as ParsedTransactionWithMeta;
+      // The signature list says it succeeded; the transaction says it failed.
+      const failed = signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), "failed");
+      const failedInMeta = {
+        ...failed,
+        meta: { ...failed.meta, err: { InstructionError: [1, { Custom: 0 }] } },
+      } as unknown as ParsedTransactionWithMeta;
+      for (const decoy of [noop, failedInMeta]) {
+        const signature = decoy.transaction.signatures[0];
+        await expect(
+          findSettlementTransaction({
+            connection: historyConnection([{ signature, err: null, transaction: decoy }]),
+            programId: PROGRAM_ID,
+            namespace: NAMESPACE,
+            eventId: EVENT_ID,
+          }),
+        ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+        const found = await findSettlementTransaction({
+          connection: historyConnection([
+            { signature, err: null, transaction: decoy },
+            { signature: "settled", err: null, transaction: settlement("settled") },
+          ]),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+        });
+        expect(found.signature).toBe("settled");
+      }
+    });
+
+    test("fetches a spammed history in batches, not one request per transaction", async () => {
+      const deposits: HistoryEntry[] = Array.from({ length: 250 }, (_, index) => ({
+        signature: `deposit-${index}`,
+        err: null,
+        transaction: deposit(`deposit-${index}`, RECORD),
+      }));
+      const fetches = { requests: 0 };
+      const found = await findSettlementTransaction({
+        connection: historyConnection(
+          [...deposits, { signature: "settled", err: null, transaction: settlement("settled") }],
+          [],
+          fetches,
+        ),
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        eventId: EVENT_ID,
+      });
+      expect(found.signature).toBe("settled");
+      expect(fetches.requests).toBe(3);
+    });
+
     test("finds the retired instruction that created a legacy record", async () => {
       // The devnet reference settlement from before namespaces (tag 1).
       const legacy = signed(
@@ -676,14 +762,92 @@ describe("ledger reconciliation", () => {
       });
       expect(found).toEqual({ signature: "legacy", slot: 491_725_036, topLevel: true });
       expect(calls[0].address).toBe(LEGACY_RECORD);
-      // A namespaced settlement never counts as the legacy record's creator.
+      // A namespaced settlement never counts as the legacy record's creator,
+      // even one that names the legacy record (as a recipient, say).
+      const legacyRecord = findLegacySettlementRecordPda(PROGRAM_ID, eventIdSeed(EVENT_ID))[0];
+      const accounts = settleNAccounts();
+      accounts[3] = legacyRecord;
+      const namingIt = signed(parsedSettlement(accounts, settleNData, observation().memo), "settled");
       await expect(
         findLegacySettlementTransaction({
-          connection: historyConnection([{ signature: "settled", err: null, transaction: settlement("settled") }]),
+          connection: historyConnection([{ signature: "settled", err: null, transaction: namingIt }]),
           programId: PROGRAM_ID,
           eventId: EVENT_ID,
         }),
       ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+    });
+
+    test("does not count an old settlement of another event that paid the legacy record's address", async () => {
+      // The retired program let a settlement of one event pay any wallet,
+      // including the address another event's record would later take.
+      const otherSeed = eventIdSeed("evt_another_event");
+      const bps = [5_000, 5_000];
+      const otherData = Uint8Array.from([
+        1,
+        ...otherSeed,
+        ...new Uint8Array(new BigUint64Array([20_000_000n]).buffer),
+        bps.length,
+        ...new Uint8Array(new Uint16Array(bps).buffer),
+      ]);
+      const otherRecord = findLegacySettlementRecordPda(PROGRAM_ID, otherSeed)[0];
+      const paidIt = signed(
+        parsedSettlement(
+          [new PublicKey(PAYER), new PublicKey(RECIPIENTS[0]), new PublicKey(LEGACY_RECORD), otherRecord, SYSTEM_PROGRAM],
+          base58(otherData),
+          {},
+        ),
+        "other-event",
+      );
+      const legacy = signed(
+        parsedSettlement(
+          [
+            new PublicKey(PAYER),
+            ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
+            new PublicKey(LEGACY_RECORD),
+            SYSTEM_PROGRAM,
+          ],
+          "2RWubWCVYD4cdnLHpRJR1E417pZE1tKuSLFWKrYD7Zdn6cFw3z54ihSvmfeXhy7ds6eW",
+          {},
+        ),
+        "legacy",
+      );
+      const found = await findLegacySettlementTransaction({
+        connection: historyConnection([
+          { signature: "legacy", err: null, transaction: legacy },
+          { signature: "other-event", err: null, transaction: paidIt },
+        ]),
+        programId: PROGRAM_ID,
+        eventId: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
+      });
+      expect(found.signature).toBe("legacy");
+    });
+
+    test("finds a token settlement", async () => {
+      const tokenData = base58(
+        encodeSettleTokenNData({ eventSeed: eventIdSeed(EVENT_ID), amount: 20_000n, decimals: 6, bps: BPS }),
+      );
+      const token = signed(parsedSettlement(settleNAccounts(), tokenData, observation().memo), "token");
+      const found = await findSettlementTransaction({
+        connection: historyConnection([{ signature: "token", err: null, transaction: token }]),
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        eventId: EVENT_ID,
+      });
+      expect(found).toEqual({ signature: "token", slot: 491_725_036, topLevel: true });
+    });
+
+    test("refuses a maxSignatures that is not a positive integer", async () => {
+      for (const maxSignatures of [0, -1, 1.5, Number.NaN]) {
+        await expect(
+          findSettlementTransaction({
+            connection: historyConnection([{ signature: "settled", err: null, transaction: settlement("settled") }]),
+            programId: PROGRAM_ID,
+            namespace: NAMESPACE,
+            eventId: EVENT_ID,
+            maxSignatures,
+          }),
+        ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+      }
     });
   });
 });

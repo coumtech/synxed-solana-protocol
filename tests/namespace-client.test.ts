@@ -312,6 +312,11 @@ describe("fetchNamespace and ensureNamespace", () => {
   const payer = Keypair.generate();
   const address = findNamespacePda(PROGRAM_ID, payer.publicKey, NAMESPACE_ID)[0];
 
+  test("fetchNamespace refuses an empty account another program owns", async () => {
+    const foreign = new Map([[address.toBase58(), account(key("another program"), Buffer.alloc(0))]]);
+    await expectCode(fetchNamespace(stubConnection(foreign), PROGRAM_ID, address), "NAMESPACE_ACCOUNT");
+  });
+
   test("fetchNamespace reads a namespace, returns null for nothing, refuses another owner", async () => {
     const accounts = new Map([[address.toBase58(), account(PROGRAM_ID, namespaceData(payer.publicKey, payer.publicKey))]]);
     const found = await fetchNamespace(stubConnection(accounts), PROGRAM_ID, address);
@@ -469,18 +474,35 @@ describe("fetchNamespace and ensureNamespace", () => {
 
   test("ensureNamespace reports the send error when nothing was opened", async () => {
     const failure = new Error("blockhash not found");
-    for (const accounts of [
-      new Map<string, AccountInfo<Buffer>>(),
-      // A deposit at the address is still not a namespace.
-      new Map([[address.toBase58(), account(SYSTEM_PROGRAM, Buffer.alloc(0))]]),
-    ]) {
-      const connection = stubConnection(accounts, [], () => {
+    const connection = stubConnection(new Map(), [], () => {
+      throw failure;
+    });
+    await expect(
+      ensureNamespace({ connection, payer, programId: PROGRAM_ID, namespaceId: NAMESPACE_ID }),
+    ).rejects.toBe(failure);
+  });
+
+  test("ensureNamespace reports the send error when the check after it fails too", async () => {
+    const failure = new Error("blockhash not found");
+    let reads = 0;
+    const connection = {
+      ...stubConnection(new Map(), [], () => {
         throw failure;
-      });
-      await expect(
-        ensureNamespace({ connection, payer, programId: PROGRAM_ID, namespaceId: NAMESPACE_ID }),
-      ).rejects.toBe(failure);
-    }
+      }),
+      // The first read finds nothing; the re-check after the failed send
+      // cannot reach the RPC.
+      getAccountInfo: async () => {
+        reads += 1;
+        if (reads > 1) {
+          throw new Error("RPC unavailable");
+        }
+        return null;
+      },
+    } as unknown as Connection;
+    await expect(
+      ensureNamespace({ connection, payer, programId: PROGRAM_ID, namespaceId: NAMESPACE_ID }),
+    ).rejects.toBe(failure);
+    expect(reads).toBe(2);
   });
 
   test("ensureNamespace accepts a namespace another run opened first", async () => {
@@ -528,7 +550,9 @@ describe("fetchSettlementRecord", () => {
       account(PROGRAM_ID, recordData(seed).subarray(0, 40)),
       account(PROGRAM_ID, Buffer.from([2, ...recordData(seed).subarray(1)])),
       account(key("another program"), recordData(seed)),
+      account(key("another program"), Buffer.alloc(0)),
       account(SYSTEM_PROGRAM, recordData(seed)),
+      account(PROGRAM_ID, Buffer.concat([recordData(seed), Buffer.alloc(1)])),
     ];
     for (const found of cases) {
       const accounts = new Map([[address.toBase58(), found]]);
