@@ -936,7 +936,9 @@ function findSettlementInstruction(
     );
   }
   const settlement = settlements[0];
-  // CreateNamespace takes payer, creator, namespace, system program.
+  // Both instructions carry the namespace third: the settlement after the
+  // payer and the authority, CreateNamespace (exactly four accounts) after
+  // the payer and the creator.
   const namespace = settlement.instruction.accounts[2];
   for (const { instruction } of raw) {
     if (
@@ -947,23 +949,29 @@ function findSettlementInstruction(
     ) {
       throw new LedgerError(
         "PROGRAM_INSTRUCTION",
-        "the CreateNamespace beside the settlement opens a different namespace",
+        "the instruction beside the settlement is not a CreateNamespace for the settlement's namespace",
       );
     }
   }
   return settlement;
 }
 
-export interface FindSettlementTransactionOptions {
-  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransaction">;
+export interface FindLegacySettlementTransactionOptions {
+  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions">;
   programId: PublicKey;
   eventId: string;
-  /** How many of the record's signatures to read before giving up (default 5,000). */
+  /**
+   * How many of the record's signatures to read before giving up (default
+   * 5,000). Anyone can add entries to a record's history (a transfer to its
+   * address, or any transaction that lists it), so a `RECORD_HISTORY` for
+   * reaching this cap means a busy or spammed record: raise the cap, with a
+   * provider that keeps full history, rather than leave the event undecided.
+   */
   maxSignatures?: number;
 }
 
-export interface FindNamespacedSettlementTransactionOptions
-  extends FindSettlementTransactionOptions {
+export interface FindSettlementTransactionOptions
+  extends FindLegacySettlementTransactionOptions {
   /** The namespace whose record to trace. */
   namespace: PublicKey;
 }
@@ -995,15 +1003,15 @@ export interface SettlementTransaction {
  * may mean the node pruned it, so ask an archival provider before deciding.
  */
 export async function findSettlementTransaction(
-  options: FindNamespacedSettlementTransactionOptions,
+  options: FindSettlementTransactionOptions,
 ): Promise<SettlementTransaction> {
   const eventSeed = eventIdSeed(options.eventId);
   const [record] = findSettlementRecordPda(options.programId, options.namespace, eventSeed);
-  return findCreatingTransaction(options, record, (instruction, tag) =>
-    (tag === SETTLE_N_TAG || tag === SETTLE_TOKEN_N_TAG) &&
+  return findCreatingTransaction(options, record, (instruction, data) =>
+    (data[0] === SETTLE_N_TAG || data[0] === SETTLE_TOKEN_N_TAG) &&
     instruction.accounts.length > 2 &&
     instruction.accounts[2].equals(options.namespace) &&
-    hasEventSeed(instruction.data, eventSeed),
+    hasEventSeed(data, eventSeed),
   );
 }
 
@@ -1016,22 +1024,24 @@ export async function findSettlementTransaction(
  * `findSettlementTransaction` apply.
  */
 export async function findLegacySettlementTransaction(
-  options: FindSettlementTransactionOptions,
+  options: FindLegacySettlementTransactionOptions,
 ): Promise<SettlementTransaction> {
   const eventSeed = eventIdSeed(options.eventId);
   const [record] = findLegacySettlementRecordPda(options.programId, eventSeed);
-  return findCreatingTransaction(options, record, (instruction, tag) =>
-    tag !== null &&
-    (RETIRED_TAGS as readonly number[]).includes(tag) &&
+  return findCreatingTransaction(options, record, (instruction, data) =>
+    (RETIRED_TAGS as readonly (number | undefined)[]).includes(data[0]) &&
     instruction.accounts.some((account) => account.equals(record)) &&
-    hasEventSeed(instruction.data, eventSeed),
+    hasEventSeed(data, eventSeed),
   );
 }
 
+// Transactions fetched per request while reading a record's history.
+const HISTORY_BATCH = 100;
+
 async function findCreatingTransaction(
-  options: FindSettlementTransactionOptions,
+  options: FindLegacySettlementTransactionOptions,
   record: PublicKey,
-  settles: (instruction: PartiallyDecodedInstruction, tag: number | null) => boolean,
+  settles: SettlesEvent,
 ): Promise<SettlementTransaction> {
   const maxSignatures = options.maxSignatures ?? 5_000;
   if (!Number.isSafeInteger(maxSignatures) || maxSignatures <= 0) {
@@ -1047,32 +1057,38 @@ async function findCreatingTransaction(
       before === undefined ? { limit } : { limit, before },
       "finalized",
     );
-    for (const entry of page) {
-      if (entry.err !== null) {
-        continue;
-      }
-      const transaction = await options.connection.getParsedTransaction(entry.signature, {
+    // Successful entries only, fetched in batches: one request per batch,
+    // not one per transaction.
+    const succeeded = page.filter((entry) => entry.err === null).map((entry) => entry.signature);
+    for (let start = 0; start < succeeded.length; start += HISTORY_BATCH) {
+      const signatures = succeeded.slice(start, start + HISTORY_BATCH);
+      const transactions = await options.connection.getParsedTransactions(signatures, {
         commitment: "finalized",
         maxSupportedTransactionVersion: 0,
       });
-      if (transaction === null || !transaction.transaction.signatures.includes(entry.signature)) {
-        throw new LedgerError(
-          "RECORD_HISTORY",
-          `finalized transaction ${entry.signature} from the record's history was not found`,
-        );
-      }
-      if (transaction.meta === null || transaction.meta.err !== null) {
-        continue;
-      }
-      const found = settlementIn(transaction, options.programId, settles);
-      if (found !== null) {
-        matches.push({ signature: entry.signature, slot: transaction.slot, topLevel: found.topLevel });
-      }
+      signatures.forEach((signature, index) => {
+        const transaction = transactions[index] ?? null;
+        if (transaction === null || !transaction.transaction.signatures.includes(signature)) {
+          throw new LedgerError(
+            "RECORD_HISTORY",
+            `finalized transaction ${signature} from the record's history was not found`,
+          );
+        }
+        if (transaction.meta === null || transaction.meta.err !== null) {
+          return;
+        }
+        const found = settlementIn(transaction, options.programId, settles);
+        if (found !== null) {
+          matches.push({ signature, slot: transaction.slot, topLevel: found.topLevel });
+        }
+      });
     }
     read += page.length;
     if (page.length < limit) {
       break;
     }
+    // A history of exactly maxSignatures entries also stops here: without
+    // reading one more page it cannot be told from a longer one.
     if (read >= maxSignatures) {
       throw new LedgerError(
         "RECORD_HISTORY",
@@ -1090,16 +1106,19 @@ async function findCreatingTransaction(
   return matches[0];
 }
 
+/** Whether an instruction of the program settles the event; `data` is decoded. */
+type SettlesEvent = (instruction: PartiallyDecodedInstruction, data: Uint8Array) => boolean;
+
 // The settling instruction, top-level or invoked by another program.
 function settlementIn(
   transaction: ParsedTransactionWithMeta,
   programId: PublicKey,
-  settles: (instruction: PartiallyDecodedInstruction, tag: number | null) => boolean,
+  settles: SettlesEvent,
 ): { topLevel: boolean } | null {
   const matches = (instruction: ParsedInstruction | PartiallyDecodedInstruction): boolean =>
     isPartiallyDecoded(instruction) &&
     instruction.programId.equals(programId) &&
-    settles(instruction, instructionTag(instruction.data));
+    settles(instruction, decodeData(instruction.data));
   if (transaction.transaction.message.instructions.some(matches)) {
     return { topLevel: true };
   }
@@ -1107,14 +1126,18 @@ function settlementIn(
   return inner.some((group) => group.instructions.some(matches)) ? { topLevel: false } : null;
 }
 
-function hasEventSeed(data: string, eventSeed: Uint8Array): boolean {
-  let bytes: Uint8Array;
+// Instruction data that is not valid base58 decodes to nothing, which no
+// predicate accepts.
+function decodeData(data: string): Uint8Array {
   try {
-    bytes = bs58.decode(data);
+    return bs58.decode(data);
   } catch {
-    return false;
+    return new Uint8Array(0);
   }
-  return bytes.length >= 33 && eventSeed.every((byte, index) => bytes[1 + index] === byte);
+}
+
+function hasEventSeed(data: Uint8Array, eventSeed: Uint8Array): boolean {
+  return data.length >= 33 && eventSeed.every((byte, index) => data[1 + index] === byte);
 }
 
 function instructionTag(data: string): number | null {
