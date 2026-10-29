@@ -136,7 +136,8 @@ class FakeChain {
         throw new SendTransactionError({
           action: "simulate",
           signature: "",
-          transactionMessage: `Transaction simulation failed: Error processing Instruction ${index}: account already initialized`,
+          // The wording RPC nodes use for the program's AccountAlreadyInitialized.
+          transactionMessage: `Transaction simulation failed: Error processing Instruction ${index}: instruction requires an uninitialized account`,
           logs: [],
         });
       }

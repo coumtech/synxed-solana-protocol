@@ -107,8 +107,10 @@ stays `in_flight` while waiting or unresolved, with a note saying why.
 | `SETTLEMENT_RECORD` | `fetchSettlementRecord` | Something other than this event's record is at the address, which the program cannot produce: treat the endpoint as untrusted |
 
 A duplicate error from sending (`AccountAlreadyInitialized` from the
-settlement instruction) is not an outcome by itself: it means the record
-exists, so continue at step 3.
+settlement instruction, which RPC nodes word as "instruction requires an
+uninitialized account") is not an outcome by itself: it means the record
+exists, so continue at step 3. Tell it apart by checking the record, not by
+the error's wording.
 
 ## Rebuilding and auditing the ledger
 

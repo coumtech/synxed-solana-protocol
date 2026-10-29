@@ -186,13 +186,18 @@ export class SettlementWorker {
       // With preflight on, a simulation failure means the node did not
       // forward the transaction, so this attempt cannot land.
       if (error instanceof SendTransactionError && error.message.startsWith("Simulation failed")) {
-        store.setAttemptStatus(event.eventId, attempt, "failed", error.transactionError.message);
-        if (!/account already initialized/i.test(error.transactionError.message)) {
-          store.setEventStatus(event.eventId, "pending", error.transactionError.message);
-          this.#log(`${event.eventId}: attempt ${attempt} refused: ${error.transactionError.message}`);
+        const reason = error.transactionError.message;
+        store.setAttemptStatus(event.eventId, attempt, "failed", reason);
+        // A refusal because the event is settled already (the program's
+        // AccountAlreadyInitialized, which RPC nodes word as "instruction
+        // requires an uninitialized account") is told apart by the record
+        // itself, not by the wording.
+        const seed = eventIdSeed(event.eventId);
+        if ((await fetchSettlementRecord(connection, this.#options.programId, this.#options.namespace, seed)) === null) {
+          store.setEventStatus(event.eventId, "pending", reason);
+          this.#log(`${event.eventId}: attempt ${attempt} refused: ${reason}`);
           return "failed";
         }
-        // The event's record exists already: the chain decides below.
         this.#log(`${event.eventId}: already settled in this namespace`);
       } else {
         // Anything else leaves it unknown whether the cluster has it.
