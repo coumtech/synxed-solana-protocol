@@ -62,7 +62,9 @@ provider: same signature, finalized and successful.
 
 - `RECORD_HISTORY` (none found, more than one, or more history than you
   allowed): unresolved. An RPC node may have pruned old history; ask an
-  archival provider.
+  archival provider. Anyone can add entries to a record's history, so a
+  history over the cap (`maxSignatures`, 5,000 by default) means a busy or
+  spammed record: raise the cap rather than leave the event undecided.
 - `topLevel: false`: another program (a multisig, for example) invoked the
   settlement. The SDK's reconcile functions read only top-level settlements:
   compare that transaction with your stored requests by hand.

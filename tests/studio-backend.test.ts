@@ -84,6 +84,8 @@ class FakeChain {
         }));
       },
       getParsedTransaction: async (signature: string) => this.transactions.get(signature) ?? null,
+      getParsedTransactions: async (signatures: string[]) =>
+        signatures.map((signature) => this.transactions.get(signature) ?? null),
       simulateTransaction: async () => ({
         context: { slot: this.slot },
         value: { err: null, logs: ["Program log: simulated"], accounts: null, unitsConsumed: 1_000 },
