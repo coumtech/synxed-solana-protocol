@@ -336,7 +336,6 @@ impl Fixture {
         u64::from_le_bytes(account.data[64..72].try_into().expect("amount bytes"))
     }
 
-    /// Send a transaction; returns Ok(()) or the debug-formatted error.
     /// Sign `ixs` against a fresh blockhash, so byte-identical retries are
     /// not deduplicated as "already processed" before the program runs.
     fn signed(
@@ -354,6 +353,7 @@ impl Fixture {
         )
     }
 
+    /// Send a transaction; returns Ok(()) or the debug-formatted error.
     pub fn send(
         &mut self,
         ixs: &[Instruction],

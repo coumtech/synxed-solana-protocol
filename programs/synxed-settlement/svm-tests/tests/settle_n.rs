@@ -220,6 +220,21 @@ fn skips_zero_lamport_shares_without_touching_new_accounts() {
     );
 }
 
+/// The skip is for exactly 0 lamports: a 1-lamport share is still paid.
+#[test]
+fn pays_a_one_lamport_share() {
+    let mut f = Fixture::new();
+    let (small, large) = (Pubkey::new_unique(), Pubkey::new_unique());
+    // Funded first, so a 1-lamport credit is not refused for rent.
+    for recipient in [small, large] {
+        f.svm.airdrop(&recipient, 1_000_000_000).expect("airdrop");
+    }
+    f.settle_n(event(41), 10_000, &[1, 9_999], &[small, large])
+        .expect("a 1-lamport share is allowed");
+    assert_eq!(f.balance(&small), 1_000_000_001);
+    assert_eq!(f.balance(&large), 1_000_009_999);
+}
+
 #[test]
 fn rejects_a_zero_amount() {
     let mut f = Fixture::new();
