@@ -10,7 +10,7 @@ App / game  ->  Revenue event  ->  Split (35/35/20/10, configurable)
             ->  Solana settlement  ->  artist / studio / platform / rewards pool
 ```
 
-**What this is:** the public settlement rail — a Solana program, a strict
+**What this is:** the public settlement rail, made up of a Solana program, a strict
 TypeScript SDK, a runnable demo, and the protocol documentation.
 
 **What this is not:** the SYNXED product. The proprietary platform (radio
@@ -37,7 +37,7 @@ configurable) split:
 Splits are basis points that must sum to exactly 10000; payouts are integer
 math that always sums to the gross amount (rounding dust goes to the last
 share, documented in [docs/protocol.md](docs/protocol.md)). Invalid splits
-are rejected — in the client and on-chain — never renormalized.
+are rejected, in the client and on-chain, and never renormalized.
 
 Splits are not limited to three parties. The `SettleN` instruction settles
 one to eight configured shares under the same rules, which is how a
@@ -115,14 +115,29 @@ and reconciles the exact mint, decimals, accounts, memo, totals, and transfers.
 The payer's token account must already hold the example's 20,000 base units.
 See [docs/spl-stablecoin.md](docs/spl-stablecoin.md).
 
+**6. Run a studio backend worker**
+
+```bash
+bun run studio init      # opens the namespace; pin the address it prints
+bun run studio enqueue examples/studio-backend/events.example.json
+bun run studio run
+```
+
+A batch worker over a SQLite queue that settles billable events, decides
+every uncertain outcome from the chain, and writes the ledger only from
+finalized evidence. See [docs/studio-integration.md](docs/studio-integration.md)
+and the [reconciliation runbook](docs/reconciliation.md).
+
 ### Settlement modes
 
 - **Fallback (default):** one system transfer per nonzero share, computed
-  with the split math, plus a memo — works with nothing deployed.
+  with the split math, plus a memo. It works with nothing deployed.
 - **Program mode:** set `SETTLEMENT_PROGRAM_ID` in `.env` and settlement
   becomes a single instruction that re-validates the split on-chain,
-  enforces per-event idempotency, and pays every wallet atomically. A
-  reference deployment exists on devnet — no build tools required:
+  enforces per-event idempotency, and pays every wallet atomically. The demo
+  first opens the payer's settlement namespace (once), so only the payer can
+  settle its event ids. A reference deployment exists on devnet, so no build
+  tools are required:
 
   ```
   SETTLEMENT_PROGRAM_ID=HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT
@@ -157,11 +172,13 @@ container, which image, and how to verify a specific commit:
 programs/synxed-settlement    Solana program (Rust)
 sdk/typescript                TypeScript SDK: types, split, codec, client
 examples/gaming-payment-demo  CLI demo: fake impression -> devnet settlement
+examples/studio-backend       Studio worker: event queue -> settlement -> ledger
 tests/                        Bun test suite (SDK)
 programs/synxed-settlement/svm-tests
                               In-process SVM tests of the compiled program
-docs/                         architecture, protocol spec, integration guide,
-                              payout ledger proposal, demo script
+docs/                         architecture, protocol spec, security model,
+                              integration and studio guides, reconciliation
+                              runbook, payout ledger, demo script
 ```
 
 ## Scope and roadmap
@@ -169,17 +186,19 @@ docs/                         architecture, protocol spec, integration guide,
 **Current scope (implemented here):**
 
 - Deterministic, auditable split primitive (Rust + TypeScript): three-way
-  by default, one to eight shares via `SettleN`, both sharing one
-  per-event idempotency record
-- Devnet settlement program with per-event idempotency
+  by default, one to eight shares, native or classic SPL Token, all sharing
+  one idempotency record per event
+- Devnet settlement program with per-integrator settlement namespaces: only
+  a namespace's authority can settle its event ids
 - Strict TypeScript client and a reproducible CLI demo
 - Finalized-transaction ledger reconciliation with deterministic direct and
   pooled entries; mismatched chain evidence is rejected
 - Tests for the happy path and every invalid-split case, plus in-process
-  SVM tests of the compiled program (idempotency, pre-funded record
-  defense, account validation) run in CI on every pull request
+  SVM tests of the compiled program (namespaces and authority, idempotency,
+  pre-funded record defense, account validation) run in CI on every pull
+  request
 
-**Current open-source extensions:**
+**Current open source extensions:**
 
 - Four-way reference split: artist 35%, studio 35%, platform 20%, listener
   rewards pool 10% (`bun run demo`; the original three-way example remains
@@ -193,6 +212,9 @@ docs/                         architecture, protocol spec, integration guide,
   [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md)
 - Classic SPL Token settlement for a configured six-decimal stablecoin mint,
   with checked transfers and finalized ledger reconciliation
+- A studio backend worker that uses only the public SDK, with a
+  [studio integration guide](docs/studio-integration.md) and a
+  [reconciliation runbook](docs/reconciliation.md)
 
 **Explicitly future (not in this repository):**
 
@@ -201,10 +223,12 @@ docs/                         architecture, protocol spec, integration guide,
 
 ## Contributing and security
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — branch protection, workflow, code
+- [CONTRIBUTING.md](CONTRIBUTING.md): branch protection, workflow, code
   standards
-- [SECURITY.md](SECURITY.md) — private vulnerability reporting; never
+- [SECURITY.md](SECURITY.md): private vulnerability reporting; never
   commit keypairs or `.env`
+- [docs/security-model.md](docs/security-model.md): what the program
+  enforces, what integrators must check, and known limitations
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## License

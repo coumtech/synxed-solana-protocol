@@ -25,6 +25,19 @@
         "typescript": "^5.8.3",
       },
     },
+    "examples/studio-backend": {
+      "name": "@coumtech/studio-backend-example",
+      "version": "0.1.0",
+      "dependencies": {
+        "@coumtech/synxed-solana-protocol": "workspace:*",
+        "@solana/web3.js": "^1.99.0",
+        "bs58": "^6.0.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.2.22",
+        "typescript": "^5.8.3",
+      },
+    },
     "examples/wallet-connect-demo": {
       "name": "@coumtech/synxed-wallet-connect-demo",
       "version": "0.1.0",
@@ -53,13 +66,16 @@
       "dependencies": {
         "@noble/hashes": "^1.8.0",
         "@solana/spl-token": "^0.4.15",
-        "@solana/web3.js": "^1.99.0",
         "bs58": "^6.0.0",
         "buffer": "^6.0.3",
       },
       "devDependencies": {
+        "@solana/web3.js": "^1.99.0",
         "@types/node": "^22.15.0",
         "typescript": "^5.8.3",
+      },
+      "peerDependencies": {
+        "@solana/web3.js": "^1.99.0",
       },
     },
   },
@@ -99,6 +115,8 @@
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
     "@coumtech/gaming-payment-demo": ["@coumtech/gaming-payment-demo@workspace:examples/gaming-payment-demo"],
+
+    "@coumtech/studio-backend-example": ["@coumtech/studio-backend-example@workspace:examples/studio-backend"],
 
     "@coumtech/synxed-solana-protocol": ["@coumtech/synxed-solana-protocol@workspace:sdk/typescript"],
 

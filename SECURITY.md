@@ -15,6 +15,13 @@ Do **not** open a public GitHub issue for a security vulnerability.
 
 We will acknowledge the report and work on a fix before any public disclosure.
 
+## Security model
+
+[docs/security-model.md](docs/security-model.md) states what the program
+and the TypeScript client protect, what they leave to the integrator, and the
+known limitations of the reference devnet deployment. Read it before
+integrating, and check a suspected issue against it before reporting.
+
 ## Secrets and keypairs
 
 - Never commit `.env`, keypairs, or program deploy keys.

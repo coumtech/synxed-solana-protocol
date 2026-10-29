@@ -21,6 +21,7 @@ import {
 import { fakeAudioAdImpression } from "./event.ts";
 import {
   REPO_ROOT,
+  demoNamespace,
   ensureFunds,
   envString,
   loadPayer,
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
     );
   }
   await ensureFunds(connection, payer, SOL_FEE_AND_RENT_BUFFER);
+  const namespace = await demoNamespace(connection, payer, programId);
 
   const recipients = loadRecipients(true);
   const wallets = [
@@ -95,6 +97,7 @@ async function main(): Promise<void> {
     mint,
     decimals: REQUIRED_DECIMALS,
     programId,
+    namespace,
   });
   console.log("Classic SPL Token settlement submitted");
   console.log(`  mint       ${mint.toBase58()}`);
@@ -112,6 +115,7 @@ async function main(): Promise<void> {
     connection,
     signature: submission.signature,
     programId,
+    namespace,
     request,
     tokenBaseUnitsPerAtomicUnit: 1n,
     mint,
