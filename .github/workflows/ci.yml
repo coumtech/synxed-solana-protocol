@@ -41,7 +41,7 @@ jobs:
         run: |
           if grep -RnE '(:\s*any\b|as\s+any\b|<any[,>])' \
             sdk/typescript/src examples/gaming-payment-demo/src tests \
-            examples/wallet-connect-demo/src scripts \
+            examples/wallet-connect-demo/src examples/studio-backend/src scripts \
             --include='*.ts' --include='*.tsx'; then
             echo 'Explicit `any` found: this repo is strict TypeScript with no `any`.'
             exit 1

@@ -6,12 +6,13 @@
   "workspaces": [
     "sdk/typescript",
     "examples/gaming-payment-demo",
-    "examples/wallet-connect-demo"
+    "examples/wallet-connect-demo",
+    "examples/studio-backend"
   ],
   "scripts": {
     "test": "bun test",
     "test:rust": "cargo test --manifest-path programs/synxed-settlement/Cargo.toml",
-    "typecheck": "bunx tsc --noEmit -p sdk/typescript/tsconfig.json && bunx tsc --noEmit -p examples/gaming-payment-demo/tsconfig.json && bunx tsc --noEmit -p examples/wallet-connect-demo/tsconfig.json && bunx tsc --noEmit -p tests/tsconfig.json && bunx tsc --noEmit -p scripts/tsconfig.json",
+    "typecheck": "bunx tsc --noEmit -p sdk/typescript/tsconfig.json && bunx tsc --noEmit -p examples/gaming-payment-demo/tsconfig.json && bunx tsc --noEmit -p examples/wallet-connect-demo/tsconfig.json && bunx tsc --noEmit -p examples/studio-backend/tsconfig.json && bunx tsc --noEmit -p tests/tsconfig.json && bunx tsc --noEmit -p scripts/tsconfig.json",
     "demo": "bun run examples/gaming-payment-demo/src/nway.ts",
     "demo:three-way": "bun run examples/gaming-payment-demo/src/index.ts",
     "demo:nway": "bun run examples/gaming-payment-demo/src/nway.ts",
@@ -19,6 +20,7 @@
     "demo:keygen": "bun run examples/gaming-payment-demo/src/keygen.ts",
     "demo:wallet": "bun run --cwd examples/wallet-connect-demo dev",
     "build:wallet": "bun run --cwd examples/wallet-connect-demo build",
+    "studio": "bun run examples/studio-backend/src/cli.ts",
     "build:sdk": "bun run scripts/build-sdk-package.ts",
     "smoke:sdk": "bun run scripts/smoke-sdk-package.ts"
   },

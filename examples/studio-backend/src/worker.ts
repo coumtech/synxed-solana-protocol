@@ -280,7 +280,7 @@ export class SettlementWorker {
         store.setEventStatus(event.eventId, "in_flight", rows.error);
         return "unresolved";
       }
-      const landed = attempts.find((attempt) => attempt.signature === created.signature)?.attempt ?? null;
+      const landed = [...attempts].reverse().find((attempt) => attempt.signature === created.signature)?.attempt ?? null;
       store.recordPaid(
         event.eventId,
         landed,
@@ -388,8 +388,10 @@ export class SettlementWorker {
       });
       return { ok: true, reconciliation };
     } catch (error) {
-      const mismatch = error instanceof LedgerError && MISMATCH_CODES.has(error.code);
-      return { ok: false, mismatch, error: String(error) };
+      if (error instanceof LedgerError) {
+        return { ok: false, mismatch: MISMATCH_CODES.has(error.code), error: `${error.code}: ${error.message}` };
+      }
+      return { ok: false, mismatch: false, error: String(error) };
     }
   }
 

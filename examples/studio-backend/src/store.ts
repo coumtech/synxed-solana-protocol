@@ -56,6 +56,10 @@ export interface StoredAttempt {
   attempt: number;
   request: SettlementRequestN;
   params: AttemptParams;
+  /**
+   * Not unique: an attempt built from the same request and blockhash as an
+   * earlier one is the same transaction, with the same signature.
+   */
   signature: string | null;
   /** The signed transaction, base64, resent unchanged until it expires. */
   rawTransaction: string | null;
@@ -85,7 +89,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   attempt INTEGER NOT NULL,
   request TEXT NOT NULL,
   params TEXT NOT NULL,
-  signature TEXT UNIQUE,
+  signature TEXT,
   raw_transaction TEXT,
   last_valid_block_height INTEGER,
   status TEXT NOT NULL,
