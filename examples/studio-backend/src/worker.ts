@@ -147,8 +147,12 @@ export class SettlementWorker {
   // the note, and the outcome reported is the one stored.
   #contain(eventId: string, note: string): Outcome {
     const status = this.#options.store.event(eventId)?.status;
-    if (status === "in_flight") {
-      this.#options.store.setEventStatus(eventId, "in_flight", note);
+    try {
+      if (status === "in_flight") {
+        this.#options.store.setEventStatus(eventId, "in_flight", note);
+      }
+    } catch {
+      // A store fault must not stop the batch; the event stays as it was.
     }
     try {
       this.#log(`${eventId}: ${note}`);
@@ -197,7 +201,7 @@ export class SettlementWorker {
     }
     // Read the blockhash before an attempt is stored: a transient RPC fault is
     // not a reason to ask for a person, so it must not use up an attempt.
-    let latest;
+    let latest: Awaited<ReturnType<Connection["getLatestBlockhash"]>>;
     try {
       latest = await connection.getLatestBlockhash("confirmed");
     } catch (error) {

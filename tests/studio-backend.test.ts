@@ -477,6 +477,55 @@ describe("studio backend: settlement worker", () => {
     expect(store.event(EVENT)?.note).toContain("settle failed");
   });
 
+  test("a store fault inside the catch does not stop the batch", async () => {
+    const { store, worker } = setup();
+    const real = store.setEventStatus.bind(store);
+    let threw = false;
+    (store as unknown as { setEventStatus: typeof real }).setEventStatus = (eventId, status, note) => {
+      if (!threw && note?.includes("settle failed")) {
+        threw = true;
+        throw new Error("SQLITE_BUSY: database is locked");
+      }
+      real(eventId, status, note);
+    };
+    const summary = await worker({
+      beforeSend: () => {
+        throw new Error("crash");
+      },
+    }).run();
+    expect(threw).toBe(true);
+    expect(summary.settled[EVENT]).toBe("unresolved");
+  });
+
+  test("a refusal whose log throws reports retry and keeps the event pending", async () => {
+    const { chain, store, worker } = setup();
+    chain.behaviours.push("refuse");
+    const summary = await worker({
+      log: (line) => {
+        if (line.includes("refused")) {
+          throw new Error("log sink down");
+        }
+      },
+    }).run();
+    expect(summary.settled[EVENT]).toBe("retry");
+    expect(store.event(EVENT)?.status).toBe("pending");
+  });
+
+  test("a build failure whose log throws keeps needs_attention", async () => {
+    const { store, worker } = setup();
+    const good = exampleEvents()[0];
+    store.enqueue({ ...good.request, eventId: "evt_bad", amountAtomic: 2n ** 64n - 1n }, good.beneficiaryIds);
+    const summary = await worker({
+      log: (line) => {
+        if (line.includes("cannot build")) {
+          throw new Error("log sink down");
+        }
+      },
+    }).run();
+    expect(summary.settled["evt_bad"]).toBe("needs_attention");
+    expect(store.event("evt_bad")?.status).toBe("needs_attention");
+  });
+
   test("one event that cannot be built does not stop the rest of the batch", async () => {
     const { store, worker } = setup();
     const good = exampleEvents()[0];
