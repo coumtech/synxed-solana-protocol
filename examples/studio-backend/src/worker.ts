@@ -122,11 +122,25 @@ export class SettlementWorker {
   async run(limit = 10): Promise<RunSummary> {
     const { store } = this.#options;
     const summary: RunSummary = { resolved: {}, settled: {} };
+    // One event that cannot be read or built must not stop the rest: leave it
+    // in place with a note and continue.
     for (const event of store.eventsWithStatus("in_flight")) {
-      summary.resolved[event.eventId] = await this.resolve(event.eventId);
+      try {
+        summary.resolved[event.eventId] = await this.resolve(event.eventId);
+      } catch (error) {
+        this.#log(`${event.eventId}: resolve failed: ${String(error)}`);
+        store.setEventStatus(event.eventId, "in_flight", `resolve failed: ${String(error)}`);
+        summary.resolved[event.eventId] = "unresolved";
+      }
     }
     for (const event of store.eventsWithStatus("pending", limit)) {
-      summary.settled[event.eventId] = await this.settle(event);
+      try {
+        summary.settled[event.eventId] = await this.settle(event);
+      } catch (error) {
+        this.#log(`${event.eventId}: settle failed: ${String(error)}`);
+        store.setEventStatus(event.eventId, "in_flight", `settle failed: ${String(error)}`);
+        summary.settled[event.eventId] = "unresolved";
+      }
     }
     return summary;
   }
@@ -166,17 +180,28 @@ export class SettlementWorker {
       return "needs_attention";
     }
     const attempt = store.beginAttempt(event.eventId, event.request, this.#params());
-    const prepared = this.#build(event.request);
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-    const transaction = prepared.transaction;
-    transaction.feePayer = payer.publicKey;
-    transaction.recentBlockhash = blockhash;
-    transaction.sign(...this.#signers());
-    if (transaction.signature === null) {
-      throw new Error("the transaction was not signed");
+    let signature: string;
+    let raw: Buffer;
+    let lastValidBlockHeight: number;
+    try {
+      const prepared = this.#build(event.request);
+      const latest = await connection.getLatestBlockhash("confirmed");
+      lastValidBlockHeight = latest.lastValidBlockHeight;
+      const transaction = prepared.transaction;
+      transaction.feePayer = payer.publicKey;
+      transaction.recentBlockhash = latest.blockhash;
+      transaction.sign(...this.#signers());
+      if (transaction.signature === null) {
+        throw new Error("the transaction was not signed");
+      }
+      signature = bs58.encode(transaction.signature);
+      raw = transaction.serialize();
+    } catch (error) {
+      store.setAttemptStatus(event.eventId, attempt, "failed", String(error));
+      store.setEventStatus(event.eventId, "needs_attention", `cannot build the settlement: ${String(error)}`);
+      this.#log(`${event.eventId}: cannot build the settlement: ${String(error)}`);
+      return "needs_attention";
     }
-    const signature = bs58.encode(transaction.signature);
-    const raw = transaction.serialize();
     store.recordSigned(event.eventId, attempt, signature, raw.toString("base64"), lastValidBlockHeight);
     this.#options.beforeSend?.(event.eventId, signature);
     this.#log(`${event.eventId}: attempt ${attempt} sent as ${signature}`);
@@ -193,7 +218,27 @@ export class SettlementWorker {
         // requires an uninitialized account") is told apart by the record
         // itself, not by the wording.
         const seed = eventIdSeed(event.eventId);
-        if ((await fetchSettlementRecord(connection, this.#options.programId, this.#options.namespace, seed)) === null) {
+        let record;
+        try {
+          record = await fetchSettlementRecord(connection, this.#options.programId, this.#options.namespace, seed);
+        } catch (error) {
+          store.setEventStatus(event.eventId, "in_flight", `record read failed: ${String(error)}`);
+          return "unresolved";
+        }
+        if (record === null) {
+          // A second provider may already see the record the primary has not.
+          const second = this.#options.secondConnection;
+          if (second !== undefined) {
+            try {
+              if ((await fetchSettlementRecord(second, this.#options.programId, this.#options.namespace, seed)) !== null) {
+                store.setEventStatus(event.eventId, "in_flight", "the providers disagree on the record");
+                return "unresolved";
+              }
+            } catch (error) {
+              store.setEventStatus(event.eventId, "in_flight", `record read failed: ${String(error)}`);
+              return "unresolved";
+            }
+          }
           store.setEventStatus(event.eventId, "pending", reason);
           this.#log(`${event.eventId}: attempt ${attempt} refused: ${reason}`);
           return "failed";
@@ -226,18 +271,38 @@ export class SettlementWorker {
       store.setEventStatus(eventId, "needs_attention", `attempt ${elsewhere.attempt} was made in another namespace`);
       return "needs_attention";
     }
-    if (await this.#mayStillLand(attempts)) {
-      return "waiting";
+    try {
+      if (await this.#mayStillLand(attempts)) {
+        return "waiting";
+      }
+    } catch (error) {
+      store.setEventStatus(eventId, "in_flight", `cannot read the attempts: ${String(error)}`);
+      return "unresolved";
     }
     const seed = eventIdSeed(eventId);
-    const record = await fetchSettlementRecord(connection, programId, namespace, seed);
+    let record;
+    try {
+      record = await fetchSettlementRecord(connection, programId, namespace, seed);
+    } catch (error) {
+      store.setEventStatus(eventId, "in_flight", `record read failed: ${String(error)}`);
+      return "unresolved";
+    }
     if (record === null) {
       const second = this.#options.secondConnection;
-      if (second !== undefined && (await fetchSettlementRecord(second, programId, namespace, seed)) !== null) {
-        store.setEventStatus(eventId, "in_flight", "the providers disagree on the record");
-        return "unresolved";
+      if (second !== undefined) {
+        try {
+          if ((await fetchSettlementRecord(second, programId, namespace, seed)) !== null) {
+            store.setEventStatus(eventId, "in_flight", "the providers disagree on the record");
+            return "unresolved";
+          }
+        } catch (error) {
+          store.setEventStatus(eventId, "in_flight", `record read failed: ${String(error)}`);
+          return "unresolved";
+        }
       }
-      for (const attempt of attempts) {
+      // Re-read: #mayStillLand may have marked an attempt that landed with
+      // an error as failed, and that must not be overwritten as expired.
+      for (const attempt of store.attempts(eventId)) {
         if (attempt.status === "signed") {
           store.setAttemptStatus(eventId, attempt.attempt, "expired");
         }
@@ -249,7 +314,26 @@ export class SettlementWorker {
       store.setEventStatus(eventId, "pending", "no attempt landed");
       return "retry";
     }
-    return this.#resolveRecord(event, attempts);
+    return this.#resolveRecord(event, store.attempts(eventId));
+  }
+
+  /**
+   * Decide an event a person asked to look at again, from the chain. A
+   * `needs_attention` or `incident` event goes back to in flight first; a
+   * `paid` event is left alone.
+   */
+  async recheck(eventId: string): Promise<Outcome> {
+    const event = this.#options.store.event(eventId);
+    if (event === null) {
+      throw new Error(`unknown event ${eventId}`);
+    }
+    if (event.status === "paid") {
+      return "paid";
+    }
+    if (event.status !== "in_flight") {
+      this.#options.store.setEventStatus(eventId, "in_flight", "manual recheck");
+    }
+    return this.resolve(eventId);
   }
 
   // The record exists: find the transaction that created it and reconcile it

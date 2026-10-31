@@ -359,18 +359,75 @@ describe("studio backend: settlement worker", () => {
     expect(store.attempts(EVENT)).toHaveLength(0);
   });
 
+  test("one event that cannot be built does not stop the rest of the batch", async () => {
+    const { store, worker } = setup();
+    const good = exampleEvents()[0];
+    // A valid request whose scaled amount cannot fit in u64.
+    store.enqueue(
+      { ...good.request, eventId: "evt_bad", amountAtomic: 2n ** 64n - 1n },
+      good.beneficiaryIds,
+    );
+    const summary = await worker().run();
+    expect(summary.settled["evt_bad"]).toBe("needs_attention");
+    expect(summary.settled[EVENT]).toBe("paid");
+    expect(store.event("evt_bad")?.status).toBe("needs_attention");
+  });
+
+  test("a separate namespace authority signs, and its address is stored", async () => {
+    const chain = new FakeChain();
+    const payer = Keypair.generate();
+    const authority = Keypair.generate();
+    const namespace = chain.openNamespace(payer.publicKey, authority.publicKey);
+    const store = new Store(databaseFile());
+    for (const { request, beneficiaryIds } of exampleEvents().slice(0, 1)) {
+      store.enqueue(request, beneficiaryIds);
+    }
+    const worker = new SettlementWorker({
+      store,
+      connection: chain.connection(),
+      payer,
+      authority,
+      programId: PROGRAM_ID,
+      namespace,
+      lamportsPerAtomicUnit: 1_000n,
+      finalityTimeoutMs: 200,
+      pollIntervalMs: 5,
+    });
+    expect((await worker.run()).settled).toEqual({ [EVENT]: "paid" });
+    expect(store.attempts(EVENT)[0].params.authority).toBe(authority.publicKey.toBase58());
+    expect(store.ledgerEntries().length).toBeGreaterThan(0);
+    store.close();
+  });
+
+  test("an attempt that landed with an error is recorded as failed, not expired", async () => {
+    const { chain, store, worker } = setup();
+    await worker({ beforeSend: () => { throw new Error("crash"); } }).run();
+    const attempt = store.attempts(EVENT)[0];
+    const signature = attempt.signature;
+    expect(signature).not.toBeNull();
+    chain.statuses.set(signature ?? "", {
+      slot: 1,
+      confirmations: null,
+      err: { InstructionError: [1, "IncorrectAuthority"] },
+      confirmationStatus: "finalized",
+    } as SignatureStatus);
+    chain.blockHeight += 200;
+    expect((await worker().run()).resolved).toEqual({ [EVENT]: "retry" });
+    expect(store.attempts(EVENT)[0].status).toBe("failed");
+  });
+
   test("a crash after signing resends the same bytes, never a second attempt", async () => {
     const { chain, store, worker } = setup();
     let stored: string | null = null;
-    await expect(
-      worker({
-        beforeSend: (eventId) => {
-          // The signature is stored before anything is sent.
-          stored = store.attempts(eventId)[0].signature;
-          throw new Error("crash");
-        },
-      }).run(),
-    ).rejects.toThrow("crash");
+    // A throw after signing is contained to this event: the batch continues
+    // and the event stays in flight for the next run.
+    await worker({
+      beforeSend: (eventId) => {
+        // The signature is stored before anything is sent.
+        stored = store.attempts(eventId)[0].signature;
+        throw new Error("crash");
+      },
+    }).run();
     expect(stored).not.toBeNull();
     expect(store.event(EVENT)?.status).toBe("in_flight");
     expect(chain.received).toHaveLength(0);
@@ -383,7 +440,7 @@ describe("studio backend: settlement worker", () => {
 
   test("an attempt that expired without landing is retried under the same event id", async () => {
     const { chain, store, worker } = setup();
-    await expect(worker({ beforeSend: () => { throw new Error("crash"); } }).run()).rejects.toThrow("crash");
+    await worker({ beforeSend: () => { throw new Error("crash"); } }).run();
     chain.blockHeight += 200; // past the attempt's last valid block height
     const summary = await worker().run();
     expect(summary).toEqual({ resolved: { [EVENT]: "retry" }, settled: { [EVENT]: "paid" } });
@@ -520,7 +577,7 @@ describe("studio backend: settlement worker", () => {
 
   test("a missing record is retried only when the second provider agrees", async () => {
     const { chain, store, worker } = setup();
-    await expect(worker({ beforeSend: () => { throw new Error("crash"); } }).run()).rejects.toThrow("crash");
+    await worker({ beforeSend: () => { throw new Error("crash"); } }).run();
     chain.blockHeight += 200;
     // The second provider sees a record the primary does not.
     const second = chain.mirror();
@@ -554,7 +611,7 @@ describe("studio backend: settlement worker", () => {
 
   test("an attempt made in another namespace is left to a person", async () => {
     const { chain, store, payer, worker } = setup();
-    await expect(worker({ beforeSend: () => { throw new Error("crash"); } }).run()).rejects.toThrow("crash");
+    await worker({ beforeSend: () => { throw new Error("crash"); } }).run();
     const other = chain.openNamespace(Keypair.generate().publicKey, payer.publicKey);
     expect((await worker({ namespace: other }).run()).resolved).toEqual({ [EVENT]: "needs_attention" });
     expect(store.event(EVENT)?.status).toBe("needs_attention");

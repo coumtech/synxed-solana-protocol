@@ -4,6 +4,7 @@
 //   bun run studio enqueue <file.json>  store billable events
 //   bun run studio dry-run [limit]      build and simulate pending events; sends and writes nothing
 //   bun run studio run [limit]          resolve in-flight events, then settle pending ones
+//   bun run studio resolve <eventId>    look at an event a person flagged, from the chain
 //   bun run studio status               events by status, and the ones that need a person
 //   bun run studio ledger               paid amounts per beneficiary
 
@@ -37,8 +38,8 @@ function limitArgument(raw: string | undefined): number {
 
 /**
  * The namespace to settle in. `init` opens it unless an address is pinned;
- * every other command requires it to exist and, when pinned, to be exactly
- * that address.
+ * `dry-run`, `run` and `resolve` require it to exist and, when pinned, to be
+ * exactly that address.
  */
 async function namespace(config: StudioConfig, connection: Connection, create: boolean): Promise<PublicKey> {
   const ensured = await ensureNamespace({
@@ -55,6 +56,27 @@ async function namespace(config: StudioConfig, connection: Connection, create: b
     console.log(`Opened namespace "${config.namespaceLabel}" ${ensured.address.toBase58()} (${ensured.signature})`);
   }
   return ensured.address;
+}
+
+function settlementWorker(
+  config: StudioConfig,
+  connection: Connection,
+  second: Connection | undefined,
+  address: PublicKey,
+  store: Store,
+): SettlementWorker {
+  return new SettlementWorker({
+    store,
+    connection,
+    ...(second !== undefined ? { secondConnection: second } : {}),
+    payer: config.payer,
+    ...(config.authority !== undefined ? { authority: config.authority } : {}),
+    programId: config.programId,
+    namespace: address,
+    lamportsPerAtomicUnit: config.lamportsPerAtomicUnit,
+    maxAttempts: config.maxAttempts,
+    log: (line) => console.log(line),
+  });
 }
 
 async function connections(config: StudioConfig): Promise<{ connection: Connection; second: Connection | undefined }> {
@@ -109,18 +131,7 @@ async function main(): Promise<void> {
       const address = await namespace(config, connection, false);
       const store = openStore(config.databasePath);
       try {
-        const worker = new SettlementWorker({
-          store,
-          connection,
-          ...(second !== undefined ? { secondConnection: second } : {}),
-          payer: config.payer,
-          ...(config.authority !== undefined ? { authority: config.authority } : {}),
-          programId: config.programId,
-          namespace: address,
-          lamportsPerAtomicUnit: config.lamportsPerAtomicUnit,
-          maxAttempts: config.maxAttempts,
-          log: (line) => console.log(line),
-        });
+        const worker = settlementWorker(config, connection, second, address, store);
         if (command === "dry-run") {
           for (const result of await worker.dryRun(limitArgument(argument))) {
             const sol = Number(result.lamportsTotal) / LAMPORTS_PER_SOL;
@@ -135,6 +146,22 @@ async function main(): Promise<void> {
         for (const [eventId, outcome] of Object.entries({ ...summary.resolved, ...summary.settled })) {
           console.log(`${eventId}: ${outcome}`);
         }
+      } finally {
+        store.close();
+      }
+      return;
+    }
+    case "resolve": {
+      if (argument === undefined) {
+        throw new Error("usage: resolve <eventId>");
+      }
+      const config = loadConfig();
+      const { connection, second } = await connections(config);
+      const address = await namespace(config, connection, false);
+      const store = openStore(config.databasePath);
+      try {
+        const worker = settlementWorker(config, connection, second, address, store);
+        console.log(`${argument}: ${await worker.recheck(argument)}`);
       } finally {
         store.close();
       }
@@ -168,7 +195,7 @@ async function main(): Promise<void> {
       return;
     }
     default:
-      throw new Error("usage: bun run studio <init | enqueue <file> | dry-run [limit] | run [limit] | status | ledger>");
+      throw new Error("usage: bun run studio <init | enqueue <file> | dry-run [limit] | run [limit] | resolve <eventId> | status | ledger>");
   }
 }
 

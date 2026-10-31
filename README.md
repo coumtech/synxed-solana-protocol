@@ -123,7 +123,10 @@ bun run studio enqueue examples/studio-backend/events.example.json
 bun run studio run
 ```
 
-A batch worker over a SQLite queue that settles billable events, decides
+This needs the devnet keypair from step 3 and `SETTLEMENT_PROGRAM_ID` set in
+`.env` (program mode); [docs/studio-integration.md](docs/studio-integration.md)
+lists all ten variables. A batch worker over a SQLite queue that settles
+billable events, decides
 every uncertain outcome from the chain, and writes the ledger only from
 finalized evidence. See [docs/studio-integration.md](docs/studio-integration.md)
 and the [reconciliation runbook](docs/reconciliation.md).
@@ -173,7 +176,7 @@ programs/synxed-settlement    Solana program (Rust)
 sdk/typescript                TypeScript SDK: types, split, codec, client
 examples/gaming-payment-demo  CLI demo: fake impression -> devnet settlement
 examples/studio-backend       Studio worker: event queue -> settlement -> ledger
-tests/                        Bun test suite (SDK)
+tests/                        Bun test suite (SDK and example workers)
 programs/synxed-settlement/svm-tests
                               In-process SVM tests of the compiled program
 docs/                         architecture, protocol spec, security model,

@@ -93,10 +93,14 @@ and without beneficiary ids (`reconcileSettlementN`, or
 | Retry | No attempt can land, and no record exists on either provider | Send the same stored request again under the same event id |
 | Incident | The record matches no stored request | Stop; investigate the authority key; never settle the event again |
 | Unresolved | Evidence is missing, unreadable, or the providers disagree | Retry later; escalate if it persists |
+| Failed | This attempt was refused before it could land | The event is back in the queue; the next run sends the same request again |
+| Needs attention | The worker gave up, or an attempt was made in another namespace | Stop; read the note, then decide it from the chain with `bun run studio resolve <eventId>` |
 
-In the reference worker these are the outcomes of `resolve`. The event's
-status becomes `paid` or `incident`, returns to `pending` for a retry, or
-stays `in_flight` while waiting or unresolved, with a note saying why.
+In the reference worker, `resolve` returns paid, retry, waiting, unresolved,
+incident or needs attention; `settle` can also return failed. The event's
+status becomes `paid`, `incident` or `needs_attention`, returns to `pending`
+for a retry or a refusal, or stays `in_flight` while waiting or unresolved,
+with a note saying why.
 
 ## Error codes
 

@@ -33,7 +33,8 @@ you meant to send.
   Keep it separate from the payer in production (a hardware key, or a
   multisig reconciled by hand), so a stolen payer key alone cannot settle.
   The reference worker takes it as `SETTLEMENT_AUTHORITY_KEYPAIR`; without
-  it, the payer is the authority.
+  it, the payer is the authority. The worker signs with a local keypair, so
+  a hardware key or a multisig needs a different signer.
 - Keep keypair files out of the repository (`.keys/` is ignored) and out of
   logs. Rotate a key that was ever pasted into chat, CI output, or a pull
   request (see "Operating a payer key" in
@@ -57,8 +58,10 @@ payer), or checks the one that exists, and prints its address. Pin it:
 export SETTLEMENT_NAMESPACE_ADDRESS=<address printed by init>
 ```
 
-From then on every command checks that the namespace exists at exactly that
-address and never opens a new one. Idempotency is per namespace: settling in
+From then on `init`, `dry-run`, `run` and `resolve` check that the namespace
+exists at exactly that address and never open a new one; `enqueue`, `status`
+and `ledger` are local to the database and do not load the chain config.
+Idempotency is per namespace: settling in
 a fresh namespace would let every event id be settled again. Use one
 namespace per environment (for example `studio-payouts-staging` and
 `studio-payouts`).
@@ -78,8 +81,9 @@ namespace per environment (for example `studio-payouts-staging` and
 
 ## 4. From billable events to settlement requests
 
-The worker reads events as JSON, like
-[events.example.json](../examples/studio-backend/events.example.json):
+The worker reads an array of events as JSON, like
+[events.example.json](../examples/studio-backend/events.example.json). One
+object is shown here; the file itself is an array:
 
 ```json
 {
@@ -110,9 +114,10 @@ The worker reads events as JSON, like
   minimum, which `LAMPORTS_PER_UNIT` keeps true for the example amounts.
 - **Beneficiary ids** are your stable identities for the people and
   companies paid, kept apart from wallets so that a changed wallet does not
-  break your accounting. A share without one (by default `rewards_pool`) is
-  a pool, recorded for later allocation to many listeners (see
-  [payout-ledger.md](payout-ledger.md)).
+  break your accounting. A share without one whose label is `rewards_pool`
+  (the SDK's default pooled label) is a pool, recorded for later allocation
+  to many listeners (see [payout-ledger.md](payout-ledger.md)); the example
+  worker does not pool another label.
 
 ```bash
 bun run studio enqueue examples/studio-backend/events.example.json
@@ -121,7 +126,7 @@ bun run studio enqueue examples/studio-backend/events.example.json
 ## 5. Settle
 
 ```bash
-bun run studio dry-run     # builds and simulates; sends and writes nothing
+bun run studio dry-run     # builds and simulates; sends nothing, writes no state
 bun run studio run         # resolves in-flight events, then settles pending ones
 bun run studio status      # events by status, and the ones that need a person
 bun run studio ledger      # paid amounts per beneficiary
@@ -164,8 +169,10 @@ Every outcome other than paid, and what to do about it, is in the
 
 - **Funding:** each settlement spends the settled amount, the record's rent
   (0.00085852 SOL on devnet on 28 October 2026), and the fee. A refused send
-  (for example for insufficient funds) puts the event back in the queue; after
-  `STUDIO_MAX_ATTEMPTS` the event needs a person.
+  (for example for insufficient funds) puts the event back in the queue; once
+  `STUDIO_MAX_ATTEMPTS` failed attempts are recorded, the next run marks it
+  `needs_attention`. `bun run studio resolve <eventId>` then decides it from
+  the chain without sending anything.
 - **Alerts:** alert on any `incident` or `needs_attention` event, and on
   events in flight for longer than a few minutes. `bun run studio status`
   lists them with the worker's note.
