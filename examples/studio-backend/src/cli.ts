@@ -175,11 +175,8 @@ async function main(): Promise<void> {
         }
         for (const status of ["in_flight", "pending", "incident", "needs_attention"] as const) {
           for (const event of store.eventsWithStatus(status)) {
-            // A pending event with a note is one whose last run hit a fault
-            // (a blockhash read, for example) and used no attempt.
-            if (status === "pending" && event.note === null) {
-              continue;
-            }
+            // A pending note records the last fault (a blockhash read, for
+            // example), which used no attempt.
             console.log(`${status}: ${event.eventId}${event.note === null ? "" : ` (${event.note})`}`);
           }
         }

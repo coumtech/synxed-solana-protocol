@@ -497,6 +497,25 @@ describe("studio backend: settlement worker", () => {
     expect(summary.settled[EVENT]).toBe("unresolved");
   });
 
+  test("a store read fault inside the catch does not stop the batch", async () => {
+    const { store, worker } = setup();
+    const real = store.event.bind(store);
+    let fault = false;
+    (store as unknown as { event: typeof real }).event = (eventId) => {
+      if (fault) {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }
+      return real(eventId);
+    };
+    fault = true;
+    const summary = await worker({
+      beforeSend: () => {
+        throw new Error("crash");
+      },
+    }).run();
+    expect(summary.settled[EVENT]).toBe("unresolved");
+  });
+
   test("a refusal whose log throws reports retry and keeps the event pending", async () => {
     const { chain, store, worker } = setup();
     chain.behaviours.push("refuse");

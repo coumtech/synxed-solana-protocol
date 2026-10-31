@@ -146,7 +146,13 @@ export class SettlementWorker {
   // (pending only once nothing can land). Only an event still in flight gets
   // the note, and the outcome reported is the one stored.
   #contain(eventId: string, note: string): Outcome {
-    const status = this.#options.store.event(eventId)?.status;
+    let status: StoredEvent["status"] | undefined;
+    try {
+      status = this.#options.store.event(eventId)?.status;
+    } catch {
+      // An unreadable status is unresolved, not a reason to stop the batch.
+      status = undefined;
+    }
     try {
       if (status === "in_flight") {
         this.#options.store.setEventStatus(eventId, "in_flight", note);
