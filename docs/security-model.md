@@ -237,7 +237,7 @@ second candidate, so `RECORD_HISTORY` keeps the event unresolved rather than
 paying it. On a provider that pruned the real creator, the decoy can be the
 only visible candidate, so a legacy record needs two archival providers,
 whose first available block is before the program's first deployment and
-that answer `getParsedTransactions` for those slots. With the whole history
+that answer `getParsedTransactions` for that slot. With the whole history
 visible, a single inner candidate is the creator, since another program
 invoked it, and is compared by hand; if the history is not demonstrably
 complete, the event is unresolved (section 6 of
