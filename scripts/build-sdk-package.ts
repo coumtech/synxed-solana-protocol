@@ -41,13 +41,19 @@ const CHECK_OPENER = `cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'`;
  * The publish job's tarball check, `check.cjs`, exactly as the job writes it.
  * Reads the workflow as YAML, takes the `run` block of the publish job's check
  * step, and cuts the heredoc the way bash does: the lines after the opener up
- * to the first line that is exactly `CHECK`. Refuses a workflow that is not
- * printable ASCII with LF line endings (GitHub's YAML parser breaks lines at
- * NEL, LS, PS and CR, where Bun's and JavaScript's do not), where the opener
- * appears more than once, where the step's `run` is not a literal (`|`) block
- * whose raw text matches the parsed value (YAML parsers disagree on folded
- * blocks), or where the body holds a `${{ }}` expression that GitHub would
- * substitute only in the job.
+ * to the first line that is exactly `CHECK`. Refuses a workflow:
+ * - that is not printable ASCII with LF line endings (GitHub's YAML parser
+ *   breaks lines at NEL, LS and PS, where Bun's and JavaScript's do not, and
+ *   the raw scan below splits on LF only);
+ * - that holds a `$Id$` keyword, which git's `ident` attribute would expand
+ *   in a checkout (what the tests read) but not in the committed file (what
+ *   the job writes);
+ * - where the opener appears more than once;
+ * - where any multi-line `run` of the publish job is not a literal (`|`)
+ *   block whose raw text matches the parsed value (YAML parsers disagree on
+ *   folded blocks and indentation indicators), bound to that step;
+ * - or where the check script holds a `${{ }}` expression, which GitHub would
+ *   substitute only in the job.
  */
 export function publishCheckScript(
   text = readFileSync(join(REPO_ROOT, ".github", "workflows", "publish-sdk.yml"), "utf8"),
@@ -55,15 +61,25 @@ export function publishCheckScript(
   if (/[^\n\x20-\x7e]/.test(text)) {
     throw new Error("publish-sdk.yml must be printable ASCII with LF line endings");
   }
+  if (/\$Id[$:]/.test(text)) {
+    throw new Error("publish-sdk.yml must not contain a $Id$ keyword");
+  }
   if (text.split(CHECK_OPENER).length !== 2) {
     throw new Error("publish-sdk.yml must write check.cjs exactly once");
+  }
+  for (const step of publishJobSteps(text)) {
+    const name = Reflect.get(step, "name");
+    const run = Reflect.get(step, "run");
+    if (typeof run === "string" && (run.includes("\n") || name === PUBLISH_CHECK_STEP)) {
+      if (typeof name !== "string") {
+        throw new Error("every multi-line step of the publish job must have a name");
+      }
+      assertLiteralRun(text, name, run);
+    }
   }
   const run = publishJobStep(text, PUBLISH_CHECK_STEP).run;
   if (typeof run !== "string") {
     throw new Error(`the "${PUBLISH_CHECK_STEP}" step has no run block`);
-  }
-  if (rawRunBlock(text, PUBLISH_CHECK_STEP) !== run.replace(/\n+$/, "")) {
-    throw new Error(`the "${PUBLISH_CHECK_STEP}" step's run must be a literal block that parses as written`);
   }
   const lines = run.split("\n");
   const start = lines.indexOf(CHECK_OPENER);
@@ -78,63 +94,100 @@ export function publishCheckScript(
   return `${body}\n`;
 }
 
+const BINDING_MARKER = "# synxed binding marker";
+
+/**
+ * Require a publish job step's `run` to be a literal block whose raw text is
+ * what YAML reads, and bind the two: a marker line added to that raw block
+ * must appear at the end of this step's parsed `run`. A block found in the
+ * wrong place (a copy inside another value, or a run key YAML overrides with
+ * a later one) does not pass.
+ */
+function assertLiteralRun(text: string, name: string, run: string): void {
+  const raw = rawRunBlock(text, name);
+  if (raw.block !== run.replace(/\n+$/, "")) {
+    throw new Error(`the "${name}" step's run must be a literal block that parses as written`);
+  }
+  const lines = text.split("\n");
+  lines.splice(raw.end, 0, `${" ".repeat(10)}${BINDING_MARKER}`);
+  const marked = publishJobStep(lines.join("\n"), name).run;
+  if (typeof marked !== "string" || marked.replace(/\n+$/, "") !== `${raw.block}\n${BINDING_MARKER}`) {
+    throw new Error(`the "${name}" step's run block in the file is not the run YAML reads`);
+  }
+}
+
 /**
  * The text of a publish job step's `run: |` block as it stands in the file:
  * the lines after `run: |`, with the block's ten-space indentation removed,
- * up to the next line indented less. Only the publish job's own lines are
- * searched, so a step of the same name elsewhere cannot stand in for it.
- * Throws unless the step has exactly one such literal block.
+ * up to the next line indented less, and the line index just after its last
+ * line. Only the publish job's own lines are searched, so a step of the same
+ * name in another job is not read here. Throws unless the step has exactly
+ * one such literal block.
  */
-function rawRunBlock(text: string, name: string): string {
+function rawRunBlock(text: string, name: string): { block: string; end: number } {
   const all = text.split("\n");
   const job = all.indexOf("  publish:");
   if (job === -1 || all.indexOf("  publish:", job + 1) !== -1) {
     throw new Error("publish-sdk.yml must have exactly one publish job");
   }
+  // A comment line, at any indentation, does not end a job or a step for
+  // YAML, so it does not end them here either.
   let jobEnd = job + 1;
-  while (jobEnd < all.length && !/^ {0,2}\S/.test(all[jobEnd])) {
+  while (jobEnd < all.length && !/^ {0,2}[^\s#]/.test(all[jobEnd])) {
     jobEnd += 1;
   }
-  const lines = all.slice(job + 1, jobEnd);
-  const header = lines.indexOf(`      - name: ${name}`);
-  if (header === -1 || lines.indexOf(`      - name: ${name}`, header + 1) !== -1) {
+  const headers: number[] = [];
+  for (let index = job + 1; index < jobEnd; index += 1) {
+    if (all[index] === `      - name: ${name}`) {
+      headers.push(index);
+    }
+  }
+  if (headers.length !== 1) {
     throw new Error(`the publish job must have exactly one "${name}" step`);
   }
-  // A comment line, at any indentation, does not end the step for YAML, so
-  // it does not end it here: a second run key after one is still seen.
+  const header = headers[0];
   let end = header + 1;
   while (
-    end < lines.length &&
-    (lines[end] === "" || lines[end].startsWith("        ") || /^\s*#/.test(lines[end]))
+    end < jobEnd &&
+    (all[end] === "" || all[end].startsWith("        ") || /^\s*#/.test(all[end]))
   ) {
     end += 1;
   }
-  const step = lines.slice(header + 1, end);
-  const runs = step.filter((line) => /^ {8}run:/.test(line));
-  if (runs.length !== 1 || runs[0] !== "        run: |") {
+  const runs: number[] = [];
+  for (let index = header + 1; index < end; index += 1) {
+    if (/^ {8}run:/.test(all[index])) {
+      runs.push(index);
+    }
+  }
+  if (runs.length !== 1 || all[runs[0]] !== "        run: |") {
     throw new Error(`the "${name}" step's run must be a single literal block (run: |)`);
   }
-  const block: string[] = [];
-  for (const line of step.slice(step.indexOf("        run: |") + 1)) {
-    if (line !== "" && !line.startsWith(" ".repeat(10))) {
+  let last = runs[0];
+  for (let index = runs[0] + 1; index < end; index += 1) {
+    if (all[index] !== "" && !all[index].startsWith(" ".repeat(10))) {
       break;
     }
-    block.push(line.slice(10));
+    if (all[index] !== "") {
+      last = index;
+    }
   }
-  return block.join("\n").replace(/\n+$/, "");
+  const block = all.slice(runs[0] + 1, last + 1).map((line) => line.slice(10));
+  return { block: block.join("\n"), end: last + 1 };
 }
 
-/** A step of the publish job, by name, from the workflow's YAML. */
-export function publishJobStep(workflowText: string, name: string): Record<string, unknown> {
+/** The publish job's steps, from the workflow's YAML. */
+function publishJobSteps(workflowText: string): Record<string, unknown>[] {
   const parsed: unknown = Bun.YAML.parse(workflowText);
   const steps: unknown = Reflect.get(Reflect.get(Reflect.get(parsed ?? {}, "jobs") ?? {}, "publish") ?? {}, "steps");
   if (!Array.isArray(steps)) {
     throw new Error("publish-sdk.yml has no publish job steps");
   }
-  const matches = steps.filter(
-    (step): step is Record<string, unknown> =>
-      typeof step === "object" && step !== null && Reflect.get(step, "name") === name,
-  );
+  return steps.filter((step): step is Record<string, unknown> => typeof step === "object" && step !== null);
+}
+
+/** A step of the publish job, by name, from the workflow's YAML. */
+export function publishJobStep(workflowText: string, name: string): Record<string, unknown> {
+  const matches = publishJobSteps(workflowText).filter((step) => Reflect.get(step, "name") === name);
   if (matches.length !== 1) {
     throw new Error(`publish-sdk.yml must have exactly one "${name}" step`);
   }

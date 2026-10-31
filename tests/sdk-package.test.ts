@@ -238,7 +238,7 @@ const signedChecksumFile = (name: string, hidden: Buffer): Buffer =>
 // The directory of the npm on PATH. In CI these tests run under the runner's
 // own npm; the publish job runs the same check under the npm its Node pin
 // bundles.
-const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
+const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf8", timeout: 60_000 });
 if (npmRoot.status !== 0 || npmRoot.error !== undefined) {
   throw new Error(`these tests need npm on PATH: ${npmRoot.error?.message ?? npmRoot.stderr}`);
 }
@@ -327,6 +327,28 @@ describe("release configuration stays consistent", () => {
   // includes the action SHAs: a Dependabot bump of setup-node or
   // download-artifact fails here until a person updates the pin, which is the
   // review the credentialed job deserves.
+  test("only the publish job holds the release credentials", () => {
+    // Another job with the npm-publish environment or an OIDC token could
+    // stage a tarball without the check, so the job list and triggers are
+    // pinned too.
+    const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
+    const jobs = Reflect.get(parsed ?? {}, "jobs") as Record<string, Record<string, unknown>>;
+    expect(Object.keys(jobs)).toEqual(["package", "verify", "publish"]);
+    expect(Reflect.get(parsed ?? {}, "on")).toEqual({
+      workflow_dispatch: {
+        inputs: {
+          publish: { description: "Stage on npm (unchecked = dry run)", type: "boolean", default: false },
+        },
+      },
+    });
+    expect(Reflect.get(parsed ?? {}, "permissions")).toEqual({ contents: "read" });
+    for (const [id, job] of Object.entries(jobs)) {
+      if (id === "publish") continue;
+      expect(job["environment"]).toBeUndefined();
+      expect(Reflect.get(job["permissions"] ?? {}, "id-token")).toBeUndefined();
+    }
+  });
+
   test("the publish job is exactly this", () => {
     const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
     expect(Object.keys(parsed ?? {}).sort()).toEqual(["concurrency", "env", "jobs", "name", "on", "permissions"]);
@@ -536,7 +558,107 @@ describe("release configuration stays consistent", () => {
     );
     expect(decoy).not.toBe(disguised);
     expect(Reflect.get(publishJobStep(decoy, PUBLISH_CHECK_STEP), "run")).toBe(run);
-    expect(() => publishCheckScript(decoy)).toThrow("exactly one");
+    expect(() => publishCheckScript(decoy)).toThrow(`the publish job must have exactly one "${PUBLISH_CHECK_STEP}" step`);
+  });
+
+  // The real check step, written with a quoted name and a double-quoted run
+  // whose opener is escaped, so the file holds the opener only where a decoy
+  // puts it.
+  function disguiseCheckStep(text: string): { disguised: string; block: string[]; run: string } {
+    const step = splitCheckStep(text);
+    const run = String(Reflect.get(publishJobStep(text, PUBLISH_CHECK_STEP), "run"));
+    const quotedRun = JSON.stringify(run).replaceAll("<<'CHECK'", "\\x3c\\x3c'CHECK'");
+    const quotedHeader = step.header.replace("        run: |\n", `        run: ${quotedRun}\n`);
+    return { disguised: `${step.before}${quotedHeader}${step.after.slice(1)}`, block: step.block, run };
+  }
+
+  test("does not read a copy of the check step hidden inside another value", () => {
+    // The copy sits in the workflow's name, a literal block, after a line
+    // that looks like the publish job; the real job key is quoted.
+    const real = workflow("publish-sdk.yml");
+    const { disguised, block, run } = disguiseCheckStep(real);
+    const hidden = disguised
+      .replace("\n  publish:\n", '\n  "publish":\n')
+      .replace(
+        "name: Publish SDK\n",
+        `name: |\n  Publish SDK\n  publish:\n      - name: ${PUBLISH_CHECK_STEP}\n        run: |\n${block.join("\n")}\n`,
+      );
+    expect(hidden.startsWith("name: |\n")).toBe(true);
+    expect(Reflect.get(publishJobStep(hidden, PUBLISH_CHECK_STEP), "run")).toBe(run);
+    // The scan starts at the copy, so the real steps fall outside it; were
+    // they inside, the binding check would refuse the copy.
+    expect(() => publishCheckScript(hidden)).toThrow(/exactly one "Require main" step|is not the run YAML reads/);
+  });
+
+  test("does not read a run key that a later one overrides", () => {
+    const real = workflow("publish-sdk.yml");
+    const step = splitCheckStep(real);
+    const run = String(Reflect.get(publishJobStep(real, PUBLISH_CHECK_STEP), "run"));
+    const quotedRun = JSON.stringify(run).replaceAll("<<'CHECK'", "\\x3c\\x3c'CHECK'");
+    // A quoted key, and a second key after a column-0 comment: YAML reads
+    // the second value in both cases.
+    for (const second of [`        "run": ${quotedRun}`, `# a comment\n        run: ${quotedRun}`]) {
+      const twice = `${step.before}${step.header}${step.block.join("\n")}\n${second}${step.after}`;
+      expect(Reflect.get(publishJobStep(twice, PUBLISH_CHECK_STEP), "run")).toBe(run);
+      expect(() => publishCheckScript(twice)).toThrow(/single literal block|is not the run YAML reads/);
+    }
+    // The quoted key is invisible to the raw scan; only the binding catches it.
+    const quoted = `${step.before}${step.header}${step.block.join("\n")}\n        "run": ${quotedRun}${step.after}`;
+    expect(() => publishCheckScript(quoted)).toThrow("is not the run YAML reads");
+  });
+
+  test("accepts a column-0 comment between publish steps, and a same-named step in a later job", () => {
+    const real = workflow("publish-sdk.yml");
+    // Before the check step, so a scan that ended the job at the comment
+    // would miss the step.
+    const commented = real.replace(`\n      - name: ${PUBLISH_CHECK_STEP}\n`, `\n# a comment\n      - name: ${PUBLISH_CHECK_STEP}\n`);
+    expect(commented).not.toBe(real);
+    expect(publishCheckScript(commented)).toBe(publishCheckScript(real));
+    const later = `${real.replace(/\n+$/, "")}\n  later:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: ${PUBLISH_CHECK_STEP}\n        run: echo\n`;
+    expect(publishCheckScript(later)).toBe(publishCheckScript(real));
+  });
+
+  test("applies the literal-block rule to every multi-line run in the publish job", () => {
+    const real = workflow("publish-sdk.yml");
+    for (const name of ["Require main", "Check npm supports staged trusted publishing"]) {
+      const header = `      - name: ${name}\n        run: |\n`;
+      expect(real).toContain(header);
+      const indicated = real.replace(header, `      - name: ${name}\n        run: |1\n`);
+      expect(() => publishCheckScript(indicated)).toThrow(`the "${name}" step's run must be a single literal block (run: |)`);
+    }
+  });
+
+  test("refuses a second publish job line, an opener that is not a whole line, and a $Id$ keyword", () => {
+    const real = workflow("publish-sdk.yml");
+    const two = real.replace("\njobs:\n", "\njobs:\n  publish:\n    runs-on: ubuntu-24.04\n    steps: []\n");
+    expect(two).not.toBe(real);
+    expect(() => publishCheckScript(two)).toThrow("exactly one publish job");
+    const inline = real.replace(
+      `          cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'\n`,
+      `          true && cat > "$RUNNER_TEMP/check.cjs" <<'CHECK'\n`,
+    );
+    expect(inline).not.toBe(real);
+    expect(() => publishCheckScript(inline)).toThrow("does not write check.cjs");
+    const keyword = real.replace(
+      '          const fs = require("node:fs");\n',
+      '          const fs = require("node:fs");\n          const marker = "$Id$";\n',
+    );
+    expect(keyword).not.toBe(real);
+    expect(() => publishCheckScript(keyword)).toThrow("$Id$ keyword");
+  });
+
+  test("no git attribute rewrites the workflow on checkout", () => {
+    // The tests read the checked-out file; the publish job writes the
+    // committed one. A filter, ident, eol or encoding attribute would make
+    // them differ.
+    const result = spawnSync(
+      "git",
+      ["check-attr", "ident", "filter", "text", "eol", "working-tree-encoding", "--", ".github/workflows/publish-sdk.yml"],
+      { cwd: REPO_ROOT, encoding: "utf8", timeout: 60_000 },
+    );
+    expect(result.status).toBe(0);
+    const values = result.stdout.trim().split("\n").map((line) => line.split(": ").at(-1));
+    expect(values).toEqual(["unspecified", "unspecified", "unspecified", "unspecified", "unspecified"]);
   });
 
   test("CI tests the minimum Node version the package declares", () => {
