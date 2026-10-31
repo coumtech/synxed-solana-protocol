@@ -10,11 +10,14 @@ import {
 import bs58 from "bs58";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import {
+  CREATE_NAMESPACE_TAG,
+  RETIRED_TAGS,
   SETTLE_N_HEADER_LENGTH,
   SETTLE_N_TAG,
   SETTLE_TOKEN_N_HEADER_LENGTH,
   SETTLE_TOKEN_N_TAG,
   eventIdSeed,
+  findLegacySettlementRecordPda,
   findSettlementRecordPda,
 } from "./instruction.ts";
 import { computeSettlementN, splitAmountAtomicShares } from "./split.ts";
@@ -29,6 +32,9 @@ const GENESIS_HASHES: Readonly<Record<LedgerCluster, string>> = {
   "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
 };
 
+// Finalized, and readable when a wallet or multisig sent a v0 transaction.
+const FINALIZED_PARSED = { commitment: "finalized", maxSupportedTransactionVersion: 0 } as const;
+
 export type LedgerCluster = "devnet" | "mainnet-beta";
 export type LedgerEntryState = "accrued" | "claimable" | "paid";
 
@@ -37,6 +43,7 @@ export type LedgerErrorCode =
   | "TX_FAILED"
   | "TX_SIGNATURE"
   | "CLUSTER_MISMATCH"
+  | "NAMESPACE_MISMATCH"
   | "BLOCK_TIME_MISSING"
   | "PROGRAM_INSTRUCTION"
   | "INSTRUCTION_DATA"
@@ -50,7 +57,8 @@ export type LedgerErrorCode =
   | "RECIPIENT_MISMATCH"
   | "TRANSFER_MISMATCH"
   | "SCALE_RANGE"
-  | "POOL_ALLOCATION";
+  | "POOL_ALLOCATION"
+  | "RECORD_HISTORY";
 
 export class LedgerError extends Error {
   readonly code: LedgerErrorCode;
@@ -80,6 +88,9 @@ export interface ProgramSettlementObservation {
   blockTime: number;
   programId: string;
   payer: string;
+  /** The namespace authority that signed. */
+  authority: string;
+  namespace: string;
   record: string;
   eventSeedHex: string;
   amountOnChain: bigint;
@@ -95,6 +106,9 @@ export interface ProgramTokenSettlementObservation {
   blockTime: number;
   programId: string;
   payer: string;
+  /** The namespace authority that signed. */
+  authority: string;
+  namespace: string;
   sourceTokenAccount: string;
   recipientTokenAccounts: readonly string[];
   mint: string;
@@ -118,12 +132,16 @@ export interface PayoutLine {
 }
 
 export interface SettlementRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   eventId: string;
   signature: string;
   slot: number;
   cluster: LedgerCluster;
   programId: string;
+  /** The settlement namespace the event was settled in. */
+  namespace: string;
+  /** The namespace authority that signed the settlement. */
+  authority: string;
   payer: string;
   settlementRecord: string;
   mode: "program" | "program-token";
@@ -167,6 +185,8 @@ export interface SettlementReconciliation {
 export interface ReconcileObservedSettlementNOptions {
   observation: ProgramSettlementObservation;
   request: SettlementRequestN;
+  /** Your settlement namespace; evidence from any other is refused. */
+  namespace: PublicKey;
   unitsPerAtomicUnit: bigint;
   cluster?: LedgerCluster;
   /** Stable platform IDs by share label. Wallet-derived IDs are the fallback. */
@@ -189,6 +209,8 @@ export interface ReconcileSettlementNOptions
 export interface ReconcileObservedTokenSettlementNOptions {
   observation: ProgramTokenSettlementObservation;
   request: SettlementRequestN;
+  /** Your settlement namespace; evidence from any other is refused. */
+  namespace: PublicKey;
   tokenBaseUnitsPerAtomicUnit: bigint;
   mint: PublicKey;
   decimals: number;
@@ -237,10 +259,7 @@ export async function reconcileSettlementN(
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {
-    transaction = await options.connection.getParsedTransaction(
-      options.signature,
-      { commitment: "finalized", maxSupportedTransactionVersion: 0 },
-    );
+    transaction = await options.connection.getParsedTransaction(options.signature, FINALIZED_PARSED);
     if (transaction !== null) {
       break;
     }
@@ -260,6 +279,7 @@ export async function reconcileSettlementN(
   return reconcileObservedSettlementN({
     observation,
     request: options.request,
+    namespace: options.namespace,
     unitsPerAtomicUnit: options.unitsPerAtomicUnit,
     cluster,
     ...(options.beneficiaryIds !== undefined
@@ -300,18 +320,11 @@ export function observeProgramSettlement(
     );
   }
 
-  const matches = transaction.transaction.message.instructions
-    .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.programId.equals(programId));
-  if (matches.length !== 1 || !isPartiallyDecoded(matches[0].instruction)) {
-    throw new LedgerError(
-      "PROGRAM_INSTRUCTION",
-      `expected exactly one raw instruction for program ${programId.toBase58()}`,
-    );
-  }
-  const programInstruction = matches[0].instruction;
+  const settlement = findSettlementInstruction(transaction, programId);
+  const programInstruction = settlement.instruction;
   const decoded = decodeSettleNData(programInstruction.data);
-  const expectedAccountCount = decoded.bps.length + 3;
+  const count = decoded.bps.length;
+  const expectedAccountCount = count + 5;
   if (programInstruction.accounts.length !== expectedAccountCount) {
     throw new LedgerError(
       "ACCOUNT_LAYOUT",
@@ -319,12 +332,18 @@ export function observeProgramSettlement(
     );
   }
   const payer = programInstruction.accounts[0].toBase58();
+  const authority = programInstruction.accounts[1].toBase58();
+  const namespace = programInstruction.accounts[2];
   const recipients = programInstruction.accounts
-    .slice(1, 1 + decoded.bps.length)
+    .slice(3, 3 + count)
     .map((key) => key.toBase58());
-  const recordKey = programInstruction.accounts[1 + decoded.bps.length];
-  const systemProgram = programInstruction.accounts[2 + decoded.bps.length];
-  const [derivedRecord] = findSettlementRecordPda(programId, decoded.eventSeed);
+  const recordKey = programInstruction.accounts[3 + count];
+  const systemProgram = programInstruction.accounts[4 + count];
+  const [derivedRecord] = findSettlementRecordPda(
+    programId,
+    namespace,
+    decoded.eventSeed,
+  );
   if (!recordKey.equals(derivedRecord) || !systemProgram.equals(SystemProgram.programId)) {
     throw new LedgerError(
       "ACCOUNT_LAYOUT",
@@ -334,7 +353,7 @@ export function observeProgramSettlement(
 
   const memo = extractMemo(transaction);
   const inner = transaction.meta.innerInstructions?.find(
-    (group) => group.index === matches[0].index,
+    (group) => group.index === settlement.index,
   );
   if (inner === undefined) {
     throw new LedgerError(
@@ -353,6 +372,8 @@ export function observeProgramSettlement(
     blockTime: transaction.blockTime,
     programId: programId.toBase58(),
     payer,
+    authority,
+    namespace: namespace.toBase58(),
     record: recordKey.toBase58(),
     eventSeedHex: toHex(decoded.eventSeed),
     amountOnChain: decoded.amount,
@@ -382,6 +403,7 @@ export function reconcileObservedSettlementN(
       "unitsPerAtomicUnit must be a positive bigint",
     );
   }
+  assertNamespace(observation.namespace, options.namespace);
   if (observation.eventSeedHex !== toHex(eventIdSeed(request.eventId))) {
     throw new LedgerError("EVENT_MISMATCH", "event id does not match the on-chain seed");
   }
@@ -450,12 +472,14 @@ export function reconcileObservedSettlementN(
     destinationAccount: share.recipient,
   }));
   const record: SettlementRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: request.eventId,
     signature: observation.signature,
     slot: observation.slot,
     cluster: options.cluster ?? "devnet",
     programId: observation.programId,
+    namespace: observation.namespace,
+    authority: observation.authority,
     payer: observation.payer,
     settlementRecord: observation.record,
     mode: "program",
@@ -514,10 +538,7 @@ export async function reconcileTokenSettlementN(
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {
-    transaction = await options.connection.getParsedTransaction(options.signature, {
-      commitment: "finalized",
-      maxSupportedTransactionVersion: 0,
-    });
+    transaction = await options.connection.getParsedTransaction(options.signature, FINALIZED_PARSED);
     if (transaction !== null) break;
     await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   } while (Date.now() < deadline);
@@ -534,6 +555,7 @@ export async function reconcileTokenSettlementN(
       options.programId,
     ),
     request: options.request,
+    namespace: options.namespace,
     tokenBaseUnitsPerAtomicUnit: options.tokenBaseUnitsPerAtomicUnit,
     mint: options.mint,
     decimals: options.decimals,
@@ -564,35 +586,33 @@ export function observeProgramTokenSettlement(
   if (transaction.blockTime === undefined || transaction.blockTime === null) {
     throw new LedgerError("BLOCK_TIME_MISSING", `transaction ${signature} has no block time`);
   }
-  const matches = transaction.transaction.message.instructions
-    .map((instruction, index) => ({ instruction, index }))
-    .filter(({ instruction }) => instruction.programId.equals(programId));
-  if (matches.length !== 1 || !isPartiallyDecoded(matches[0].instruction)) {
-    throw new LedgerError(
-      "PROGRAM_INSTRUCTION",
-      `expected exactly one raw instruction for program ${programId.toBase58()}`,
-    );
-  }
-  const programInstruction = matches[0].instruction;
+  const settlement = findSettlementInstruction(transaction, programId);
+  const programInstruction = settlement.instruction;
   const decoded = decodeSettleTokenNData(programInstruction.data);
-  const expectedAccountCount = decoded.bps.length + 6;
+  const count = decoded.bps.length;
+  const expectedAccountCount = count + 8;
   if (programInstruction.accounts.length !== expectedAccountCount) {
     throw new LedgerError(
       "ACCOUNT_LAYOUT",
       `SettleTokenN expected ${expectedAccountCount} accounts, got ${programInstruction.accounts.length}`,
     );
   }
-  const count = decoded.bps.length;
   const payer = programInstruction.accounts[0].toBase58();
-  const sourceTokenAccount = programInstruction.accounts[1].toBase58();
+  const authority = programInstruction.accounts[1].toBase58();
+  const namespace = programInstruction.accounts[2];
+  const sourceTokenAccount = programInstruction.accounts[3].toBase58();
   const recipientTokenAccounts = programInstruction.accounts
-    .slice(2, 2 + count)
+    .slice(4, 4 + count)
     .map((key) => key.toBase58());
-  const mint = programInstruction.accounts[2 + count];
-  const record = programInstruction.accounts[3 + count];
-  const systemProgram = programInstruction.accounts[4 + count];
-  const tokenProgram = programInstruction.accounts[5 + count];
-  const [derivedRecord] = findSettlementRecordPda(programId, decoded.eventSeed);
+  const mint = programInstruction.accounts[4 + count];
+  const record = programInstruction.accounts[5 + count];
+  const systemProgram = programInstruction.accounts[6 + count];
+  const tokenProgram = programInstruction.accounts[7 + count];
+  const [derivedRecord] = findSettlementRecordPda(
+    programId,
+    namespace,
+    decoded.eventSeed,
+  );
   if (
     !record.equals(derivedRecord) ||
     !systemProgram.equals(SystemProgram.programId) ||
@@ -604,7 +624,7 @@ export function observeProgramTokenSettlement(
     );
   }
   const inner = transaction.meta.innerInstructions?.find(
-    (group) => group.index === matches[0].index,
+    (group) => group.index === settlement.index,
   );
   if (inner === undefined) {
     throw new LedgerError(
@@ -622,6 +642,8 @@ export function observeProgramTokenSettlement(
     blockTime: transaction.blockTime,
     programId: programId.toBase58(),
     payer,
+    authority,
+    namespace: namespace.toBase58(),
     sourceTokenAccount,
     recipientTokenAccounts,
     mint: mint.toBase58(),
@@ -661,6 +683,7 @@ export function reconcileObservedTokenSettlementN(
     );
   }
   const expectedTotal = request.amountAtomic * tokenBaseUnitsPerAtomicUnit;
+  assertNamespace(observation.namespace, options.namespace);
   if (observation.eventSeedHex !== toHex(eventIdSeed(request.eventId))) {
     throw new LedgerError("EVENT_MISMATCH", "event id does not match the on-chain seed");
   }
@@ -754,12 +777,14 @@ export function reconcileObservedTokenSettlementN(
       : (beneficiaryIds[share.label] ?? `wallet:${share.recipient}`),
   }));
   const record: SettlementRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: request.eventId,
     signature: observation.signature,
     slot: observation.slot,
     cluster: options.cluster ?? "devnet",
     programId: observation.programId,
+    namespace: observation.namespace,
+    authority: observation.authority,
     payer: observation.payer,
     settlementRecord: observation.record,
     mode: "program-token",
@@ -865,6 +890,330 @@ export function ledgerEntryId(
   return toHex(
     sha256(new TextEncoder().encode(`${signature}\u0000${role}\u0000${beneficiaryId}`)),
   );
+}
+
+/**
+ * The transaction's one top-level settlement instruction for `programId`. A
+ * top-level `CreateNamespace` for the same namespace may sit beside it: a
+ * wallet's first settlement opens its namespace in the same transaction.
+ * Any other top-level instruction for the program (a second settlement, a
+ * rotation, a namespace other than the settlement's) fails closed. A
+ * settlement another program invoked is not seen here; reconcile it by hand.
+ */
+function findSettlementInstruction(
+  transaction: ParsedTransactionWithMeta,
+  programId: PublicKey,
+): { instruction: PartiallyDecodedInstruction; index: number } {
+  const fromProgram = transaction.transaction.message.instructions
+    .map((instruction, index) => ({ instruction, index }))
+    .filter(({ instruction }) => instruction.programId.equals(programId));
+  const raw: { instruction: PartiallyDecodedInstruction; index: number }[] = [];
+  for (const { instruction, index } of fromProgram) {
+    if (!isPartiallyDecoded(instruction)) {
+      throw new LedgerError(
+        "PROGRAM_INSTRUCTION",
+        `expected raw instructions for program ${programId.toBase58()}`,
+      );
+    }
+    raw.push({ instruction, index });
+  }
+  const settlements = raw.filter(
+    ({ instruction }) => instructionTag(instruction.data) !== CREATE_NAMESPACE_TAG,
+  );
+  if (raw.length - settlements.length > 1) {
+    throw new LedgerError(
+      "PROGRAM_INSTRUCTION",
+      `expected at most one CreateNamespace beside the settlement for program ${programId.toBase58()}`,
+    );
+  }
+  if (settlements.length !== 1) {
+    throw new LedgerError(
+      "PROGRAM_INSTRUCTION",
+      `expected exactly one settlement instruction for program ${programId.toBase58()}, besides any CreateNamespace`,
+    );
+  }
+  const settlement = settlements[0];
+  // Both instructions carry the namespace third: the settlement after the
+  // payer and the authority, CreateNamespace (exactly four accounts) after
+  // the payer and the creator.
+  const namespace = settlement.instruction.accounts[2];
+  for (const { instruction } of raw) {
+    if (
+      instruction !== settlement.instruction &&
+      (instruction.accounts.length !== 4 ||
+        namespace === undefined ||
+        !instruction.accounts[2].equals(namespace))
+    ) {
+      throw new LedgerError(
+        "PROGRAM_INSTRUCTION",
+        "the instruction beside the settlement is not a CreateNamespace for the settlement's namespace",
+      );
+    }
+  }
+  return settlement;
+}
+
+export interface RecordHistoryOptions {
+  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction">;
+  programId: PublicKey;
+  eventId: string;
+  /**
+   * How many of the record's signatures to read before giving up (default
+   * 5,000). Anyone can add entries to a record's history (a transfer to its
+   * address, or any transaction that lists it), so a `RECORD_HISTORY` for
+   * reaching this cap means a busy or spammed record: raise the cap, with a
+   * provider that keeps full history, rather than leave the event undecided.
+   *
+   * The history is read in batches. An endpoint may answer a batch out of
+   * order or rate-limit entries inside it; the finder matches every answer by
+   * signature and falls back to one request per missing transaction, up to
+   * one per entry in a page. If the endpoint throttles those single fetches
+   * too, the finder reports `RECORD_HISTORY` rather than a partial answer.
+   */
+  maxSignatures?: number;
+}
+
+export type FindLegacySettlementTransactionOptions = RecordHistoryOptions;
+
+export interface FindSettlementTransactionOptions extends RecordHistoryOptions {
+  /** The namespace whose record to trace. */
+  namespace: PublicKey;
+}
+
+/** The finalized transaction that created a settlement record. */
+export interface SettlementTransaction {
+  signature: string;
+  slot: number;
+  /**
+   * False when another program (a multisig, for example) invoked the
+   * settlement. The reconcile functions read only top-level settlements, so
+   * compare such a transaction with the stored request by hand.
+   */
+  topLevel: boolean;
+}
+
+/**
+ * The finalized transaction that settled `eventId` in `namespace` and so
+ * created its record. Use it when `fetchSettlementRecord` finds a record your
+ * ledger has no row for (a crash between sending and recording, or a lost
+ * signature), then reconcile that signature against the stored request.
+ *
+ * It reads the record's signature history at finalized commitment and keeps
+ * the successful transactions whose settlement instruction names this
+ * namespace and event. The program creates a record once and never closes
+ * it, so at most one real settlement exists. A successful transaction that
+ * invoked the program and ignored its error can add a matching inner
+ * invocation, so more than one candidate also throws `RECORD_HISTORY`; so
+ * does none. Plain lamport transfers to the record address are skipped.
+ * Not every RPC node keeps old history: a `RECORD_HISTORY` for an old record
+ * may mean the node pruned it, and a pruned node can leave a decoy as the
+ * only visible candidate. Ask an archival provider before deciding.
+ */
+export async function findSettlementTransaction(
+  options: FindSettlementTransactionOptions,
+): Promise<SettlementTransaction> {
+  const eventSeed = eventIdSeed(options.eventId);
+  const [record] = findSettlementRecordPda(options.programId, options.namespace, eventSeed);
+  return findCreatingTransaction(options, record, (instruction, data) =>
+    (data[0] === SETTLE_N_TAG || data[0] === SETTLE_TOKEN_N_TAG) &&
+    instruction.accounts.length > 2 &&
+    instruction.accounts[2].equals(options.namespace) &&
+    hasEventSeed(data, eventSeed),
+  );
+}
+
+/**
+ * The finalized transaction that created `eventId`'s record with a retired
+ * instruction (tags 0 to 2), before namespaces. Use it when
+ * `fetchLegacySettlementRecord` finds a record, to see who paid and to whom;
+ * docs/integration.md, "Upgrading from the retired instructions", gives the
+ * decision for each case. The same history rules as
+ * `findSettlementTransaction` apply. A legacy record is decided by hand
+ * (integration.md section 6) from archival providers, because one that
+ * pruned the real creator can return a decoy as the only candidate. On a
+ * complete history, an inner invocation (another program invoked it) is
+ * compared by hand like any other.
+ */
+export async function findLegacySettlementTransaction(
+  options: FindLegacySettlementTransactionOptions,
+): Promise<SettlementTransaction> {
+  const eventSeed = eventIdSeed(options.eventId);
+  const [record] = findLegacySettlementRecordPda(options.programId, eventSeed);
+  return findCreatingTransaction(options, record, (instruction, data) =>
+    RETIRED_TAGS.some((tag) => tag === data[0]) &&
+    instruction.accounts.some((account) => account.equals(record)) &&
+    hasEventSeed(data, eventSeed),
+  );
+}
+
+// Transactions fetched per request while reading a record's history.
+const HISTORY_BATCH = 100;
+
+/**
+ * The finalized transactions for `signatures`, by signature. A batch's
+ * answers are matched by the signatures they carry, not by position: JSON-RPC
+ * lets a server answer a batch in any order, and the public devnet endpoint
+ * does. A signature the batch did not answer (or a batch the endpoint
+ * refuses, as rate-limited endpoints do element by element) is fetched on its
+ * own. If a single fetch is throttled or fails, the history is reported as
+ * unresolved rather than read partially. Missing signatures are absent from
+ * the map.
+ */
+async function fetchFinalized(
+  connection: Pick<Connection, "getParsedTransactions" | "getParsedTransaction">,
+  signatures: readonly string[],
+): Promise<Map<string, ParsedTransactionWithMeta>> {
+  const found = new Map<string, ParsedTransactionWithMeta>();
+  let batch: readonly (ParsedTransactionWithMeta | null)[] = [];
+  try {
+    batch = await connection.getParsedTransactions([...signatures], FINALIZED_PARSED);
+  } catch {
+    // Fetched one by one below.
+  }
+  // A wrapper around Connection may answer with something other than the
+  // array web3.js promises; treat that as an unanswered batch.
+  if (!Array.isArray(batch)) {
+    batch = [];
+  }
+  for (const transaction of batch) {
+    if (transaction == null || transaction.transaction?.signatures === undefined) {
+      continue;
+    }
+    for (const signature of transaction.transaction.signatures) {
+      found.set(signature, transaction);
+    }
+  }
+  for (const signature of signatures) {
+    if (!found.has(signature)) {
+      try {
+        const transaction = await connection.getParsedTransaction(signature, FINALIZED_PARSED);
+        if (transaction !== null && transaction.transaction.signatures.includes(signature)) {
+          found.set(signature, transaction);
+        }
+      } catch (error) {
+        // A throttled or unreadable single must not turn into a partial
+        // answer: report the history as unresolved instead.
+        throw new LedgerError(
+          "RECORD_HISTORY",
+          `could not read finalized transaction ${signature} from the record's history: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  return found;
+}
+
+async function findCreatingTransaction(
+  options: RecordHistoryOptions,
+  record: PublicKey,
+  settles: SettlesEvent,
+): Promise<SettlementTransaction> {
+  const maxSignatures = options.maxSignatures ?? 5_000;
+  if (!Number.isSafeInteger(maxSignatures) || maxSignatures <= 0) {
+    throw new LedgerError("RECORD_HISTORY", "maxSignatures must be a positive integer");
+  }
+  const matches: SettlementTransaction[] = [];
+  let read = 0;
+  let before: string | undefined;
+  for (;;) {
+    const limit = Math.min(1_000, maxSignatures - read);
+    const page = await options.connection.getSignaturesForAddress(
+      record,
+      before === undefined ? { limit } : { limit, before },
+      "finalized",
+    );
+    // Successful entries only. One request per batch in the common case; a
+    // refused or partly answered batch falls back to one request per missing
+    // transaction.
+    const succeeded = page.filter((entry) => entry.err === null).map((entry) => entry.signature);
+    for (let start = 0; start < succeeded.length; start += HISTORY_BATCH) {
+      const signatures = succeeded.slice(start, start + HISTORY_BATCH);
+      const transactions = await fetchFinalized(options.connection, signatures);
+      for (const signature of signatures) {
+        const transaction = transactions.get(signature) ?? null;
+        if (transaction === null) {
+          throw new LedgerError(
+            "RECORD_HISTORY",
+            `finalized transaction ${signature} from the record's history was not found`,
+          );
+        }
+        if (transaction.meta === null || transaction.meta.err !== null) {
+          continue;
+        }
+        const found = settlementIn(transaction, options.programId, settles);
+        if (found !== null) {
+          matches.push({ signature, slot: transaction.slot, topLevel: found.topLevel });
+        }
+      }
+    }
+    read += page.length;
+    if (page.length < limit) {
+      break;
+    }
+    // A history of exactly maxSignatures entries also stops here: without
+    // reading one more page it cannot be told from a longer one.
+    if (read >= maxSignatures) {
+      throw new LedgerError(
+        "RECORD_HISTORY",
+        `record ${record.toBase58()} has ${maxSignatures} or more signatures; raise maxSignatures`,
+      );
+    }
+    before = page[page.length - 1].signature;
+  }
+  if (matches.length !== 1) {
+    throw new LedgerError(
+      "RECORD_HISTORY",
+      `expected exactly one successful settlement in record ${record.toBase58()}'s history, found ${matches.length}`,
+    );
+  }
+  return matches[0];
+}
+
+/** Whether an instruction of the program settles the event; `data` is decoded. */
+type SettlesEvent = (instruction: PartiallyDecodedInstruction, data: Uint8Array) => boolean;
+
+// The settling instruction, top-level or invoked by another program.
+function settlementIn(
+  transaction: ParsedTransactionWithMeta,
+  programId: PublicKey,
+  settles: SettlesEvent,
+): { topLevel: boolean } | null {
+  const matches = (instruction: ParsedInstruction | PartiallyDecodedInstruction): boolean =>
+    isPartiallyDecoded(instruction) &&
+    instruction.programId.equals(programId) &&
+    settles(instruction, decodeData(instruction.data));
+  if (transaction.transaction.message.instructions.some(matches)) {
+    return { topLevel: true };
+  }
+  const inner = transaction.meta?.innerInstructions ?? [];
+  return inner.some((group) => group.instructions.some(matches)) ? { topLevel: false } : null;
+}
+
+// Instruction data that is not valid base58 decodes to nothing, which no
+// predicate accepts.
+function decodeData(data: string): Uint8Array {
+  try {
+    return bs58.decode(data);
+  } catch {
+    return new Uint8Array(0);
+  }
+}
+
+function hasEventSeed(data: Uint8Array, eventSeed: Uint8Array): boolean {
+  return data.length >= 33 && eventSeed.every((byte, index) => data[1 + index] === byte);
+}
+
+function instructionTag(data: string): number | null {
+  return decodeData(data)[0] ?? null;
+}
+
+function assertNamespace(observed: string, expected: PublicKey): void {
+  if (observed !== expected.toBase58()) {
+    throw new LedgerError(
+      "NAMESPACE_MISMATCH",
+      `settled in namespace ${observed}, not ${expected.toBase58()}`,
+    );
+  }
 }
 
 function decodeSettleNData(data: string): {

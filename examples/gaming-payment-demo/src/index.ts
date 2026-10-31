@@ -24,6 +24,7 @@ import {
 import { fakeAudioAdImpression } from "./event.ts";
 import {
   REPO_ROOT,
+  demoNamespace,
   ensureFunds,
   envBigInt,
   envInt,
@@ -128,13 +129,22 @@ async function main(): Promise<void> {
 
   const programId = parseProgramId();
   await ensureFunds(connection, payer, lamportsTotal + fundingOverhead(programId));
+  // The program and its namespace travel as one value: it type-checks with
+  // or without exactOptionalPropertyTypes (spreading the two keys separately
+  // does not), and program mode cannot lose its namespace on the way.
+  const program =
+    programId === undefined
+      ? undefined
+      : { programId, namespace: await demoNamespace(connection, payer, programId) };
+  // Spread as a named value: an inline `?? {}` would be widened again.
+  const programMode = program ?? {};
 
   const submission = await submitSettlement({
     connection,
     payer,
     request,
     lamportsPerAtomicUnit: scale,
-    ...(programId !== undefined ? { programId } : {}),
+    ...programMode,
   });
 
   console.log(`\nSettled on devnet (${submission.mode} mode)`);

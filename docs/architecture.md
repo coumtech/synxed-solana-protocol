@@ -24,9 +24,9 @@ cares about: a `SettlementRequest`.
 |    sdk/typescript         |
 |          |                |
 |          v                |
-|  Settlement program       |     re-validates split, pays recipients,
-|    programs/              |     records event id (idempotency PDA)
-|    synxed-settlement      |
+|  Settlement program       |     checks the namespace authority,
+|    programs/              |     re-validates split, pays recipients,
+|    synxed-settlement      |     records event id in the namespace
 +-------------+-------------+
               |
               v
@@ -34,7 +34,7 @@ cares about: a `SettlementRequest`.
    (transaction visible in Solana Explorer)
 ```
 
-Anyone can produce a `SettlementRequest` — the demo in
+Anyone can produce a `SettlementRequest`. The demo in
 `examples/gaming-payment-demo` fabricates one from a fake in-game audio-ad
 impression. No proprietary event generator is needed to use or evaluate
 this protocol.
@@ -43,11 +43,11 @@ this protocol.
 
 | Path | Role |
 | --- | --- |
-| `programs/synxed-settlement` | Solana program: `Settle` instruction, split validation, idempotency record, SOL payouts |
+| `programs/synxed-settlement` | Solana program: settlement namespaces, `SettleN` and `SettleTokenN`, split validation, idempotency record, SOL and classic SPL Token payouts |
 | `sdk/typescript` | Types, split math, instruction codec, devnet submission client |
 | `examples/gaming-payment-demo` | CLI simulator: fake impression -> split -> devnet transaction -> Explorer link |
 | `tests/` | Bun tests for split math, the instruction byte layout, and client guards |
-| `programs/synxed-settlement/svm-tests` | LiteSVM tests that run the compiled program: settlement, idempotency, pre-funded record defense, account validation |
+| `programs/synxed-settlement/svm-tests` | LiteSVM tests that run the compiled program: namespaces and authority, settlement, idempotency, pre-funded record defense, account validation |
 
 ## Design decisions
 
@@ -59,7 +59,8 @@ this protocol.
   zero amount) throw client-side and abort the transaction on-chain.
   Nothing is silently renormalized.
 - **Two settlement modes.** With a deployed program id the client sends one
-  program instruction and the chain enforces the split and idempotency.
+  program instruction, signed by the integrator's namespace authority, and the
+  chain enforces the split and idempotency within that namespace.
   Without one, it falls back to three system transfers computed with the
   same math, so a fresh clone can still produce a real devnet transaction.
 - **Feature-gated program crate.** `cargo test` runs the split-math tests on
@@ -70,6 +71,7 @@ this protocol.
 ## Trust model (current stage)
 
 The payer wallet (the platform operator) is trusted to submit truthful
-events and amounts — the program verifies the *split*, not the *event*.
+events and amounts: the program verifies the *split*, not the *event*.
 Verifying event authenticity (oracles, attestation, reconciliation) is
-future work and out of scope here.
+future work and out of scope here. The full trust model, the on-chain checks,
+and the known limitations are in [security-model.md](security-model.md).
