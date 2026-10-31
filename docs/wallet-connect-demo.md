@@ -23,9 +23,10 @@ secret. To use it you need a Solana wallet: a Wallet Standard browser wallet
 **devnet** (Phantom: Settings → Developer Settings → Testnet Mode, then
 choose Solana Devnet) and funded from <https://faucet.solana.com>. The demo
 asks for about 0.0215 SOL in the wallet, 0.0227 SOL for its first
-settlement, and a settlement spends about 0.021 SOL of it. On an iPhone,
-open the page inside your wallet app's built-in browser; on Android, Chrome
-hands off to an installed wallet app through Mobile Wallet Adapter. Evidence of a successful settlement stays in
+settlement, which spends about 0.0220 SOL of it; later settlements spend
+about 0.0209 SOL. On an iPhone, open the page inside your wallet app's
+built-in browser; on Android, Chrome hands off to an installed wallet app
+through Mobile Wallet Adapter. Evidence of a successful settlement stays in
 your browser's local storage only.
 
 The site is a Vercel project imported from this repository with **Root

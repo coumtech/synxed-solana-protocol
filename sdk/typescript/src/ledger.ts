@@ -32,6 +32,9 @@ const GENESIS_HASHES: Readonly<Record<LedgerCluster, string>> = {
   "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
 };
 
+// Finalized, and readable when a wallet or multisig sent a v0 transaction.
+const FINALIZED_PARSED = { commitment: "finalized", maxSupportedTransactionVersion: 0 } as const;
+
 export type LedgerCluster = "devnet" | "mainnet-beta";
 export type LedgerEntryState = "accrued" | "claimable" | "paid";
 
@@ -256,10 +259,7 @@ export async function reconcileSettlementN(
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {
-    transaction = await options.connection.getParsedTransaction(
-      options.signature,
-      { commitment: "finalized", maxSupportedTransactionVersion: 0 },
-    );
+    transaction = await options.connection.getParsedTransaction(options.signature, FINALIZED_PARSED);
     if (transaction !== null) {
       break;
     }
@@ -538,10 +538,7 @@ export async function reconcileTokenSettlementN(
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {
-    transaction = await options.connection.getParsedTransaction(options.signature, {
-      commitment: "finalized",
-      maxSupportedTransactionVersion: 0,
-    });
+    transaction = await options.connection.getParsedTransaction(options.signature, FINALIZED_PARSED);
     if (transaction !== null) break;
     await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   } while (Date.now() < deadline);
@@ -956,8 +953,8 @@ function findSettlementInstruction(
   return settlement;
 }
 
-export interface FindLegacySettlementTransactionOptions {
-  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions">;
+export interface RecordHistoryOptions {
+  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction">;
   programId: PublicKey;
   eventId: string;
   /**
@@ -966,12 +963,19 @@ export interface FindLegacySettlementTransactionOptions {
    * address, or any transaction that lists it), so a `RECORD_HISTORY` for
    * reaching this cap means a busy or spammed record: raise the cap, with a
    * provider that keeps full history, rather than leave the event undecided.
+   *
+   * The history is read in batches. An endpoint may answer a batch out of
+   * order or rate-limit entries inside it; the finder matches every answer by
+   * signature and falls back to one request per missing transaction, up to
+   * one per entry in a page. If the endpoint throttles those single fetches
+   * too, the finder reports `RECORD_HISTORY` rather than a partial answer.
    */
   maxSignatures?: number;
 }
 
-export interface FindSettlementTransactionOptions
-  extends FindLegacySettlementTransactionOptions {
+export type FindLegacySettlementTransactionOptions = RecordHistoryOptions;
+
+export interface FindSettlementTransactionOptions extends RecordHistoryOptions {
   /** The namespace whose record to trace. */
   namespace: PublicKey;
 }
@@ -982,8 +986,11 @@ export interface SettlementTransaction {
   slot: number;
   /**
    * False when another program (a multisig, for example) invoked the
-   * settlement. The reconcile functions read only top-level settlements, so
-   * compare such a transaction with the stored request by hand.
+   * settlement, or when a program invoked it and ignored the error, which
+   * leaves a decoy. The reconcile functions read only top-level settlements,
+   * so compare such a transaction with the stored request by hand; for a
+   * legacy record, check the provider's history first (integration.md
+   * section 6).
    */
   topLevel: boolean;
 }
@@ -997,10 +1004,13 @@ export interface SettlementTransaction {
  * It reads the record's signature history at finalized commitment and keeps
  * the successful transactions whose settlement instruction names this
  * namespace and event. The program creates a record once and never closes
- * it, so exactly one transaction can match; none, or more than one, throws
- * `RECORD_HISTORY`. Plain lamport transfers to the record address are skipped.
+ * it, so at most one real settlement exists. A successful transaction that
+ * invoked the program and ignored its error can add a matching inner
+ * invocation, so more than one candidate also throws `RECORD_HISTORY`; so
+ * does none. Plain lamport transfers to the record address are skipped.
  * Not every RPC node keeps old history: a `RECORD_HISTORY` for an old record
- * may mean the node pruned it, so ask an archival provider before deciding.
+ * may mean the node pruned it, and a pruned node can leave a decoy as the
+ * only visible candidate. Ask an archival provider before deciding.
  */
 export async function findSettlementTransaction(
   options: FindSettlementTransactionOptions,
@@ -1021,7 +1031,11 @@ export async function findSettlementTransaction(
  * `fetchLegacySettlementRecord` finds a record, to see who paid and to whom;
  * docs/integration.md, "Upgrading from the retired instructions", gives the
  * decision for each case. The same history rules as
- * `findSettlementTransaction` apply.
+ * `findSettlementTransaction` apply. A legacy record is decided by hand
+ * (integration.md section 6) from archival providers, because one that
+ * pruned the real creator can return a decoy as the only candidate. On a
+ * complete history, an inner invocation (another program invoked it) is
+ * compared by hand like any other.
  */
 export async function findLegacySettlementTransaction(
   options: FindLegacySettlementTransactionOptions,
@@ -1029,7 +1043,7 @@ export async function findLegacySettlementTransaction(
   const eventSeed = eventIdSeed(options.eventId);
   const [record] = findLegacySettlementRecordPda(options.programId, eventSeed);
   return findCreatingTransaction(options, record, (instruction, data) =>
-    (RETIRED_TAGS as readonly (number | undefined)[]).includes(data[0]) &&
+    RETIRED_TAGS.some((tag) => tag === data[0]) &&
     instruction.accounts.some((account) => account.equals(record)) &&
     hasEventSeed(data, eventSeed),
   );
@@ -1038,8 +1052,62 @@ export async function findLegacySettlementTransaction(
 // Transactions fetched per request while reading a record's history.
 const HISTORY_BATCH = 100;
 
+/**
+ * The finalized transactions for `signatures`, by signature. A batch's
+ * answers are matched by the signatures they carry, not by position: JSON-RPC
+ * lets a server answer a batch in any order, and the public devnet endpoint
+ * does. A signature the batch did not answer (or a batch the endpoint
+ * refuses, as rate-limited endpoints do element by element) is fetched on its
+ * own. If a single fetch is throttled or fails, the history is reported as
+ * unresolved rather than read partially. Missing signatures are absent from
+ * the map.
+ */
+async function fetchFinalized(
+  connection: Pick<Connection, "getParsedTransactions" | "getParsedTransaction">,
+  signatures: readonly string[],
+): Promise<Map<string, ParsedTransactionWithMeta>> {
+  const found = new Map<string, ParsedTransactionWithMeta>();
+  let batch: readonly (ParsedTransactionWithMeta | null)[] = [];
+  try {
+    batch = await connection.getParsedTransactions([...signatures], FINALIZED_PARSED);
+  } catch {
+    // Fetched one by one below.
+  }
+  // A wrapper around Connection may answer with something other than the
+  // array web3.js promises; treat that as an unanswered batch.
+  if (!Array.isArray(batch)) {
+    batch = [];
+  }
+  for (const transaction of batch) {
+    if (transaction == null || transaction.transaction?.signatures === undefined) {
+      continue;
+    }
+    for (const signature of transaction.transaction.signatures) {
+      found.set(signature, transaction);
+    }
+  }
+  for (const signature of signatures) {
+    if (!found.has(signature)) {
+      try {
+        const transaction = await connection.getParsedTransaction(signature, FINALIZED_PARSED);
+        if (transaction !== null && transaction.transaction.signatures.includes(signature)) {
+          found.set(signature, transaction);
+        }
+      } catch (error) {
+        // A throttled or unreadable single must not turn into a partial
+        // answer: report the history as unresolved instead.
+        throw new LedgerError(
+          "RECORD_HISTORY",
+          `could not read finalized transaction ${signature} from the record's history: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  return found;
+}
+
 async function findCreatingTransaction(
-  options: FindLegacySettlementTransactionOptions,
+  options: RecordHistoryOptions,
   record: PublicKey,
   settles: SettlesEvent,
 ): Promise<SettlementTransaction> {
@@ -1057,31 +1125,29 @@ async function findCreatingTransaction(
       before === undefined ? { limit } : { limit, before },
       "finalized",
     );
-    // Successful entries only, fetched in batches: one request per batch,
-    // not one per transaction.
+    // Successful entries only. One request per batch in the common case; a
+    // refused or partly answered batch falls back to one request per missing
+    // transaction.
     const succeeded = page.filter((entry) => entry.err === null).map((entry) => entry.signature);
     for (let start = 0; start < succeeded.length; start += HISTORY_BATCH) {
       const signatures = succeeded.slice(start, start + HISTORY_BATCH);
-      const transactions = await options.connection.getParsedTransactions(signatures, {
-        commitment: "finalized",
-        maxSupportedTransactionVersion: 0,
-      });
-      signatures.forEach((signature, index) => {
-        const transaction = transactions[index] ?? null;
-        if (transaction === null || !transaction.transaction.signatures.includes(signature)) {
+      const transactions = await fetchFinalized(options.connection, signatures);
+      for (const signature of signatures) {
+        const transaction = transactions.get(signature) ?? null;
+        if (transaction === null) {
           throw new LedgerError(
             "RECORD_HISTORY",
             `finalized transaction ${signature} from the record's history was not found`,
           );
         }
         if (transaction.meta === null || transaction.meta.err !== null) {
-          return;
+          continue;
         }
         const found = settlementIn(transaction, options.programId, settles);
         if (found !== null) {
           matches.push({ signature, slot: transaction.slot, topLevel: found.topLevel });
         }
-      });
+      }
     }
     read += page.length;
     if (page.length < limit) {
@@ -1141,11 +1207,7 @@ function hasEventSeed(data: Uint8Array, eventSeed: Uint8Array): boolean {
 }
 
 function instructionTag(data: string): number | null {
-  try {
-    return bs58.decode(data)[0] ?? null;
-  } catch {
-    return null;
-  }
+  return decodeData(data)[0] ?? null;
 }
 
 function assertNamespace(observed: string, expected: PublicKey): void {

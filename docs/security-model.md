@@ -193,12 +193,18 @@ record:
    the one that succeeded (`err` is null) and ran this program's `SettleN` or
    `SettleTokenN` for your event, either as a top-level instruction or as an
    inner instruction invoked by another program (look in
-   `meta.innerInstructions`): the 32 bytes after the
-   instruction's one-byte tag equal the on-chain event id (`eventIdSeed`),
-   and its namespace account is yours. At most one exists; it reports
-   `RECORD_HISTORY` for none or more, and `topLevel: false` for one another
-   program invoked. Confirm it with a second provider: same signature,
-   finalized and successful, with the same instruction data and accounts.
+   `meta.innerInstructions`): the 32 bytes after the instruction's one-byte
+   tag equal the on-chain event id (`eventIdSeed`), and its namespace
+   account is yours. It reads that history in batches; an endpoint may answer
+   a batch out of order or rate-limit entries inside it, and the finder
+   matches each answer by signature and falls back to one request per missing
+   transaction, up to one per entry in a page. If the endpoint throttles
+   those single fetches too, it reports `RECORD_HISTORY` rather than a
+   partial answer. At most one real settlement exists; it reports
+   `RECORD_HISTORY` for none or more, and
+   `topLevel: false` for one another program invoked. Confirm it with a
+   second provider: same signature, finalized and successful, with the same
+   instruction data and accounts.
 2. Reconcile it against every request stored for that event id, with the
    stored parameters and without `beneficiaryIds`, which only label ledger
    rows (`reconcileSettlementN`, `reconcileTokenSettlementN`), on both
@@ -223,14 +229,28 @@ record:
    both providers' copies counts as a mismatch (step 3). Retry the rest later
    and escalate to a person if it stays unresolved.
 
+An honest endpoint can still show a settlement that never ran: a program can
+invoke the settlement program and ignore the error, and the endpoint lists
+that failed invocation in `meta.innerInstructions` with no per-instruction
+status. A decoy that carries the right namespace and event id counts as a
+second candidate, so `RECORD_HISTORY` keeps the event unresolved rather than
+paying it. On a provider that pruned the real creator, the decoy can be the
+only visible candidate, so a legacy record needs two archival providers,
+whose first available block is before the program's first deployment and
+that answer `getParsedTransactions` for those slots. With the whole history
+visible, a single inner candidate is the creator, since another program
+invoked it, and is compared by hand; if the history is not demonstrably
+complete, the event is unresolved (section 6 of
+[integration.md](integration.md)). Treat a persistent occurrence as
+griefing, and reconcile the record's history by hand.
+
 The SDK's fetching reconcile functions read a transaction with exactly one
 top-level `SettleN` or `SettleTokenN` instruction, alongside at most one
 `CreateNamespace` for the same namespace, which a wallet's first settlement
-carries. For a settlement
-made through another program, read its stack height and resolve its account
-indexes against the transaction's static keys, then
-`meta.loadedAddresses.writable`, then `meta.loadedAddresses.readonly`, or
-request the `jsonParsed` encoding.
+carries. For a settlement made through another program, read its stack
+height and resolve its account indexes against the transaction's static
+keys, then `meta.loadedAddresses.writable`, then
+`meta.loadedAddresses.readonly`, or request the `jsonParsed` encoding.
 
 Records created by the retired instructions stay on chain at their old
 addresses (`["settlement", event_id]`), and the SDK no longer reads those
@@ -247,8 +267,11 @@ else to wallets of their choosing, since the retired instructions let anyone
 settle any event id. Find its creating transaction with
 `findLegacySettlementTransaction` and decide by who paid and to whom:
 section 6 of [integration.md](integration.md) gives the decision for each
-case. An event someone else settled first to other wallets is still unpaid
-by you, so settle it in your namespace and raise an alert. Events first
+case. An event someone else settled first in any way that does not match
+your stored request is still unpaid by you, so settle it in your namespace
+and raise an alert, unless the provider cannot show the whole history (the
+program's first deployment is outside its range, or it cannot serve parsed
+transactions for it): then the event is unresolved (section 6). Events first
 attempted after the upgrade need no such check.
 
 ### 2. Records are permanent and cost rent per settlement
@@ -288,11 +311,13 @@ succeeded, and compares every field and inner transfer. It does not verify
 transaction signatures or prove that a transaction is in a block, and for
 versioned transactions it relies on the endpoint to resolve accounts loaded
 from address lookup tables. A dishonest RPC endpoint could return fabricated
-data. The record readers cannot tell either: a record holds only its event
-id, so an endpoint that answers with another namespace's record for the same
-event reads as valid (the creating-transaction search then fails, so nothing
-is paid on it). Reconcile against an endpoint you operate or trust, and
-cross-check with a second provider when the amounts matter.
+data. The record readers cannot tell either: a record stores its
+discriminator, event id and amount, but not its namespace, so an endpoint
+that answers with another namespace's record for the same event reads as
+valid (the creating-transaction search then fails, so the event stays
+unresolved rather than marked paid). Reconcile against an endpoint you
+operate or trust, and cross-check with a second provider when the amounts
+matter.
 
 ### 6. One failing recipient fails the whole settlement
 

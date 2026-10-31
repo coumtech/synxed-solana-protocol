@@ -440,9 +440,14 @@ function persistEvidence(
 }
 
 function formatSol(lamports: bigint): string {
+  // Four decimal places, rounded rather than truncated, so the message and
+  // docs agree (0.02266684 SOL prints as 0.0227).
   const whole = lamports / 1_000_000_000n;
-  const fraction = (lamports % 1_000_000_000n).toString().padStart(9, "0").slice(0, 4);
-  return `${whole}.${fraction}`;
+  const fraction = ((lamports % 1_000_000_000n) + 50_000n) / 100_000n;
+  if (fraction === 10_000n) {
+    return `${whole + 1n}.0000`;
+  }
+  return `${whole}.${fraction.toString().padStart(4, "0")}`;
 }
 
 function shorten(address: string): string {

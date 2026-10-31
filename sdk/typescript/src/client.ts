@@ -54,8 +54,8 @@ import {
 } from "./types.ts";
 
 // Re-exported so the `./client` entry point alone can open and address a
-// namespace and size its rent (the wallet demo loads only this module and
-// `./ledger`).
+// namespace and read the namespace and record sizes (the wallet demo loads
+// only this module and `./ledger`).
 export {
   NAMESPACE_ACCOUNT_SIZE,
   SETTLEMENT_RECORD_SIZE,
@@ -201,8 +201,8 @@ export interface FetchedNamespace extends NamespaceAccount {
 export interface EnsureNamespaceOptions {
   connection: Connection;
   /**
-   * Pays the rent and, unless `creator` names another key, signs as the
-   * creator, which is part of the address.
+   * Pays the rent and signs. Unless `creator` names another key, the payer is
+   * also the namespace's creator, which is part of the address.
    */
   payer: Keypair;
   programId: PublicKey;

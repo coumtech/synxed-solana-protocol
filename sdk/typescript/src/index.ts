@@ -134,6 +134,7 @@ export {
   type ReconcileObservedTokenSettlementNOptions,
   type ReconcileSettlementNOptions,
   type ReconcileTokenSettlementNOptions,
+  type RecordHistoryOptions,
   type SettlementReconciliation,
   type SettlementRecord,
   type SettlementTransaction,
