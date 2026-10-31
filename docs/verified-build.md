@@ -134,6 +134,10 @@ comparison, performed against whatever `main` currently is.
 5. Run `scripts/verify-deployment.sh` and confirm `MATCH`, then trigger
    the *Verify deployment* workflow (or wait for the daily run) so the
    public record shows green.
+6. Record the upgrade slot (the slot of the upgrade transaction) and keep
+   the program's first deployment slot with it: the oldest signature on the
+   program id. `docs/integration.md` section 6 needs both to check that an
+   archival provider can show the whole legacy period.
 
 Do not merge program changes without upgrading: the docs describe `main`,
 and the daily check fails until the deployment catches up.
