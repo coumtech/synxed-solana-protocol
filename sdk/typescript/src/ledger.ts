@@ -956,8 +956,8 @@ function findSettlementInstruction(
   return settlement;
 }
 
-export interface FindLegacySettlementTransactionOptions {
-  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions">;
+export interface RecordHistoryOptions {
+  connection: Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction">;
   programId: PublicKey;
   eventId: string;
   /**
@@ -966,12 +966,19 @@ export interface FindLegacySettlementTransactionOptions {
    * address, or any transaction that lists it), so a `RECORD_HISTORY` for
    * reaching this cap means a busy or spammed record: raise the cap, with a
    * provider that keeps full history, rather than leave the event undecided.
+   *
+   * The history is read in batches. An endpoint may answer a batch out of
+   * order or rate-limit entries inside it; the finder matches every answer by
+   * signature and falls back to one request per transaction, so a throttled
+   * batch slows the search rather than failing it.
    */
   maxSignatures?: number;
 }
 
-export interface FindSettlementTransactionOptions
-  extends FindLegacySettlementTransactionOptions {
+export interface FindLegacySettlementTransactionOptions
+  extends RecordHistoryOptions {}
+
+export interface FindSettlementTransactionOptions extends RecordHistoryOptions {
   /** The namespace whose record to trace. */
   namespace: PublicKey;
 }
@@ -1029,7 +1036,7 @@ export async function findLegacySettlementTransaction(
   const eventSeed = eventIdSeed(options.eventId);
   const [record] = findLegacySettlementRecordPda(options.programId, eventSeed);
   return findCreatingTransaction(options, record, (instruction, data) =>
-    (RETIRED_TAGS as readonly (number | undefined)[]).includes(data[0]) &&
+    RETIRED_TAGS.some((tag) => tag === data[0]) &&
     instruction.accounts.some((account) => account.equals(record)) &&
     hasEventSeed(data, eventSeed),
   );
@@ -1038,8 +1045,48 @@ export async function findLegacySettlementTransaction(
 // Transactions fetched per request while reading a record's history.
 const HISTORY_BATCH = 100;
 
+const FINALIZED_PARSED = { commitment: "finalized", maxSupportedTransactionVersion: 0 } as const;
+
+/**
+ * The finalized transactions for `signatures`, by signature. A batch's
+ * answers are matched by the signatures they carry, not by position: JSON-RPC
+ * lets a server answer a batch in any order, and the public devnet endpoint
+ * does. A signature the batch did not answer (or a batch the endpoint
+ * refuses, as rate-limited endpoints do element by element) is fetched on its
+ * own. Missing signatures are absent from the map.
+ */
+async function fetchFinalized(
+  connection: Pick<Connection, "getParsedTransactions" | "getParsedTransaction">,
+  signatures: readonly string[],
+): Promise<Map<string, ParsedTransactionWithMeta>> {
+  const found = new Map<string, ParsedTransactionWithMeta>();
+  let batch: readonly (ParsedTransactionWithMeta | null)[] = [];
+  try {
+    batch = await connection.getParsedTransactions([...signatures], FINALIZED_PARSED);
+  } catch {
+    // Fetched one by one below.
+  }
+  for (const transaction of batch) {
+    if (transaction === null || transaction === undefined) {
+      continue;
+    }
+    for (const signature of transaction.transaction.signatures) {
+      found.set(signature, transaction);
+    }
+  }
+  for (const signature of signatures) {
+    if (!found.has(signature)) {
+      const transaction = await connection.getParsedTransaction(signature, FINALIZED_PARSED);
+      if (transaction !== null && transaction.transaction.signatures.includes(signature)) {
+        found.set(signature, transaction);
+      }
+    }
+  }
+  return found;
+}
+
 async function findCreatingTransaction(
-  options: FindLegacySettlementTransactionOptions,
+  options: RecordHistoryOptions,
   record: PublicKey,
   settles: SettlesEvent,
 ): Promise<SettlementTransaction> {
@@ -1062,26 +1109,23 @@ async function findCreatingTransaction(
     const succeeded = page.filter((entry) => entry.err === null).map((entry) => entry.signature);
     for (let start = 0; start < succeeded.length; start += HISTORY_BATCH) {
       const signatures = succeeded.slice(start, start + HISTORY_BATCH);
-      const transactions = await options.connection.getParsedTransactions(signatures, {
-        commitment: "finalized",
-        maxSupportedTransactionVersion: 0,
-      });
-      signatures.forEach((signature, index) => {
-        const transaction = transactions[index] ?? null;
-        if (transaction === null || !transaction.transaction.signatures.includes(signature)) {
+      const transactions = await fetchFinalized(options.connection, signatures);
+      for (const signature of signatures) {
+        const transaction = transactions.get(signature) ?? null;
+        if (transaction === null) {
           throw new LedgerError(
             "RECORD_HISTORY",
             `finalized transaction ${signature} from the record's history was not found`,
           );
         }
         if (transaction.meta === null || transaction.meta.err !== null) {
-          return;
+          continue;
         }
         const found = settlementIn(transaction, options.programId, settles);
         if (found !== null) {
           matches.push({ signature, slot: transaction.slot, topLevel: found.topLevel });
         }
-      });
+      }
     }
     read += page.length;
     if (page.length < limit) {
@@ -1141,11 +1185,7 @@ function hasEventSeed(data: Uint8Array, eventSeed: Uint8Array): boolean {
 }
 
 function instructionTag(data: string): number | null {
-  try {
-    return bs58.decode(data)[0] ?? null;
-  } catch {
-    return null;
-  }
+  return decodeData(data)[0] ?? null;
 }
 
 function assertNamespace(observed: string, expected: PublicKey): void {

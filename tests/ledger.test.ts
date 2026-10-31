@@ -507,8 +507,12 @@ describe("ledger reconciliation", () => {
     function historyConnection(
       history: readonly HistoryEntry[],
       calls: { address: string; limit: number; before?: string; commitment?: string }[] = [],
-      fetches: { requests: number } = { requests: 0 },
-    ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions"> {
+      fetches: { requests: number; singles?: number } = { requests: 0 },
+      // How batches are answered: in order, reversed (JSON-RPC allows any
+      // order, and the public devnet endpoint uses it), or refused.
+      batches: "in-order" | "reversed" | "refused" = "in-order",
+    ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction"> {
+      const lookup = (signature: string) => history.find((entry) => entry.signature === signature)?.transaction ?? null;
       return {
         getSignaturesForAddress: async (address, options, commitment) => {
           const limit = options?.limit ?? 1_000;
@@ -533,9 +537,18 @@ describe("ledger reconciliation", () => {
           // Finalized, and readable when a wallet or multisig sent a v0 transaction.
           expect(config).toEqual({ commitment: "finalized", maxSupportedTransactionVersion: 0 });
           fetches.requests += 1;
-          return signatures.map((signature) => history.find((entry) => entry.signature === signature)?.transaction ?? null);
+          if (batches === "refused") {
+            throw new Error("failed to get transactions: Too many requests for a specific RPC call");
+          }
+          const answers = signatures.map(lookup);
+          return batches === "reversed" ? answers.reverse() : answers;
         },
-      } as Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions">;
+        getParsedTransaction: async (signature: string, config?: unknown) => {
+          expect(config).toEqual({ commitment: "finalized", maxSupportedTransactionVersion: 0 });
+          fetches.singles = (fetches.singles ?? 0) + 1;
+          return lookup(signature);
+        },
+      } as Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction">;
     }
 
     const settlement = (signature: string) =>
@@ -709,6 +722,26 @@ describe("ledger reconciliation", () => {
           eventId: EVENT_ID,
         });
         expect(found.signature).toBe("settled");
+      }
+    });
+
+    test("matches a batch's answers by signature, and fetches a refused batch one by one", async () => {
+      const history: HistoryEntry[] = [
+        { signature: "deposit-1", err: null, transaction: deposit("deposit-1", RECORD) },
+        { signature: "settled", err: null, transaction: settlement("settled") },
+        { signature: "deposit-2", err: null, transaction: deposit("deposit-2", RECORD) },
+      ];
+      for (const batches of ["reversed", "refused"] as const) {
+        const fetches = { requests: 0, singles: 0 };
+        const found = await findSettlementTransaction({
+          connection: historyConnection(history, [], fetches, batches),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+        });
+        expect(found.signature).toBe("settled");
+        // Reordered answers are all used; a refused batch is fetched singly.
+        expect(fetches.singles).toBe(batches === "reversed" ? 0 : history.length);
       }
     });
 
