@@ -196,9 +196,9 @@ async function main(): Promise<void> {
 
 /**
  * The `status` report: counts, then in-flight, pending, incident and
- * needs-attention details, in that order. A pending note records why the last
- * run left the event queued: a blockhash fault, a refused attempt, or no
- * attempt landed. At most 50 details are printed per status, with the rest
+ * needs-attention details, in that order. A pending note records why the
+ * event is still queued: a blockhash fault, a refused attempt, or no attempt
+ * landed. At most 50 details are printed per status, with the rest
  * counted.
  */
 export function statusLines(store: Store): string[] {

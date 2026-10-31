@@ -570,6 +570,27 @@ describe("studio backend: settlement worker", () => {
     expect(lines).toContain("pending: ... and 1 more");
   });
 
+  test("status caps every status at 50, and not below", () => {
+    const good = exampleEvents()[0];
+    // Exactly 50: no remainder line.
+    const exact = setup();
+    for (let index = 0; index < 49; index += 1) {
+      exact.store.enqueue({ ...good.request, eventId: `evt_exact_${index}` }, good.beneficiaryIds);
+    }
+    expect(statusLines(exact.store).some((line) => line.includes(" more"))).toBe(false);
+    // 51 in flight: 50 details and a counted remainder, for a second status.
+    const many = setup();
+    for (let index = 0; index < 50; index += 1) {
+      many.store.enqueue({ ...good.request, eventId: `evt_many_${index}` }, good.beneficiaryIds);
+    }
+    for (const event of many.store.eventsWithStatus("pending")) {
+      many.store.setEventStatus(event.eventId, "in_flight");
+    }
+    const lines = statusLines(many.store);
+    expect(lines.filter((line) => line.startsWith("in_flight: ") && !line.includes(" more")).length).toBe(50);
+    expect(lines).toContain("in_flight: ... and 1 more");
+  });
+
   test("one event that cannot be built does not stop the rest of the batch", async () => {
     const { store, worker } = setup();
     const good = exampleEvents()[0];
