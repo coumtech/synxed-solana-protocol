@@ -558,6 +558,18 @@ describe("studio backend: settlement worker", () => {
     expect(lines.some((line) => /^pending\s+2$/.test(line))).toBe(true);
   });
 
+  test("status caps a long pending queue and counts the rest", () => {
+    const { store } = setup();
+    const good = exampleEvents()[0];
+    // 51 pending events: 50 detail lines and one counted remainder.
+    for (let index = 0; index < 50; index += 1) {
+      store.enqueue({ ...good.request, eventId: `evt_cap_${index}` }, good.beneficiaryIds);
+    }
+    const lines = statusLines(store);
+    expect(lines.filter((line) => line.startsWith("pending: ") && !line.includes(" more")).length).toBe(50);
+    expect(lines).toContain("pending: ... and 1 more");
+  });
+
   test("one event that cannot be built does not stop the rest of the batch", async () => {
     const { store, worker } = setup();
     const good = exampleEvents()[0];

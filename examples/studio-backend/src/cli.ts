@@ -195,20 +195,21 @@ async function main(): Promise<void> {
 }
 
 /**
- * The `status` report: counts, then the events that need a person, then the
- * pending queue. A pending note says why the last run left the event queued:
- * a blockhash fault (no attempt used) or a refused attempt. At most 50
- * details are printed per status, with the rest counted.
+ * The `status` report: counts, then in-flight, pending, incident and
+ * needs-attention details, in that order. A pending note records why the last
+ * run left the event queued: a blockhash fault, a refused attempt, or no
+ * attempt landed. At most 50 details are printed per status, with the rest
+ * counted.
  */
 export function statusLines(store: Store): string[] {
   const lines = store.statusCounts().map(({ status, count }) => `${status.padEnd(16)} ${count}`);
   for (const status of ["in_flight", "pending", "incident", "needs_attention"] as const) {
     const events = store.eventsWithStatus(status);
-    for (const event of events.slice(0, 50)) {
+    for (const event of events.slice(0, 5)) {
       lines.push(`${status}: ${event.eventId}${event.note === null ? "" : ` (${event.note})`}`);
     }
-    if (events.length > 50) {
-      lines.push(`${status}: ... and ${events.length - 50} more`);
+    if (events.length > 5) {
+      lines.push(`${status}: ... and ${events.length - 5} more`);
     }
   }
   return lines;
