@@ -386,10 +386,14 @@ describe("release configuration stays consistent", () => {
     );
   });
 
-  test("the release build runs the installed compiler, not bunx", () => {
-    const build = readFileSync(join(REPO_ROOT, "scripts", "build-sdk-package.ts"), "utf8");
-    expect(build).toContain('join(REPO_ROOT, "node_modules", ".bin", "tsc")');
-    expect(build).not.toContain('"bunx"');
+  test("the release build script is exactly this revision", () => {
+    // A whole-file pin: the build must keep running the installed compiler,
+    // and a comment or a differently spelled package runner cannot slip past
+    // a substring check.
+    const build = readFileSync(join(REPO_ROOT, "scripts", "build-sdk-package.ts"));
+    expect(createHash("sha256").update(build).digest("hex")).toBe(
+      "98eb60ae72f7f4353ad7a6df5716675af220c5bf1798c82ca9289725dfca581a",
+    );
   });
 
   test("the package and verify jobs keep their steps and checkout settings", () => {
