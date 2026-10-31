@@ -341,9 +341,11 @@ export function buildSdkPackage(): Manifest {
   const manifest = publishManifest(readWorkspaceManifest());
 
   rmSync(PACKAGE_DIR, { recursive: true, force: true });
+  // The installed compiler, not `bunx`: the release path must never fetch
+  // anything from the registry.
   const tsc = spawnSync(
-    "bunx",
-    ["tsc", "-p", join(SDK_DIR, "tsconfig.build.json")],
+    join(REPO_ROOT, "node_modules", ".bin", "tsc"),
+    ["-p", join(SDK_DIR, "tsconfig.build.json")],
     { cwd: REPO_ROOT, stdio: "inherit", timeout: 10 * 60 * 1000 },
   );
   if (tsc.status !== 0) {
