@@ -205,11 +205,11 @@ export function statusLines(store: Store): string[] {
   const lines = store.statusCounts().map(({ status, count }) => `${status.padEnd(16)} ${count}`);
   for (const status of ["in_flight", "pending", "incident", "needs_attention"] as const) {
     const events = store.eventsWithStatus(status);
-    for (const event of events.slice(0, 5)) {
+    for (const event of events.slice(0, 50)) {
       lines.push(`${status}: ${event.eventId}${event.note === null ? "" : ` (${event.note})`}`);
     }
-    if (events.length > 5) {
-      lines.push(`${status}: ... and ${events.length - 5} more`);
+    if (events.length > 50) {
+      lines.push(`${status}: ... and ${events.length - 50} more`);
     }
   }
   return lines;
