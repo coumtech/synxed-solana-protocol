@@ -220,10 +220,11 @@ no check. Before retrying an event first attempted before it:
 2. For a record, find its creating transaction with
    `findLegacySettlementTransaction`, and confirm the transaction with a
    second provider. Both must be archival: record the program's first
-   deployment slot and each upgrade slot when you deploy, and require each
-   provider's `getFirstAvailableBlock` to be before the first deployment, so
-   the whole legacy period is visible; the provider must also answer
-   `getParsedTransactions` for those slots. That check is necessary, not
+   deployment slot when you deploy (the reference deployment's is in
+   [verified-build.md](verified-build.md)), and require each provider's
+   `getFirstAvailableBlock` to be before it, so the whole legacy period is
+   visible; the provider must also answer `getParsedTransactions` for that
+   slot. That check is necessary, not
    sufficient. If the provider can show the whole history, a single candidate
    is the creator even when it is an inner invocation (another program
    invoked it), so compare it by hand. If it cannot, the event is unresolved:

@@ -1,0 +1,3 @@
+# Check out every text file with LF, so the packaging tests and the publish
+# workflow see the committed bytes on every platform.
+* text=auto eol=lf
