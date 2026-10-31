@@ -349,6 +349,91 @@ describe("release configuration stays consistent", () => {
     }
   });
 
+  test("every action is pinned to a commit, and no job is a reusable workflow", () => {
+    const text = workflow("publish-sdk.yml");
+    const uses = text.split("\n").filter((line) => /^\s*uses:/.test(line));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const line of uses) {
+      expect(line.trim()).toMatch(/^uses: [\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}(?: #.*)?$/);
+    }
+    const parsed: unknown = Bun.YAML.parse(text);
+    const jobs = Reflect.get(parsed ?? {}, "jobs") as Record<string, Record<string, unknown>>;
+    for (const job of Object.values(jobs)) {
+      // A job-level `uses` is a remote reusable workflow, which no pin here
+      // would describe.
+      expect(job["uses"]).toBeUndefined();
+    }
+  });
+
+  test("the package and verify jobs keep their steps and checkout settings", () => {
+    const text = workflow("publish-sdk.yml");
+    const parsed: unknown = Bun.YAML.parse(text);
+    const jobs = Reflect.get(parsed ?? {}, "jobs") as Record<string, Record<string, unknown>>;
+    const expected: Record<string, string[]> = {
+      package: [
+        "Require main for a real release",
+        "Checkout",
+        "Setup Bun",
+        "Setup Node",
+        "Install JS dependencies from the lockfile, without lifecycle scripts",
+        "Build the package",
+        "Refuse a version that is already on npm",
+        "Pack the tarball",
+        "Dry run",
+        "Upload the tarball",
+      ],
+      verify: [
+        "Checkout",
+        "Setup Bun",
+        "Setup Node",
+        "Install JS dependencies from the lockfile, without lifecycle scripts",
+        "Typecheck",
+        "Test",
+        "Download the tarball",
+        "Check the sha256",
+        "Smoke-test the exact tarball",
+      ],
+    };
+    // The only step-level environment the jobs may set. A new NODE_OPTIONS,
+    // for example, would change what the build or the check runs.
+    const env: Record<string, string[]> = {
+      "Dry run": ["TARBALL"],
+      "Check the sha256": ["TARBALL", "EXPECTED"],
+      "Smoke-test the exact tarball": ["SYNXED_SDK_TARBALL"],
+    };
+    for (const [id, names] of Object.entries(expected)) {
+      const steps = jobs[id]["steps"] as Record<string, unknown>[];
+      expect(steps.map((step) => step["name"])).toEqual(names);
+      for (const step of steps) {
+        const name = String(step["name"]);
+        expect(step["continue-on-error"]).toBeUndefined();
+        expect(step["shell"]).toBeUndefined();
+        if (name !== "Require main for a real release") {
+          expect(step["if"]).toBeUndefined();
+        }
+        if (name === "Checkout") {
+          // No `ref`: the job checks out what the dispatch selected, and the
+          // Require main step rejects anything but main for a real release.
+          expect(step["with"]).toEqual({ "persist-credentials": false });
+        }
+        const stepEnv = step["env"];
+        if (env[name] === undefined) {
+          expect(stepEnv).toBeUndefined();
+        } else {
+          expect(Object.keys(stepEnv as object).sort()).toEqual(env[name].sort());
+        }
+      }
+    }
+  });
+
+  test("a second release run does not cancel the first", () => {
+    const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
+    expect(Reflect.get(parsed ?? {}, "concurrency")).toEqual({
+      group: "publish-sdk",
+      "cancel-in-progress": false,
+    });
+  });
+
   test("the publish job is exactly this", () => {
     const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
     expect(Object.keys(parsed ?? {}).sort()).toEqual(["concurrency", "env", "jobs", "name", "on", "permissions"]);
@@ -926,6 +1011,12 @@ describe("publish job tarball check", () => {
     const result = runCheck({});
     expect(result.output).toContain("files checked");
     expect(result.status).toBe(0);
+  });
+
+  test("refuses a manifest whose version is not this checkout's", () => {
+    const result = runCheck({}, [], npmDirectory, [], undefined, { VERSION: "9.9.9" });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain(`version is ${workspace.version}`);
   });
 
   const refused: ReadonlyArray<readonly [string, Record<string, unknown>, Buffer[], string]> = [
