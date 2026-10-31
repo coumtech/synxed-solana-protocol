@@ -197,9 +197,11 @@ record:
    tag equal the on-chain event id (`eventIdSeed`), and its namespace
    account is yours. It reads that history in batches; an endpoint may answer
    a batch out of order or rate-limit entries inside it, and the finder
-   matches each answer by signature and falls back to one request per
-   transaction, so a throttled batch slows the search rather than failing
-   it. At most one exists; it reports `RECORD_HISTORY` for none or more, and
+   matches each answer by signature and falls back to one request per missing
+   transaction, up to one per entry in a page. If the endpoint throttles
+   those single fetches too, it reports `RECORD_HISTORY` rather than a
+   partial answer. At most one real settlement exists; it reports
+   `RECORD_HISTORY` for none or more, and
    `topLevel: false` for one another program invoked. Confirm it with a
    second provider: same signature, finalized and successful, with the same
    instruction data and accounts.
@@ -232,8 +234,12 @@ invoke the settlement program and ignore the error, and the endpoint lists
 that failed invocation in `meta.innerInstructions` with no per-instruction
 status. A decoy that carries the right namespace and event id counts as a
 second candidate, so `RECORD_HISTORY` keeps the event unresolved rather than
-paying it. Treat a persistent occurrence as griefing, and reconcile the
-record's history by hand.
+paying it. On a provider that pruned the real creator, the decoy can be the
+only visible candidate, so a legacy record needs a provider whose first
+available block is before the program upgrade, and an inner invocation
+(`topLevel: false`) is never a decision (section 6 of
+[integration.md](integration.md)). Treat a persistent occurrence as
+griefing, and reconcile the record's history by hand.
 
 The SDK's fetching reconcile functions read a transaction with exactly one
 top-level `SettleN` or `SettleTokenN` instruction, alongside at most one
@@ -305,8 +311,8 @@ discriminator, event id and amount, but not its namespace, so an endpoint
 that answers with another namespace's record for the same event reads as
 valid (the creating-transaction search then fails, so the event stays
 unresolved rather than marked paid). Reconcile against an endpoint you
-operate or trust, and
-cross-check with a second provider when the amounts matter.
+operate or trust, and cross-check with a second provider when the amounts
+matter.
 
 ### 6. One failing recipient fails the whole settlement
 

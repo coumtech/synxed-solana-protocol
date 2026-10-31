@@ -32,6 +32,9 @@ const GENESIS_HASHES: Readonly<Record<LedgerCluster, string>> = {
   "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
 };
 
+// Finalized, and readable when a wallet or multisig sent a v0 transaction.
+const FINALIZED_PARSED = { commitment: "finalized", maxSupportedTransactionVersion: 0 } as const;
+
 export type LedgerCluster = "devnet" | "mainnet-beta";
 export type LedgerEntryState = "accrued" | "claimable" | "paid";
 
@@ -256,10 +259,7 @@ export async function reconcileSettlementN(
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {
-    transaction = await options.connection.getParsedTransaction(
-      options.signature,
-      { commitment: "finalized", maxSupportedTransactionVersion: 0 },
-    );
+    transaction = await options.connection.getParsedTransaction(options.signature, FINALIZED_PARSED);
     if (transaction !== null) {
       break;
     }
@@ -538,10 +538,7 @@ export async function reconcileTokenSettlementN(
   const deadline = Date.now() + timeoutMs;
   let transaction: ParsedTransactionWithMeta | null = null;
   do {
-    transaction = await options.connection.getParsedTransaction(options.signature, {
-      commitment: "finalized",
-      maxSupportedTransactionVersion: 0,
-    });
+    transaction = await options.connection.getParsedTransaction(options.signature, FINALIZED_PARSED);
     if (transaction !== null) break;
     await delay(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   } while (Date.now() < deadline);
@@ -969,14 +966,14 @@ export interface RecordHistoryOptions {
    *
    * The history is read in batches. An endpoint may answer a batch out of
    * order or rate-limit entries inside it; the finder matches every answer by
-   * signature and falls back to one request per transaction, so a throttled
-   * batch slows the search rather than failing it.
+   * signature and falls back to one request per missing transaction, up to
+   * one per entry in a page. If the endpoint throttles those single fetches
+   * too, the finder reports `RECORD_HISTORY` rather than a partial answer.
    */
   maxSignatures?: number;
 }
 
-export interface FindLegacySettlementTransactionOptions
-  extends RecordHistoryOptions {}
+export type FindLegacySettlementTransactionOptions = RecordHistoryOptions;
 
 export interface FindSettlementTransactionOptions extends RecordHistoryOptions {
   /** The namespace whose record to trace. */
@@ -1004,10 +1001,13 @@ export interface SettlementTransaction {
  * It reads the record's signature history at finalized commitment and keeps
  * the successful transactions whose settlement instruction names this
  * namespace and event. The program creates a record once and never closes
- * it, so exactly one transaction can match; none, or more than one, throws
- * `RECORD_HISTORY`. Plain lamport transfers to the record address are skipped.
+ * it, so at most one real settlement exists. A successful transaction that
+ * invoked the program and ignored its error can add a matching inner
+ * invocation, so more than one candidate also throws `RECORD_HISTORY`; so
+ * does none. Plain lamport transfers to the record address are skipped.
  * Not every RPC node keeps old history: a `RECORD_HISTORY` for an old record
- * may mean the node pruned it, so ask an archival provider before deciding.
+ * may mean the node pruned it, and a pruned node can leave a decoy as the
+ * only visible candidate. Ask an archival provider before deciding.
  */
 export async function findSettlementTransaction(
   options: FindSettlementTransactionOptions,
@@ -1028,7 +1028,10 @@ export async function findSettlementTransaction(
  * `fetchLegacySettlementRecord` finds a record, to see who paid and to whom;
  * docs/integration.md, "Upgrading from the retired instructions", gives the
  * decision for each case. The same history rules as
- * `findSettlementTransaction` apply.
+ * `findSettlementTransaction` apply. A legacy record is decided by hand
+ * (integration.md section 6): an inner invocation (`topLevel: false`) is
+ * unresolved, and the provider must be archival, because one that pruned the
+ * real creator can return a decoy as the only candidate.
  */
 export async function findLegacySettlementTransaction(
   options: FindLegacySettlementTransactionOptions,
@@ -1045,15 +1048,15 @@ export async function findLegacySettlementTransaction(
 // Transactions fetched per request while reading a record's history.
 const HISTORY_BATCH = 100;
 
-const FINALIZED_PARSED = { commitment: "finalized", maxSupportedTransactionVersion: 0 } as const;
-
 /**
  * The finalized transactions for `signatures`, by signature. A batch's
  * answers are matched by the signatures they carry, not by position: JSON-RPC
  * lets a server answer a batch in any order, and the public devnet endpoint
  * does. A signature the batch did not answer (or a batch the endpoint
  * refuses, as rate-limited endpoints do element by element) is fetched on its
- * own. Missing signatures are absent from the map.
+ * own. If a single fetch is throttled or fails, the history is reported as
+ * unresolved rather than read partially. Missing signatures are absent from
+ * the map.
  */
 async function fetchFinalized(
   connection: Pick<Connection, "getParsedTransactions" | "getParsedTransaction">,
@@ -1076,9 +1079,18 @@ async function fetchFinalized(
   }
   for (const signature of signatures) {
     if (!found.has(signature)) {
-      const transaction = await connection.getParsedTransaction(signature, FINALIZED_PARSED);
-      if (transaction !== null && transaction.transaction.signatures.includes(signature)) {
-        found.set(signature, transaction);
+      try {
+        const transaction = await connection.getParsedTransaction(signature, FINALIZED_PARSED);
+        if (transaction !== null && transaction.transaction.signatures.includes(signature)) {
+          found.set(signature, transaction);
+        }
+      } catch (error) {
+        // A throttled or unreadable single must not turn into a partial
+        // answer: report the history as unresolved instead.
+        throw new LedgerError(
+          "RECORD_HISTORY",
+          `could not read finalized transaction ${signature} from the record's history: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }
@@ -1104,8 +1116,9 @@ async function findCreatingTransaction(
       before === undefined ? { limit } : { limit, before },
       "finalized",
     );
-    // Successful entries only, fetched in batches: one request per batch,
-    // not one per transaction.
+    // Successful entries only. One request per batch in the common case; a
+    // refused or partly answered batch falls back to one request per missing
+    // transaction.
     const succeeded = page.filter((entry) => entry.err === null).map((entry) => entry.signature);
     for (let start = 0; start < succeeded.length; start += HISTORY_BATCH) {
       const signatures = succeeded.slice(start, start + HISTORY_BATCH);

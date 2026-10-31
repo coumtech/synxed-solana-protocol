@@ -132,6 +132,7 @@ export {
   type ProgramTokenSettlementObservation,
   type ReconcileObservedSettlementNOptions,
   type ReconcileObservedTokenSettlementNOptions,
+  type RecordHistoryOptions,
   type ReconcileSettlementNOptions,
   type ReconcileTokenSettlementNOptions,
   type SettlementReconciliation,

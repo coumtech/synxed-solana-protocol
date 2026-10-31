@@ -42,8 +42,8 @@ are rejected, in the client and on-chain, and never renormalized.
 Splits are not limited to three parties. The `SettleN` instruction settles
 one to eight configured shares under the same rules, which is how a
 listener rewards pool becomes a fourth recipient (artist 35% / studio 35% /
-SYNXED 20% / rewards pool 10%). The original three-way instruction remains
-supported for backward compatibility.
+SYNXED 20% / rewards pool 10%). The original three-way split is still
+available through `SettleN`.
 
 ## Quickstart (~10 minutes)
 

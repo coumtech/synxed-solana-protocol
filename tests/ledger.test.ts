@@ -507,12 +507,13 @@ describe("ledger reconciliation", () => {
     function historyConnection(
       history: readonly HistoryEntry[],
       calls: { address: string; limit: number; before?: string; commitment?: string }[] = [],
-      fetches: { requests: number; singles?: number } = { requests: 0 },
+      fetches: { requests: number; singles?: number; configs?: unknown[]; failSingles?: boolean } = { requests: 0 },
       // How batches are answered: in order, reversed (JSON-RPC allows any
-      // order, and the public devnet endpoint uses it), refused, or with the
-      // first answer missing (an endpoint rate-limiting one element).
+      // order, and the public devnet endpoint uses it), refused, or with one
+      // answer missing and the batch short (a pruned or lagging backend).
       batches: "in-order" | "reversed" | "refused" | "partial" = "in-order",
     ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction"> {
+      const configs = (fetches.configs ??= []);
       const lookup = (signature: string) => history.find((entry) => entry.signature === signature)?.transaction ?? null;
       return {
         getSignaturesForAddress: async (address, options, commitment) => {
@@ -535,21 +536,27 @@ describe("ledger reconciliation", () => {
           })) as ConfirmedSignatureInfo[];
         },
         getParsedTransactions: async (signatures: string[], config?: unknown) => {
-          // Finalized, and readable when a wallet or multisig sent a v0 transaction.
-          expect(config).toEqual({ commitment: "finalized", maxSupportedTransactionVersion: 0 });
+          // Asserted after the call: the finder catches a throw here and falls
+          // back, which would hide the assertion.
+          configs.push(config);
           fetches.requests += 1;
           if (batches === "refused") {
             throw new Error("failed to get transactions: Too many requests for a specific RPC call");
           }
           const answers: (ParsedTransactionWithMeta | null)[] = signatures.map(lookup);
           if (batches === "partial") {
+            // One answer missing (null), and one request not answered at all.
             answers[0] = null;
+            answers.length = 2;
           }
           return batches === "reversed" ? answers.reverse() : answers;
         },
         getParsedTransaction: async (signature: string, config?: unknown) => {
-          expect(config).toEqual({ commitment: "finalized", maxSupportedTransactionVersion: 0 });
+          configs.push(config);
           fetches.singles = (fetches.singles ?? 0) + 1;
+          if (fetches.failSingles === true) {
+            throw new Error("429 Too Many Requests: Too many requests for a specific RPC call");
+          }
           return lookup(signature);
         },
       } as Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction">;
@@ -742,6 +749,23 @@ describe("ledger reconciliation", () => {
       expect(calls.map((call) => call.before)).toEqual([undefined, "failed-oldest"]);
     });
 
+    test("skips a transaction without meta, and instruction data that is not base58", async () => {
+      const noMeta = { ...settlement("no-meta"), meta: null } as unknown as ParsedTransactionWithMeta;
+      const badData = signed(parsedSettlement(settleNAccounts(), "0OIl", observation().memo), "bad-data");
+      for (const transaction of [noMeta, badData]) {
+        await expect(
+          findSettlementTransaction({
+            connection: historyConnection([
+              { signature: transaction.transaction.signatures[0], err: null, transaction },
+            ]),
+            programId: PROGRAM_ID,
+            namespace: NAMESPACE,
+            eventId: EVENT_ID,
+          }),
+        ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+      }
+    });
+
     test("does not count a lookalike from another program, or a transaction the RPC marks failed", async () => {
       // Anyone can send a no-op program the settlement's data and accounts.
       const lookalike = signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), "lookalike");
@@ -801,10 +825,10 @@ describe("ledger reconciliation", () => {
         ["in-order", 0],
         ["reversed", 0],
         ["refused", history.length],
-        ["partial", 1],
+        ["partial", 2],
       ] as const;
       for (const [batches, singles] of cases) {
-        const fetches = { requests: 0, singles: 0 };
+        const fetches: { requests: number; singles?: number; configs?: unknown[] } = { requests: 0, singles: 0 };
         const found = await findSettlementTransaction({
           connection: historyConnection(history, [], fetches, batches),
           programId: PROGRAM_ID,
@@ -815,7 +839,28 @@ describe("ledger reconciliation", () => {
         // Reordered answers are all used; refused and missing ones are
         // fetched singly.
         expect(fetches.singles).toBe(singles);
+        // Every request, batch or single, is finalized and v0.
+        expect(fetches.configs?.length).toBeGreaterThan(0);
+        for (const config of fetches.configs ?? []) {
+          expect(config).toEqual({ commitment: "finalized", maxSupportedTransactionVersion: 0 });
+        }
       }
+    });
+
+    test("reports an unresolved history when a single fetch is throttled", async () => {
+      const history: HistoryEntry[] = [
+        { signature: "settled", err: null, transaction: settlement("settled") },
+        { signature: "deposit", err: null, transaction: deposit("deposit", RECORD) },
+      ];
+      const fetches = { requests: 0, singles: 0, failSingles: true };
+      await expect(
+        findSettlementTransaction({
+          connection: historyConnection(history, [], fetches, "partial"),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+        }),
+      ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
     });
 
     test("fetches a spammed history in batches, not one request per transaction", async () => {
@@ -926,6 +971,47 @@ describe("ledger reconciliation", () => {
         eventId: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
       });
       expect(found.signature).toBe("legacy");
+    });
+
+    test("reports an inner invocation as not top level, even when it is the only visible candidate", async () => {
+      // A pruned provider can hide the real creator and leave a decoy CPI as
+      // the only candidate. It is reported as inner so the legacy decision
+      // treats it as unresolved rather than as a settlement.
+      const legacy = signed(
+        parsedSettlement(
+          [
+            new PublicKey(PAYER),
+            ...RECIPIENTS.map((recipient) => new PublicKey(recipient)),
+            new PublicKey(LEGACY_RECORD),
+            SYSTEM_PROGRAM,
+          ],
+          "2RWubWCVYD4cdnLHpRJR1E417pZE1tKuSLFWKrYD7Zdn6cFw3z54ihSvmfeXhy7ds6eW",
+          {},
+        ),
+        "legacy-decoy",
+      );
+      const message = legacy.transaction.message;
+      const settle = message.instructions.at(-1);
+      const wrapped = {
+        ...legacy,
+        transaction: {
+          ...legacy.transaction,
+          message: {
+            ...message,
+            instructions: [
+              ...message.instructions.slice(0, -1),
+              { accounts: [], data: "1", programId: new PublicKey(RECIPIENTS[0]) },
+            ],
+          },
+        },
+        meta: { ...legacy.meta, innerInstructions: [{ index: 1, instructions: [settle] }] },
+      } as unknown as ParsedTransactionWithMeta;
+      const found = await findLegacySettlementTransaction({
+        connection: historyConnection([{ signature: "legacy-decoy", err: null, transaction: wrapped }]),
+        programId: PROGRAM_ID,
+        eventId: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
+      });
+      expect(found).toMatchObject({ signature: "legacy-decoy", topLevel: false });
     });
 
     test("does not count a retired settlement that never names the legacy record", async () => {

@@ -183,10 +183,9 @@ await submitSettlement({ connection, payer, request,
   expired, advance or close any durable nonce you signed with, and cancel
   pending multisig proposals; an event whose signed settlement cannot be
   invalidated stays unresolved. Then check each pending event in the old
-  namespace with `fetchSettlementRecord`, which
-  counts only a record the program owns for that event (anyone can send
-  lamports to a record's address, so an account merely existing there proves
-  nothing).
+  namespace with `fetchSettlementRecord`, which counts only a record the
+  program owns for that event (anyone can send lamports to a record's
+  address, so an account merely existing there proves nothing).
   For each record found, find its creating transaction with
   `findSettlementTransaction` and reconcile it against your stored request
   (known limitation 1 of [security-model.md](security-model.md)) before
@@ -220,10 +219,15 @@ no check. Before retrying an event first attempted before it:
    settle the event in your namespace as usual.
 2. For a record, find its creating transaction with
    `findLegacySettlementTransaction`, and confirm the transaction with a
-   second provider. The SDK does not reconcile retired instructions, so
-   compare it with your stored requests by hand: the payer is the
-   instruction's first account, and the payouts are the transfers inside it,
-   other than the rent transfer to the record.
+   second provider. Both must be archival: check that `getFirstAvailableBlock`
+   is before the program upgrade, because a provider that pruned the real
+   creator can return a decoy inner invocation as the only candidate. If the
+   transaction is an inner invocation (`topLevel: false`), the event is
+   unresolved: do not pay it and do not settle it again; resolve it by hand
+   only from a provider that can show the whole history. The SDK does not
+   reconcile retired instructions, so compare it with your stored requests by
+   hand: the payer is the instruction's first account, and the payouts are the
+   transfers inside it, other than the rent transfer to the record.
    "Matches" means everything `reconcileSettlementN` and
    `reconcileTokenSettlementN` would check: the same asset (lamports or
    tokens), mint and decimals, the same recipient wallets (and their token
