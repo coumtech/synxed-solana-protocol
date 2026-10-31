@@ -986,8 +986,11 @@ export interface SettlementTransaction {
   slot: number;
   /**
    * False when another program (a multisig, for example) invoked the
-   * settlement. The reconcile functions read only top-level settlements, so
-   * compare such a transaction with the stored request by hand.
+   * settlement, or when a program invoked it and ignored the error, which
+   * leaves a decoy. The reconcile functions read only top-level settlements,
+   * so compare such a transaction with the stored request by hand; for a
+   * legacy record, check the provider's history first (integration.md
+   * section 6).
    */
   topLevel: boolean;
 }

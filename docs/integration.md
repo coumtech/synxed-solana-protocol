@@ -219,12 +219,15 @@ no check. Before retrying an event first attempted before it:
    settle the event in your namespace as usual.
 2. For a record, find its creating transaction with
    `findLegacySettlementTransaction`, and confirm the transaction with a
-   second provider. Both must be archival: record the upgrade slot when you
-   deploy and check that each provider's `getFirstAvailableBlock` is before
-   it. That check is necessary, not sufficient. If the provider can show the
-   whole history, a single candidate is the creator even when it is an inner
-   invocation (another program invoked it), so compare it by hand. If it
-   cannot, the event is unresolved: do not pay it and do not settle it again.
+   second provider. Both must be archival: record the program's first
+   deployment slot and each upgrade slot when you deploy, and require each
+   provider's `getFirstAvailableBlock` to be before the first deployment, so
+   the whole legacy period is visible; the provider must also answer
+   `getParsedTransactions` for those slots. That check is necessary, not
+   sufficient. If the provider can show the whole history, a single candidate
+   is the creator even when it is an inner invocation (another program
+   invoked it), so compare it by hand. If it cannot, the event is unresolved:
+   do not pay it and do not settle it again.
    The SDK does not reconcile retired instructions, so compare it with your
    stored requests by hand: the payer is the instruction's first account, and
    the payouts are the transfers inside it, other than the rent transfer to

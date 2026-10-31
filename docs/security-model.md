@@ -236,10 +236,11 @@ status. A decoy that carries the right namespace and event id counts as a
 second candidate, so `RECORD_HISTORY` keeps the event unresolved rather than
 paying it. On a provider that pruned the real creator, the decoy can be the
 only visible candidate, so a legacy record needs two archival providers,
-whose first available block is before the program upgrade. With the whole
-history visible, a single inner candidate is the creator, since another
-program invoked it, and is compared by hand; if the history is not
-demonstrably complete, an inner candidate is unresolved (section 6 of
+whose first available block is before the program's first deployment and
+that answer `getParsedTransactions` for those slots. With the whole history
+visible, a single inner candidate is the creator, since another program
+invoked it, and is compared by hand; if the history is not demonstrably
+complete, the event is unresolved (section 6 of
 [integration.md](integration.md)). Treat a persistent occurrence as
 griefing, and reconcile the record's history by hand.
 
@@ -268,9 +269,10 @@ settle any event id. Find its creating transaction with
 section 6 of [integration.md](integration.md) gives the decision for each
 case. An event someone else settled first in any way that does not match
 your stored request is still unpaid by you, so settle it in your namespace
-and raise an alert, unless the finder returned an inner invocation from a
-provider that cannot show the whole history: then the event is unresolved
-(section 6). Events first attempted after the upgrade need no such check.
+and raise an alert, unless the provider cannot show the whole history (the
+program's first deployment is outside its range, or it cannot serve parsed
+transactions for it): then the event is unresolved (section 6). Events first
+attempted after the upgrade need no such check.
 
 ### 2. Records are permanent and cost rent per settlement
 

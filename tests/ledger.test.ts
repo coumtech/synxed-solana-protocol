@@ -507,11 +507,12 @@ describe("ledger reconciliation", () => {
     function historyConnection(
       history: readonly HistoryEntry[],
       calls: { address: string; limit: number; before?: string; commitment?: string }[] = [],
-      fetches: { requests: number; singles?: number; configs?: unknown[]; failSingles?: boolean } = { requests: 0 },
+      fetches: { requests: number; singles?: number; configs?: unknown[]; failSingles?: boolean; malformed?: number } = { requests: 0 },
       // How batches are answered: in order, reversed (JSON-RPC allows any
-      // order, and the public devnet endpoint uses it), refused, or with one
-      // answer missing and the batch short (a pruned or lagging backend).
-      batches: "in-order" | "reversed" | "refused" | "partial" = "in-order",
+      // order, and the public devnet endpoint uses it), refused, with one
+      // answer missing and the batch short (a pruned or lagging backend), or
+      // malformed by a wrapper around Connection.
+      batches: "in-order" | "reversed" | "refused" | "partial" | "malformed" = "in-order",
     ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction"> {
       const configs = (fetches.configs ??= []);
       const lookup = (signature: string) => history.find((entry) => entry.signature === signature)?.transaction ?? null;
@@ -548,6 +549,14 @@ describe("ledger reconciliation", () => {
             // One answer missing (null), and one request not answered at all.
             answers[0] = null;
             answers.length = 2;
+          }
+          if (batches === "malformed") {
+            const shapes = [
+              { unexpected: true },
+              [undefined, ...answers],
+              answers.map(() => ({ transaction: undefined })),
+            ];
+            return shapes[fetches.malformed ?? 0] as unknown as (ParsedTransactionWithMeta | null)[];
           }
           return batches === "reversed" ? answers.reverse() : answers;
         },
@@ -847,6 +856,27 @@ describe("ledger reconciliation", () => {
       }
     });
 
+    test("treats a malformed batch answer as unanswered", async () => {
+      const history: HistoryEntry[] = [
+        { signature: "settled", err: null, transaction: settlement("settled") },
+        { signature: "deposit", err: null, transaction: deposit("deposit", RECORD) },
+      ];
+      // A wrapper around Connection can answer with an object, with a hole, or
+      // with an element that has no transaction. Each must fall back to the
+      // single fetches, not escape as a TypeError.
+      for (let malformed = 0; malformed < 3; malformed += 1) {
+        const fetches = { requests: 0, singles: 0, malformed };
+        const found = await findSettlementTransaction({
+          connection: historyConnection(history, [], fetches, "malformed"),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+        });
+        expect(found.signature).toBe("settled");
+        expect(fetches.requests).toBe(1);
+      }
+    });
+
     test("reports an unresolved history when a single fetch is throttled", async () => {
       const history: HistoryEntry[] = [
         { signature: "settled", err: null, transaction: settlement("settled") },
@@ -976,7 +1006,8 @@ describe("ledger reconciliation", () => {
     test("reports an inner invocation as not top level, even when it is the only visible candidate", async () => {
       // A pruned provider can hide the real creator and leave a decoy CPI as
       // the only candidate. It is reported as inner so the legacy decision
-      // treats it as unresolved rather than as a settlement.
+      // applies its completeness check (integration.md section 6) instead of
+      // taking it for a top-level settlement.
       const legacy = signed(
         parsedSettlement(
           [
