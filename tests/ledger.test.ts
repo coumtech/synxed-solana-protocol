@@ -862,8 +862,8 @@ describe("ledger reconciliation", () => {
         { signature: "deposit", err: null, transaction: deposit("deposit", RECORD) },
       ];
       // A wrapper around Connection can answer with an object, with a hole, or
-      // with an element that has no transaction. Each must fall back to the
-      // single fetches, not escape as a TypeError.
+      // with an element that has no transaction. Each must be skipped or
+      // refetched, never escape as a TypeError.
       for (let malformed = 0; malformed < 3; malformed += 1) {
         const fetches = { requests: 0, singles: 0, malformed };
         const found = await findSettlementTransaction({
