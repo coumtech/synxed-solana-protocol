@@ -501,7 +501,7 @@ describe("ledger reconciliation", () => {
     }
 
     /**
-     * Answers the two history calls from `history`, newest first, logs the
+     * Answers the record's history calls from `history`, newest first, logs the
      * signature pages in `calls`, and counts transaction requests in `fetches`.
      */
     function historyConnection(
@@ -509,8 +509,9 @@ describe("ledger reconciliation", () => {
       calls: { address: string; limit: number; before?: string; commitment?: string }[] = [],
       fetches: { requests: number; singles?: number } = { requests: 0 },
       // How batches are answered: in order, reversed (JSON-RPC allows any
-      // order, and the public devnet endpoint uses it), or refused.
-      batches: "in-order" | "reversed" | "refused" = "in-order",
+      // order, and the public devnet endpoint uses it), refused, or with the
+      // first answer missing (an endpoint rate-limiting one element).
+      batches: "in-order" | "reversed" | "refused" | "partial" = "in-order",
     ): Pick<Connection, "getSignaturesForAddress" | "getParsedTransactions" | "getParsedTransaction"> {
       const lookup = (signature: string) => history.find((entry) => entry.signature === signature)?.transaction ?? null;
       return {
@@ -540,7 +541,10 @@ describe("ledger reconciliation", () => {
           if (batches === "refused") {
             throw new Error("failed to get transactions: Too many requests for a specific RPC call");
           }
-          const answers = signatures.map(lookup);
+          const answers: (ParsedTransactionWithMeta | null)[] = signatures.map(lookup);
+          if (batches === "partial") {
+            answers[0] = null;
+          }
           return batches === "reversed" ? answers.reverse() : answers;
         },
         getParsedTransaction: async (signature: string, config?: unknown) => {
@@ -603,6 +607,41 @@ describe("ledger reconciliation", () => {
         eventId: EVENT_ID,
       });
       expect(found.topLevel).toBe(false);
+    });
+
+    test("treats a decoy inner invocation as a second candidate, not as the settlement", async () => {
+      // A program can invoke the settlement program and ignore its error. The
+      // endpoint lists the failed invocation in meta.innerInstructions with no
+      // per-instruction status, so it looks like a settlement here. It cannot
+      // move funds, but it must not pass as the record's one creator either.
+      const decoy = signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), "decoy");
+      const message = decoy.transaction.message;
+      const settle = message.instructions.at(-1);
+      const wrapped = {
+        ...decoy,
+        transaction: {
+          ...decoy.transaction,
+          message: {
+            ...message,
+            instructions: [
+              ...message.instructions.slice(0, -1),
+              { accounts: [], data: "1", programId: new PublicKey(RECIPIENTS[0]) },
+            ],
+          },
+        },
+        meta: { ...decoy.meta, innerInstructions: [{ index: 1, instructions: [settle] }] },
+      } as unknown as ParsedTransactionWithMeta;
+      await expect(
+        findSettlementTransaction({
+          connection: historyConnection([
+            { signature: "decoy", err: null, transaction: wrapped },
+            { signature: "settled", err: null, transaction: settlement("settled") },
+          ]),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+        }),
+      ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
     });
 
     test("refuses a history with no settlement, two settlements, or a missing transaction", async () => {
@@ -678,6 +717,31 @@ describe("ledger reconciliation", () => {
       ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
     });
 
+    test("pages past a failed entry at the end of a page", async () => {
+      // The cursor is the page's oldest entry, whatever its status. Taking it
+      // from the last successful entry re-reads the failed tail and can trip
+      // the maxSignatures cap early.
+      const page: HistoryEntry[] = Array.from({ length: 999 }, (_, index) => ({
+        signature: `deposit-${index}`,
+        err: null,
+        transaction: deposit(`deposit-${index}`, RECORD),
+      }));
+      const history = [
+        ...page,
+        { signature: "failed-oldest", err: { InstructionError: [1, { Custom: 0 }] }, transaction: null },
+        { signature: "settled", err: null, transaction: settlement("settled") },
+      ] as HistoryEntry[];
+      const calls: { address: string; limit: number; before?: string; commitment?: string }[] = [];
+      const found = await findSettlementTransaction({
+        connection: historyConnection(history, calls),
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        eventId: EVENT_ID,
+      });
+      expect(found.signature).toBe("settled");
+      expect(calls.map((call) => call.before)).toEqual([undefined, "failed-oldest"]);
+    });
+
     test("does not count a lookalike from another program, or a transaction the RPC marks failed", async () => {
       // Anyone can send a no-op program the settlement's data and accounts.
       const lookalike = signed(parsedSettlement(settleNAccounts(), settleNData, observation().memo), "lookalike");
@@ -725,13 +789,21 @@ describe("ledger reconciliation", () => {
       }
     });
 
-    test("matches a batch's answers by signature, and fetches a refused batch one by one", async () => {
+    test("matches a batch's answers by signature, and fetches refused or missing answers one by one", async () => {
+      // The settlement is newest, so reversing the answers moves it away from
+      // its request position: positional matching then misses it entirely.
       const history: HistoryEntry[] = [
-        { signature: "deposit-1", err: null, transaction: deposit("deposit-1", RECORD) },
         { signature: "settled", err: null, transaction: settlement("settled") },
         { signature: "deposit-2", err: null, transaction: deposit("deposit-2", RECORD) },
+        { signature: "deposit-1", err: null, transaction: deposit("deposit-1", RECORD) },
       ];
-      for (const batches of ["reversed", "refused"] as const) {
+      const cases = [
+        ["in-order", 0],
+        ["reversed", 0],
+        ["refused", history.length],
+        ["partial", 1],
+      ] as const;
+      for (const [batches, singles] of cases) {
         const fetches = { requests: 0, singles: 0 };
         const found = await findSettlementTransaction({
           connection: historyConnection(history, [], fetches, batches),
@@ -740,8 +812,9 @@ describe("ledger reconciliation", () => {
           eventId: EVENT_ID,
         });
         expect(found.signature).toBe("settled");
-        // Reordered answers are all used; a refused batch is fetched singly.
-        expect(fetches.singles).toBe(batches === "reversed" ? 0 : history.length);
+        // Reordered answers are all used; refused and missing ones are
+        // fetched singly.
+        expect(fetches.singles).toBe(singles);
       }
     });
 
@@ -853,6 +926,26 @@ describe("ledger reconciliation", () => {
         eventId: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
       });
       expect(found.signature).toBe("legacy");
+    });
+
+    test("does not count a retired settlement that never names the legacy record", async () => {
+      // The event id in the data matches, but the instruction does not list
+      // the legacy record among its accounts, so it did not create it.
+      const notIt = signed(
+        parsedSettlement(
+          [new PublicKey(PAYER), ...RECIPIENTS.map((recipient) => new PublicKey(recipient)), SYSTEM_PROGRAM],
+          "2RWubWCVYD4cdnLHpRJR1E417pZE1tKuSLFWKrYD7Zdn6cFw3z54ihSvmfeXhy7ds6eW",
+          {},
+        ),
+        "not-it",
+      );
+      await expect(
+        findLegacySettlementTransaction({
+          connection: historyConnection([{ signature: "not-it", err: null, transaction: notIt }]),
+          programId: PROGRAM_ID,
+          eventId: "evt_bd2961e0-1019-42e0-a9f7-ceb6928ad6af",
+        }),
+      ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
     });
 
     test("finds a token settlement", async () => {

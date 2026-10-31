@@ -227,6 +227,14 @@ record:
    both providers' copies counts as a mismatch (step 3). Retry the rest later
    and escalate to a person if it stays unresolved.
 
+An honest endpoint can still show a settlement that never ran: a program can
+invoke the settlement program and ignore the error, and the endpoint lists
+that failed invocation in `meta.innerInstructions` with no per-instruction
+status. A decoy that carries the right namespace and event id counts as a
+second candidate, so `RECORD_HISTORY` keeps the event unresolved rather than
+paying it. Treat a persistent occurrence as griefing, and reconcile the
+record's history by hand.
+
 The SDK's fetching reconcile functions read a transaction with exactly one
 top-level `SettleN` or `SettleTokenN` instruction, alongside at most one
 `CreateNamespace` for the same namespace, which a wallet's first settlement
