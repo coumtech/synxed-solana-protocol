@@ -775,10 +775,11 @@ describe("release configuration stays consistent", () => {
     expect(() => publishCheckScript(keyword)).toThrow("$Id$ keyword");
   });
 
-  test("no git attribute rewrites the workflow on checkout", () => {
+  test("no git attribute rewrites the workflow content on checkout", () => {
     // The tests read the checked-out file; the publish job writes the
-    // committed one. A filter, ident, eol or encoding attribute would make
-    // them differ.
+    // committed one. `.gitattributes` forces LF on every platform, which is
+    // what the parser expects; a filter, ident or encoding attribute would
+    // still rewrite content, so those stay refused.
     const result = spawnSync(
       "git",
       ["check-attr", "ident", "filter", "text", "eol", "working-tree-encoding", "--", ".github/workflows/publish-sdk.yml"],
@@ -786,7 +787,7 @@ describe("release configuration stays consistent", () => {
     );
     expect(result.status).toBe(0);
     const values = result.stdout.trim().split("\n").map((line) => line.split(": ").at(-1));
-    expect(values).toEqual(["unspecified", "unspecified", "unspecified", "unspecified", "unspecified"]);
+    expect(values).toEqual(["unspecified", "unspecified", "auto", "lf", "unspecified"]);
   });
 
   test("CI tests the minimum Node version the package declares", () => {
