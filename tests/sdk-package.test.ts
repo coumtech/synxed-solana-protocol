@@ -1,5 +1,6 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -351,18 +352,44 @@ describe("release configuration stays consistent", () => {
 
   test("every action is pinned to a commit, and no job is a reusable workflow", () => {
     const text = workflow("publish-sdk.yml");
-    const uses = text.split("\n").filter((line) => /^\s*uses:/.test(line));
-    expect(uses.length).toBeGreaterThan(0);
-    for (const line of uses) {
-      expect(line.trim()).toMatch(/^uses: [\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}(?: #.*)?$/);
-    }
     const parsed: unknown = Bun.YAML.parse(text);
     const jobs = Reflect.get(parsed ?? {}, "jobs") as Record<string, Record<string, unknown>>;
+    let actions = 0;
     for (const job of Object.values(jobs)) {
       // A job-level `uses` is a remote reusable workflow, which no pin here
       // would describe.
       expect(job["uses"]).toBeUndefined();
+      for (const step of (job["steps"] ?? []) as Record<string, unknown>[]) {
+        if (step["uses"] === undefined) continue;
+        actions += 1;
+        // The parsed value, not a line scan: a quoted key or a flow mapping
+        // must not slip through.
+        expect(step["uses"]).toMatch(/^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/);
+      }
     }
+    expect(actions).toBeGreaterThan(0);
+  });
+
+  test("the package and verify jobs are exactly these", () => {
+    const parsed: unknown = Bun.YAML.parse(workflow("publish-sdk.yml"));
+    const jobs = Reflect.get(parsed ?? {}, "jobs") as Record<string, Record<string, unknown>>;
+    const digest = (job: Record<string, unknown>): string =>
+      createHash("sha256").update(JSON.stringify(job)).digest("hex");
+    // A whole-job pin, as for the publish job: a step command, a toolchain
+    // version, a job-level env, if, continue-on-error, container or runner
+    // change fails here until a person updates the pin.
+    expect(digest(jobs["package"])).toBe(
+      "e806f0f2ca344dca3837d9864d6011422e0879ede2c1199c9711d724b1d1f080",
+    );
+    expect(digest(jobs["verify"])).toBe(
+      "6d25f0e37e8ce142e911439fed5b05d45328d939a6d64db2e6a1782fdb12916a",
+    );
+  });
+
+  test("the release build runs the installed compiler, not bunx", () => {
+    const build = readFileSync(join(REPO_ROOT, "scripts", "build-sdk-package.ts"), "utf8");
+    expect(build).toContain('join(REPO_ROOT, "node_modules", ".bin", "tsc")');
+    expect(build).not.toContain('"bunx"');
   });
 
   test("the package and verify jobs keep their steps and checkout settings", () => {
@@ -432,6 +459,15 @@ describe("release configuration stays consistent", () => {
       group: "publish-sdk",
       "cancel-in-progress": false,
     });
+  });
+
+  test("the publish check script is exactly this revision", () => {
+    // The whole check script, not only its extracted command: a conditional
+    // early exit keyed on a publish-only variable would otherwise pass every
+    // behavioural test.
+    expect(createHash("sha256").update(publishCheckScript()).digest("hex")).toBe(
+      "ee1239d00ce91c3af60100b73807908a4349a342643c0f3574039cf3616bc95d",
+    );
   });
 
   test("the publish job is exactly this", () => {
