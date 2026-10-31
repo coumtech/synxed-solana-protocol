@@ -151,9 +151,10 @@ await submitSettlement({ connection, payer, request,
   configuration and call `ensureNamespace` there with `create: false` and
   `expectedAddress` set to it, so a missing namespace or a different address
   is an error instead of a new namespace (`NAMESPACE_MISSING`,
-  `NAMESPACE_ADDRESS`). If the payer key that opened it was replaced, also
-  pass the old key as `creator` and, unless you rotated the authority to the
-  new key, as `authority` (and to the submit functions).
+  `NAMESPACE_ADDRESS`). If the payer key that opened it was replaced, rotate
+  the authority first if the old key may be exposed; then pass the old key as
+  `creator` and, if you did not rotate the authority, as `authority` (and to
+  the submit functions).
 - **Environments:** use one namespace per environment (for example
   `studio-payouts-staging` and `studio-payouts`), so the same event id can be
   settled independently in each.
@@ -176,12 +177,13 @@ await submitSettlement({ connection, payer, request,
 - **Losing the authority key:** nobody can recover a namespace whose
   authority key is lost; the creator has no override. Keep the authority
   backed up. If you must move to a new namespace, first make sure nothing
-  already signed for the old one can still land: settlements never expire
-  on chain once signed, except through their blockhash. Wait until every
-  recent blockhash you signed with has expired, advance or close any durable
-  nonce you signed with, and cancel pending multisig proposals; an event
-  whose signed settlement cannot be invalidated stays unresolved. Then check
-  each pending event in the old namespace with `fetchSettlementRecord`, which
+  already signed for the old one can still land: a signed settlement stays
+  valid until its blockhash expires, or, with a durable nonce, until the
+  nonce advances. Wait until every recent blockhash you signed with has
+  expired, advance or close any durable nonce you signed with, and cancel
+  pending multisig proposals; an event whose signed settlement cannot be
+  invalidated stays unresolved. Then check each pending event in the old
+  namespace with `fetchSettlementRecord`, which
   counts only a record the program owns for that event (anyone can send
   lamports to a record's address, so an account merely existing there proves
   nothing).
@@ -220,7 +222,8 @@ no check. Before retrying an event first attempted before it:
    `findLegacySettlementTransaction`, and confirm the transaction with a
    second provider. The SDK does not reconcile retired instructions, so
    compare it with your stored requests by hand: the payer is the
-   instruction's first account, and the payouts are the transfers inside it.
+   instruction's first account, and the payouts are the transfers inside it,
+   other than the rent transfer to the record.
    "Matches" means everything `reconcileSettlementN` and
    `reconcileTokenSettlementN` would check: the same asset (lamports or
    tokens), mint and decimals, the same recipient wallets (and their token
@@ -231,9 +234,9 @@ no check. Before retrying an event first attempted before it:
 
 | The creating transaction | Decision |
 | --- | --- |
-| Paid by a key you control or controlled, and matches a stored request | Paid: never settle it again |
-| Paid by a key you control or controlled, and matches no stored request | Incident: do not mark it paid, and do not settle it again |
-| Paid by someone else, and matches a stored request | Paid by them: never settle it again, and raise an alert |
+| Paid by a payer key on your list, and matches a request stored for this event id | Paid: never settle it again |
+| Paid by a payer key on your list, and matches no request stored for this event id | Incident: do not mark it paid, and do not settle it again |
+| Paid by someone else, and matches a request stored for this event id | Paid by them: never settle it again, and raise an alert |
 | Paid by someone else, in any other way | Not paid by you: settle it in your namespace, and raise an alert |
 
 Anything you cannot decide (the transaction cannot be found, or the two
