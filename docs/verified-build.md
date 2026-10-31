@@ -138,8 +138,8 @@ comparison, performed against whatever `main` currently is.
    public record shows green.
 6. Record the upgrade slot (`solana program show` prints the last one) in
    the table above, with the program's first deployment slot. For this
-   deployment it is the slot in the table, the oldest signature on the
-   program id. Take the value from the table or from two archival providers
+   deployment the first deployment slot is the one in the table, the oldest
+   signature on the program id. Take the value from the table or from two archival providers
    that agree, never from the provider you are checking: a pruned provider
    returns only what it still keeps, and section 6 of
    `docs/integration.md` uses the number to decide whether the whole legacy

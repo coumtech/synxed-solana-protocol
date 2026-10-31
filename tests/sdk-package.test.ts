@@ -389,9 +389,9 @@ describe("release configuration stays consistent", () => {
   test("the release build script is exactly this revision", () => {
     // A whole-file pin: the build must keep running the installed compiler,
     // and a comment or a differently spelled package runner cannot slip past
-    // a substring check. Normalize CRLF: a Windows checkout with
-    // core.autocrlf=true is the same content, and the repo has no
-    // .gitattributes to force LF on checkout.
+    // a substring check. Normalize CRLF anyway: a checkout made before
+    // .gitattributes landed, or one that was never re-checked-out, can still
+    // be CRLF.
     const build = readFileSync(join(REPO_ROOT, "scripts", "build-sdk-package.ts"), "utf8")
       .replace(/\r\n/g, "\n");
     expect(createHash("sha256").update(build).digest("hex")).toBe(
