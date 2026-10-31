@@ -144,7 +144,8 @@ export class SettlementWorker {
   // After a throw, keep any decision the store already holds: a paid,
   // incident, needs_attention or pending event was decided before the throw
   // (pending only once nothing can land). Only an event still in flight gets
-  // the note, and the outcome reported is the one stored.
+  // the note, and the outcome reported is the one stored; if the status
+  // itself cannot be read, the event is unresolved.
   #contain(eventId: string, note: string): Outcome {
     let status: StoredEvent["status"] | undefined;
     try {

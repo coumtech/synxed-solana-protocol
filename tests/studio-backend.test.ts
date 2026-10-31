@@ -24,6 +24,7 @@ import {
   splitAmountAtomicShares,
   type SettlementRequestN,
 } from "../sdk/typescript/src/index.ts";
+import { statusLines } from "../examples/studio-backend/src/cli.ts";
 import { prepareEvent } from "../examples/studio-backend/src/events.ts";
 import { Store } from "../examples/studio-backend/src/store.ts";
 import { SettlementWorker, type WorkerOptions } from "../examples/studio-backend/src/worker.ts";
@@ -543,6 +544,18 @@ describe("studio backend: settlement worker", () => {
     }).run();
     expect(summary.settled["evt_bad"]).toBe("needs_attention");
     expect(store.event("evt_bad")?.status).toBe("needs_attention");
+  });
+
+  test("status lists every pending event, with its note", () => {
+    const { store } = setup();
+    const second = exampleEvents()[1];
+    store.enqueue(second.request, second.beneficiaryIds);
+    store.setEventStatus(EVENT, "pending", "could not read a blockhash: 429");
+    const lines = statusLines(store);
+    const pending = lines.filter((line) => line.startsWith("pending: "));
+    expect(pending).toHaveLength(2);
+    expect(pending.some((line) => line.includes("could not read a blockhash"))).toBe(true);
+    expect(lines.some((line) => /^pending\s+2$/.test(line))).toBe(true);
   });
 
   test("one event that cannot be built does not stop the rest of the batch", async () => {

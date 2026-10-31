@@ -170,15 +170,8 @@ async function main(): Promise<void> {
     case "status": {
       const store = openStore(databasePath());
       try {
-        for (const { status, count } of store.statusCounts()) {
-          console.log(`${status.padEnd(16)} ${count}`);
-        }
-        for (const status of ["in_flight", "pending", "incident", "needs_attention"] as const) {
-          for (const event of store.eventsWithStatus(status)) {
-            // A pending note records the last fault (a blockhash read, for
-            // example), which used no attempt.
-            console.log(`${status}: ${event.eventId}${event.note === null ? "" : ` (${event.note})`}`);
-          }
+        for (const line of statusLines(store)) {
+          console.log(line);
         }
       } finally {
         store.close();
@@ -201,7 +194,29 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+/**
+ * The `status` report: counts, then the events that need a person, then the
+ * pending queue. A pending note says why the last run left the event queued:
+ * a blockhash fault (no attempt used) or a refused attempt. At most 50
+ * details are printed per status, with the rest counted.
+ */
+export function statusLines(store: Store): string[] {
+  const lines = store.statusCounts().map(({ status, count }) => `${status.padEnd(16)} ${count}`);
+  for (const status of ["in_flight", "pending", "incident", "needs_attention"] as const) {
+    const events = store.eventsWithStatus(status);
+    for (const event of events.slice(0, 50)) {
+      lines.push(`${status}: ${event.eventId}${event.note === null ? "" : ` (${event.note})`}`);
+    }
+    if (events.length > 50) {
+      lines.push(`${status}: ... and ${events.length - 50} more`);
+    }
+  }
+  return lines;
+}
+
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

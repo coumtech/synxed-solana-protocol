@@ -151,7 +151,9 @@ your own state were wrong, the program refuses a second settlement of the
 same event id in your namespace.
 
 Run it from a scheduler (cron, a queue consumer) as often as you like. Run
-only one worker per namespace and database at a time.
+only one worker per namespace and database at a time. A second writer can
+race a status write; the ledger is idempotent, so it cannot pay twice, but
+a paid event may briefly read as in flight until the next run reconciles it.
 
 ## 6. Reconcile and keep the ledger
 
