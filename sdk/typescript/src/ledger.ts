@@ -1029,9 +1029,10 @@ export async function findSettlementTransaction(
  * docs/integration.md, "Upgrading from the retired instructions", gives the
  * decision for each case. The same history rules as
  * `findSettlementTransaction` apply. A legacy record is decided by hand
- * (integration.md section 6): an inner invocation (`topLevel: false`) is
- * unresolved, and the provider must be archival, because one that pruned the
- * real creator can return a decoy as the only candidate.
+ * (integration.md section 6) from archival providers, because one that
+ * pruned the real creator can return a decoy as the only candidate. On a
+ * complete history, an inner invocation (another program invoked it) is
+ * compared by hand like any other.
  */
 export async function findLegacySettlementTransaction(
   options: FindLegacySettlementTransactionOptions,
@@ -1069,8 +1070,13 @@ async function fetchFinalized(
   } catch {
     // Fetched one by one below.
   }
+  // A wrapper around Connection may answer with something other than the
+  // array web3.js promises; treat that as an unanswered batch.
+  if (!Array.isArray(batch)) {
+    batch = [];
+  }
   for (const transaction of batch) {
-    if (transaction === null || transaction === undefined) {
+    if (transaction == null || transaction.transaction?.signatures === undefined) {
       continue;
     }
     for (const signature of transaction.transaction.signatures) {

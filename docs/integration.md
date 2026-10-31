@@ -219,15 +219,16 @@ no check. Before retrying an event first attempted before it:
    settle the event in your namespace as usual.
 2. For a record, find its creating transaction with
    `findLegacySettlementTransaction`, and confirm the transaction with a
-   second provider. Both must be archival: check that `getFirstAvailableBlock`
-   is before the program upgrade, because a provider that pruned the real
-   creator can return a decoy inner invocation as the only candidate. If the
-   transaction is an inner invocation (`topLevel: false`), the event is
-   unresolved: do not pay it and do not settle it again; resolve it by hand
-   only from a provider that can show the whole history. The SDK does not
-   reconcile retired instructions, so compare it with your stored requests by
-   hand: the payer is the instruction's first account, and the payouts are the
-   transfers inside it, other than the rent transfer to the record.
+   second provider. Both must be archival: record the upgrade slot when you
+   deploy and check that each provider's `getFirstAvailableBlock` is before
+   it. That check is necessary, not sufficient. If the provider can show the
+   whole history, a single candidate is the creator even when it is an inner
+   invocation (another program invoked it), so compare it by hand. If it
+   cannot, the event is unresolved: do not pay it and do not settle it again.
+   The SDK does not reconcile retired instructions, so compare it with your
+   stored requests by hand: the payer is the instruction's first account, and
+   the payouts are the transfers inside it, other than the rent transfer to
+   the record.
    "Matches" means everything `reconcileSettlementN` and
    `reconcileTokenSettlementN` would check: the same asset (lamports or
    tokens), mint and decimals, the same recipient wallets (and their token

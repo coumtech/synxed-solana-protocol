@@ -68,7 +68,7 @@ cargo test --manifest-path programs/synxed-settlement/Cargo.toml   # optional
 
 ```bash
 bun run demo            # four-way split with rewards pool
-bun run demo:three-way  # backward-compatible original example
+bun run demo:three-way  # the same three-way split through SettleN
 ```
 
 Prints a simulated audio-ad impression and its deterministic split.

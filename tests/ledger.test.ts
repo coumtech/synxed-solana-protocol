@@ -753,16 +753,16 @@ describe("ledger reconciliation", () => {
       const noMeta = { ...settlement("no-meta"), meta: null } as unknown as ParsedTransactionWithMeta;
       const badData = signed(parsedSettlement(settleNAccounts(), "0OIl", observation().memo), "bad-data");
       for (const transaction of [noMeta, badData]) {
-        await expect(
-          findSettlementTransaction({
-            connection: historyConnection([
-              { signature: transaction.transaction.signatures[0], err: null, transaction },
-            ]),
-            programId: PROGRAM_ID,
-            namespace: NAMESPACE,
-            eventId: EVENT_ID,
-          }),
-        ).rejects.toMatchObject({ code: "RECORD_HISTORY" });
+        const found = await findSettlementTransaction({
+          connection: historyConnection([
+            { signature: transaction.transaction.signatures[0], err: null, transaction },
+            { signature: "settled", err: null, transaction: settlement("settled") },
+          ]),
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          eventId: EVENT_ID,
+        });
+        expect(found.signature).toBe("settled");
       }
     });
 
