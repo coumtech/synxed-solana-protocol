@@ -172,7 +172,12 @@ Every outcome other than paid, and what to do about it, is in the
   (for example for insufficient funds) puts the event back in the queue; once
   `STUDIO_MAX_ATTEMPTS` failed attempts are recorded, the next run marks it
   `needs_attention`. `bun run studio resolve <eventId>` then decides it from
-  the chain without sending anything.
+  the chain without sending a new attempt (an existing signed attempt may be
+  resent unchanged, as always).
+- **RPC faults:** the blockhash is read before an attempt is stored, so a
+  transient failure uses no attempt: the event stays pending, the run reports
+  `retry`, and the note says so. A fault after a decision (paid, incident or
+  needs attention) does not change that decision.
 - **Alerts:** alert on any `incident` or `needs_attention` event, and on
   events in flight for longer than a few minutes. `bun run studio status`
   lists them with the worker's note.

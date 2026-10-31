@@ -128,25 +128,37 @@ export class SettlementWorker {
       try {
         summary.resolved[event.eventId] = await this.resolve(event.eventId);
       } catch (error) {
-        this.#log(`${event.eventId}: resolve failed: ${String(error)}`);
-        if (store.event(event.eventId)?.status !== "paid") {
-          store.setEventStatus(event.eventId, "in_flight", `resolve failed: ${String(error)}`);
-        }
-        summary.resolved[event.eventId] = "unresolved";
+        summary.resolved[event.eventId] = this.#contain(event.eventId, `resolve failed: ${String(error)}`);
       }
     }
     for (const event of store.eventsWithStatus("pending", limit)) {
       try {
         summary.settled[event.eventId] = await this.settle(event);
       } catch (error) {
-        this.#log(`${event.eventId}: settle failed: ${String(error)}`);
-        if (store.event(event.eventId)?.status !== "paid") {
-          store.setEventStatus(event.eventId, "in_flight", `settle failed: ${String(error)}`);
-        }
-        summary.settled[event.eventId] = "unresolved";
+        summary.settled[event.eventId] = this.#contain(event.eventId, `settle failed: ${String(error)}`);
       }
     }
     return summary;
+  }
+
+  // After a throw, keep any decision the store already holds: a paid,
+  // incident, needs_attention or pending event was decided before the throw
+  // (pending only once nothing can land). Only an event still in flight gets
+  // the note, and the outcome reported is the one stored.
+  #contain(eventId: string, note: string): Outcome {
+    const status = this.#options.store.event(eventId)?.status;
+    if (status === "in_flight") {
+      this.#options.store.setEventStatus(eventId, "in_flight", note);
+    }
+    try {
+      this.#log(`${eventId}: ${note}`);
+    } catch {
+      // The store holds the outcome; a failing log must not stop the batch.
+    }
+    if (status === undefined || status === "in_flight") {
+      return "unresolved";
+    }
+    return status === "pending" ? "retry" : status;
   }
 
   /** Build and simulate pending events without signing, sending, or writing. */
@@ -183,6 +195,16 @@ export class SettlementWorker {
       store.setEventStatus(event.eventId, "needs_attention", `${event.attempts} attempts failed`);
       return "needs_attention";
     }
+    // Read the blockhash before an attempt is stored: a transient RPC fault is
+    // not a reason to ask for a person, so it must not use up an attempt.
+    let latest;
+    try {
+      latest = await connection.getLatestBlockhash("confirmed");
+    } catch (error) {
+      store.setEventStatus(event.eventId, "pending", `could not read a blockhash: ${String(error)}`);
+      this.#log(`${event.eventId}: could not read a blockhash: ${String(error)}`);
+      return "retry";
+    }
     const attempt = store.beginAttempt(event.eventId, event.request, this.#params());
     let prepared;
     try {
@@ -193,25 +215,12 @@ export class SettlementWorker {
       this.#log(`${event.eventId}: cannot build the settlement: ${String(error)}`);
       return "needs_attention";
     }
-    let lastValidBlockHeight: number;
-    let blockhash: string;
-    try {
-      const latest = await connection.getLatestBlockhash("confirmed");
-      lastValidBlockHeight = latest.lastValidBlockHeight;
-      blockhash = latest.blockhash;
-    } catch (error) {
-      // A transient RPC fault is not a reason to ask for a person.
-      store.setAttemptStatus(event.eventId, attempt, "failed", String(error));
-      store.setEventStatus(event.eventId, "pending", `could not read a blockhash: ${String(error)}`);
-      this.#log(`${event.eventId}: could not read a blockhash: ${String(error)}`);
-      return "unresolved";
-    }
     let signature: string;
     let raw: Buffer;
     try {
       const transaction = prepared.transaction;
       transaction.feePayer = payer.publicKey;
-      transaction.recentBlockhash = blockhash;
+      transaction.recentBlockhash = latest.blockhash;
       transaction.sign(...this.#signers());
       if (transaction.signature === null) {
         throw new Error("the transaction was not signed");
@@ -224,7 +233,7 @@ export class SettlementWorker {
       this.#log(`${event.eventId}: cannot sign the settlement: ${String(error)}`);
       return "needs_attention";
     }
-    store.recordSigned(event.eventId, attempt, signature, raw.toString("base64"), lastValidBlockHeight);
+    store.recordSigned(event.eventId, attempt, signature, raw.toString("base64"), latest.lastValidBlockHeight);
     this.#options.beforeSend?.(event.eventId, signature);
     this.#log(`${event.eventId}: attempt ${attempt} sent as ${signature}`);
     try {

@@ -364,9 +364,22 @@ describe("studio backend: settlement worker", () => {
     expect((await worker().run()).settled).toEqual({ [EVENT]: "paid" });
     const attempts = store.attempts(EVENT).length;
     const sent = chain.received.length;
+    const entries = store.ledgerEntries().length;
+    store.setEventStatus(EVENT, "needs_attention", "flagged by hand");
     expect(await worker().recheck(EVENT)).toBe("paid");
+    expect(store.event(EVENT)?.status).toBe("paid");
     expect(store.attempts(EVENT).length).toBe(attempts);
+    expect(store.ledgerEntries().length).toBe(entries);
     expect(chain.received.length).toBe(sent);
+  });
+
+  test("resolve leaves a paid event alone, without asking the chain", async () => {
+    const { store, worker } = setup();
+    expect((await worker().run()).settled).toEqual({ [EVENT]: "paid" });
+    // Any call on this connection throws.
+    const unreachable = {} as unknown as Connection;
+    expect(await worker({ connection: unreachable }).recheck(EVENT)).toBe("paid");
+    expect(store.event(EVENT)?.status).toBe("paid");
   });
 
   test("resolve returns a bad event to the queue without a new attempt", async () => {
@@ -400,14 +413,68 @@ describe("studio backend: settlement worker", () => {
     expect(store.event(EVENT)?.status).toBe("in_flight");
   });
 
-  test("a blockhash read failure leaves the event pending, not needing a person", async () => {
+  test("a blockhash read failure uses no attempt, so a later healthy run still pays", async () => {
     const { chain, store, worker } = setup();
     const connection = chain.connection();
     (connection as unknown as { getLatestBlockhash: () => Promise<never> }).getLatestBlockhash = async () => {
       throw new Error("429 Too Many Requests");
     };
-    expect((await worker({ connection }).run()).settled).toEqual({ [EVENT]: "unresolved" });
-    expect(store.event(EVENT)?.status).toBe("pending");
+    // More faults than the attempt budget: none of them may count against it.
+    for (let run = 0; run < 3; run += 1) {
+      expect((await worker({ connection, maxAttempts: 2 }).run()).settled).toEqual({ [EVENT]: "retry" });
+      expect(store.event(EVENT)?.status).toBe("pending");
+      expect(store.event(EVENT)?.note).toContain("could not read a blockhash");
+    }
+    expect(store.event(EVENT)?.attempts).toBe(0);
+    expect(store.attempts(EVENT)).toHaveLength(0);
+    expect(chain.received).toHaveLength(0);
+    expect((await worker({ maxAttempts: 2 }).run()).settled).toEqual({ [EVENT]: "paid" });
+  });
+
+  test("a throw after an event is decided keeps the decision", async () => {
+    // A log sink that fails on the decision's own line throws after the
+    // store has recorded it, on the settle path and on the resolve path.
+    const failOn = (text: string) => (line: string) => {
+      if (line.includes(text)) {
+        throw new Error("log sink down");
+      }
+    };
+    const settled = setup();
+    expect((await settled.worker({ log: failOn("paid by") }).run()).settled).toEqual({ [EVENT]: "paid" });
+    expect(settled.store.event(EVENT)?.status).toBe("paid");
+
+    const resolved = setup();
+    await resolved.worker({ beforeSend: () => { throw new Error("crash"); } }).run();
+    expect((await resolved.worker({ log: failOn("paid by") }).run()).resolved).toEqual({ [EVENT]: "waiting" });
+    expect((await resolved.worker({ log: failOn("paid by") }).run()).resolved).toEqual({ [EVENT]: "paid" });
+    expect(resolved.store.event(EVENT)?.status).toBe("paid");
+
+    const incident = setup();
+    const [event] = exampleEvents();
+    settleOutside(incident.chain, incident.payer, incident.namespace, {
+      ...event.request,
+      shares: event.request.shares.map((share) => ({ ...share, recipient: Keypair.generate().publicKey.toBase58() })),
+    });
+    expect((await incident.worker({ log: failOn("INCIDENT") }).run()).settled).toEqual({ [EVENT]: "incident" });
+    expect(incident.store.event(EVENT)?.status).toBe("incident");
+    expect(incident.store.event(EVENT)?.note).toContain("matches no stored request");
+  });
+
+  test("a log that throws inside the catch does not stop the batch", async () => {
+    const { store, worker } = setup();
+    const summary = await worker({
+      beforeSend: () => {
+        throw new Error("crash");
+      },
+      log: (line) => {
+        if (line.includes("settle failed")) {
+          throw new Error("log sink down");
+        }
+      },
+    }).run();
+    expect(summary.settled[EVENT]).toBe("unresolved");
+    expect(store.event(EVENT)?.status).toBe("in_flight");
+    expect(store.event(EVENT)?.note).toContain("settle failed");
   });
 
   test("one event that cannot be built does not stop the rest of the batch", async () => {
