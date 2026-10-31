@@ -359,6 +359,57 @@ describe("studio backend: settlement worker", () => {
     expect(store.attempts(EVENT)).toHaveLength(0);
   });
 
+  test("resolve rechecks a flagged event from the chain without sending", async () => {
+    const { chain, store, worker } = setup();
+    expect((await worker().run()).settled).toEqual({ [EVENT]: "paid" });
+    const attempts = store.attempts(EVENT).length;
+    const sent = chain.received.length;
+    expect(await worker().recheck(EVENT)).toBe("paid");
+    expect(store.attempts(EVENT).length).toBe(attempts);
+    expect(chain.received.length).toBe(sent);
+  });
+
+  test("resolve returns a bad event to the queue without a new attempt", async () => {
+    const { chain, store, worker } = setup();
+    const good = exampleEvents()[0];
+    store.enqueue({ ...good.request, eventId: "evt_bad", amountAtomic: 2n ** 64n - 1n }, good.beneficiaryIds);
+    expect((await worker().run()).settled["evt_bad"]).toBe("needs_attention");
+    const attempts = store.attempts("evt_bad").length;
+    const sent = chain.received.length;
+    expect(await worker().recheck("evt_bad")).toBe("retry");
+    expect(store.event("evt_bad")?.status).toBe("pending");
+    expect(store.attempts("evt_bad").length).toBe(attempts);
+    expect(chain.received.length).toBe(sent);
+  });
+
+  test("a preflight refusal is unresolved when only the second provider sees the record", async () => {
+    const { chain, store, worker, namespace } = setup();
+    chain.behaviours.push("refuse");
+    const second = chain.mirror();
+    const record = findSettlementRecordPda(PROGRAM_ID, namespace, eventIdSeed(EVENT))[0];
+    second.accounts.set(record.toBase58(), {
+      owner: PROGRAM_ID,
+      data: Buffer.from([1, ...eventIdSeed(EVENT), ...new Uint8Array(8)]),
+      lamports: RECORD_RENT,
+      executable: false,
+      rentEpoch: 0,
+    });
+    expect((await worker({ secondConnection: second.connection() }).run()).settled).toEqual({
+      [EVENT]: "unresolved",
+    });
+    expect(store.event(EVENT)?.status).toBe("in_flight");
+  });
+
+  test("a blockhash read failure leaves the event pending, not needing a person", async () => {
+    const { chain, store, worker } = setup();
+    const connection = chain.connection();
+    (connection as unknown as { getLatestBlockhash: () => Promise<never> }).getLatestBlockhash = async () => {
+      throw new Error("429 Too Many Requests");
+    };
+    expect((await worker({ connection }).run()).settled).toEqual({ [EVENT]: "unresolved" });
+    expect(store.event(EVENT)?.status).toBe("pending");
+  });
+
   test("one event that cannot be built does not stop the rest of the batch", async () => {
     const { store, worker } = setup();
     const good = exampleEvents()[0];

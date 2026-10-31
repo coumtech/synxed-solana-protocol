@@ -129,7 +129,9 @@ export class SettlementWorker {
         summary.resolved[event.eventId] = await this.resolve(event.eventId);
       } catch (error) {
         this.#log(`${event.eventId}: resolve failed: ${String(error)}`);
-        store.setEventStatus(event.eventId, "in_flight", `resolve failed: ${String(error)}`);
+        if (store.event(event.eventId)?.status !== "paid") {
+          store.setEventStatus(event.eventId, "in_flight", `resolve failed: ${String(error)}`);
+        }
         summary.resolved[event.eventId] = "unresolved";
       }
     }
@@ -138,7 +140,9 @@ export class SettlementWorker {
         summary.settled[event.eventId] = await this.settle(event);
       } catch (error) {
         this.#log(`${event.eventId}: settle failed: ${String(error)}`);
-        store.setEventStatus(event.eventId, "in_flight", `settle failed: ${String(error)}`);
+        if (store.event(event.eventId)?.status !== "paid") {
+          store.setEventStatus(event.eventId, "in_flight", `settle failed: ${String(error)}`);
+        }
         summary.settled[event.eventId] = "unresolved";
       }
     }
@@ -180,16 +184,34 @@ export class SettlementWorker {
       return "needs_attention";
     }
     const attempt = store.beginAttempt(event.eventId, event.request, this.#params());
-    let signature: string;
-    let raw: Buffer;
-    let lastValidBlockHeight: number;
+    let prepared;
     try {
-      const prepared = this.#build(event.request);
+      prepared = this.#build(event.request);
+    } catch (error) {
+      store.setAttemptStatus(event.eventId, attempt, "failed", String(error));
+      store.setEventStatus(event.eventId, "needs_attention", `cannot build the settlement: ${String(error)}`);
+      this.#log(`${event.eventId}: cannot build the settlement: ${String(error)}`);
+      return "needs_attention";
+    }
+    let lastValidBlockHeight: number;
+    let blockhash: string;
+    try {
       const latest = await connection.getLatestBlockhash("confirmed");
       lastValidBlockHeight = latest.lastValidBlockHeight;
+      blockhash = latest.blockhash;
+    } catch (error) {
+      // A transient RPC fault is not a reason to ask for a person.
+      store.setAttemptStatus(event.eventId, attempt, "failed", String(error));
+      store.setEventStatus(event.eventId, "pending", `could not read a blockhash: ${String(error)}`);
+      this.#log(`${event.eventId}: could not read a blockhash: ${String(error)}`);
+      return "unresolved";
+    }
+    let signature: string;
+    let raw: Buffer;
+    try {
       const transaction = prepared.transaction;
       transaction.feePayer = payer.publicKey;
-      transaction.recentBlockhash = latest.blockhash;
+      transaction.recentBlockhash = blockhash;
       transaction.sign(...this.#signers());
       if (transaction.signature === null) {
         throw new Error("the transaction was not signed");
@@ -198,8 +220,8 @@ export class SettlementWorker {
       raw = transaction.serialize();
     } catch (error) {
       store.setAttemptStatus(event.eventId, attempt, "failed", String(error));
-      store.setEventStatus(event.eventId, "needs_attention", `cannot build the settlement: ${String(error)}`);
-      this.#log(`${event.eventId}: cannot build the settlement: ${String(error)}`);
+      store.setEventStatus(event.eventId, "needs_attention", `cannot sign the settlement: ${String(error)}`);
+      this.#log(`${event.eventId}: cannot sign the settlement: ${String(error)}`);
       return "needs_attention";
     }
     store.recordSigned(event.eventId, attempt, signature, raw.toString("base64"), lastValidBlockHeight);
