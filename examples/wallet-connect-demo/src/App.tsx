@@ -220,7 +220,7 @@ export function App(): React.JSX.Element {
 
       <section className="hero" aria-labelledby="page-title">
         <div>
-          <p className="eyebrow">Open-source protocol · Solana devnet</p>
+          <p className="eyebrow">Open source protocol · Solana devnet</p>
           <h1 id="page-title">Revenue, split visibly.</h1>
           <p className="lede">
             Sign one four-way settlement, inspect it on-chain, and reconcile

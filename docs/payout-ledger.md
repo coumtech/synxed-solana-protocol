@@ -1,6 +1,6 @@
 # Payout ledger and reconciliation
 
-> **Status: Open-source reference implementation.** The public TypeScript SDK
+> **Status: Open source reference implementation.** The public TypeScript SDK
 > defines these records, extracts evidence from finalized `SettleN`
 > transactions, and rejects any mismatch in event seed, amount, shares,
 > recipients, memo, or inner transfers. It is an auditable reference layer,
@@ -12,7 +12,7 @@ The settlement program answers one question per event: *how much did each
 recipient wallet receive, and can this event ever be paid twice?* It does
 not answer the questions a studio's finance team or an artist's statement
 needs: *what did I earn this month, from which games, and has it been paid
-out?* Nor can it pay individual listeners — a listener's share of one
+out?* Nor can it pay individual listeners: a listener's share of one
 impression is a fraction of a cent, far below the rent minimum a fresh
 Solana wallet needs to hold a balance.
 
@@ -113,8 +113,8 @@ settlement lands on-chain
 
 ## Pooled shares (listener rewards)
 
-A pooled share is a normal on-chain recipient — one wallet, one transfer
-per settlement — so the program stays simple and cheap. What makes it a
+A pooled share is a normal on-chain recipient (one wallet, one transfer
+per settlement), so the program stays simple and cheap. What makes it a
 *pool* is ledger-level: the platform's attribution layer decides which
 listeners earned a slice of that share (eligibility, fraud screening, and
 weighting are entirely off-chain and outside this repository), and the

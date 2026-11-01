@@ -1,9 +1,33 @@
 {
   "name": "@coumtech/synxed-solana-protocol",
   "version": "0.1.0",
+  "description": "TypeScript client for the SYNXED Solana settlement protocol: deterministic revenue splits, idempotent on-chain settlement, and finalized ledger reconciliation (devnet).",
   "license": "Apache-2.0",
+  "author": "Coum Technologies Ltd",
+  "homepage": "https://github.com/coumtech/synxed-solana-protocol#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coumtech/synxed-solana-protocol.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/coumtech/synxed-solana-protocol/issues"
+  },
+  "keywords": [
+    "solana",
+    "settlement",
+    "revenue-split",
+    "payments",
+    "reconciliation",
+    "gaming",
+    "audio"
+  ],
   "private": true,
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.12"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
@@ -16,12 +40,19 @@
   "dependencies": {
     "@noble/hashes": "^1.8.0",
     "@solana/spl-token": "^0.4.15",
-    "@solana/web3.js": "^1.99.0",
     "bs58": "^6.0.0",
     "buffer": "^6.0.3"
   },
+  "peerDependencies": {
+    "@solana/web3.js": "^1.99.0"
+  },
   "devDependencies": {
+    "@solana/web3.js": "^1.99.0",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
