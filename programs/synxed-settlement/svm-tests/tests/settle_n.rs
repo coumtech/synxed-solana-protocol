@@ -104,6 +104,10 @@ fn rejects_an_invalid_n_way_split() {
         .settle_n(event(38), AMOUNT, &[3_500, 3_500, 2_000, 900], &recipients)
         .expect_err("bps summing to 9900 must fail");
     assert!(err.contains("InvalidArgument"), "got {err}");
+    let err = f
+        .settle_n(event(38), AMOUNT, &[5_000, 5_000, 1_000], &recipients[..3])
+        .expect_err("bps summing to 11000 must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
     assert_eq!(f.balance(&recipients[3]), 0);
 }
 
@@ -194,5 +198,19 @@ fn skips_zero_lamport_shares_without_touching_new_accounts() {
     assert!(
         f.svm.get_account(&idle).is_none(),
         "no transfer to a 0 bps share"
+    );
+}
+
+#[test]
+fn rejects_a_zero_amount() {
+    let mut f = Fixture::new();
+    let recipients = four_recipients(&f);
+    let err = f
+        .settle_n(event(48), 0, &REWARDS_BPS, &recipients)
+        .expect_err("a zero amount must fail");
+    assert!(err.contains("InvalidArgument"), "got {err}");
+    assert!(
+        f.svm.get_account(&f.record_pda(&event(48))).is_none(),
+        "no record"
     );
 }
