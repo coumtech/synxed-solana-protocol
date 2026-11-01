@@ -22,8 +22,8 @@
 #                       without comparing it with an existing deployment
 #
 # Exit codes:
-#   0  MATCH — the on-chain program is the build of this source tree
-#   1  DRIFT — the comparison completed and the hashes differ
+#   0  MATCH: the on-chain program is the build of this source tree
+#   1  DRIFT: the comparison completed and the hashes differ
 #   2  could not complete (missing tools, build failure, RPC failure)
 
 set -euo pipefail

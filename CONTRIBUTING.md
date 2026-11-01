@@ -23,12 +23,12 @@ This is the public **SYNXED Solana settlement protocol** (Coum Technologies Ltd,
 2. Keep changes scoped to this protocol (split math, program, TypeScript SDK, demo, docs).
 3. Run `bun test` and `bun run typecheck` locally. If you change the Rust program, also run `cargo fmt --check` and `cargo test` (with and without `--features onchain`) against `programs/synxed-settlement/Cargo.toml`. Processor changes must also pass the in-process SVM tests: build with `cargo build-sbf --manifest-path programs/synxed-settlement/Cargo.toml --features onchain`, then `cargo test --manifest-path programs/synxed-settlement/svm-tests/Cargo.toml` (needs Rust 1.89 or newer for the SVM test dependencies).
 4. Open a PR against `main` using the pull request template.
-5. Every PR receives an **adversarial review** before merge: a reviewer (human or agent) whose explicit job is to find bugs, broken claims, and security issues in the diff — not to rubber-stamp it. Confirmed findings are fixed in the PR before it merges.
+5. Every PR receives an **adversarial review** before merge: a reviewer (human or agent) whose explicit job is to find bugs, broken claims, and security issues in the diff, not to rubber-stamp it. Confirmed findings are fixed in the PR before it merges.
 6. Do not merge your own PR unless maintainers have documented an exception.
 
 ## Changing the on-chain program
 
-Program changes are not done when they merge — they are done when the
+Program changes are not done when they merge. They are done when the
 reference devnet deployment matches `main` again. Follow the upgrade
 procedure in [docs/verified-build.md](docs/verified-build.md) right after
 merging, then confirm with `scripts/verify-deployment.sh`. The *Verify

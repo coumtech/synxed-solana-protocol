@@ -34,7 +34,7 @@ cares about: a `SettlementRequest`.
    (transaction visible in Solana Explorer)
 ```
 
-Anyone can produce a `SettlementRequest` — the demo in
+Anyone can produce a `SettlementRequest`. The demo in
 `examples/gaming-payment-demo` fabricates one from a fake in-game audio-ad
 impression. No proprietary event generator is needed to use or evaluate
 this protocol.
@@ -70,6 +70,6 @@ this protocol.
 ## Trust model (current stage)
 
 The payer wallet (the platform operator) is trusted to submit truthful
-events and amounts — the program verifies the *split*, not the *event*.
+events and amounts: the program verifies the *split*, not the *event*.
 Verifying event authenticity (oracles, attestation, reconciliation) is
 future work and out of scope here.
