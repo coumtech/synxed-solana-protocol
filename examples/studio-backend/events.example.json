@@ -1,0 +1,26 @@
+[
+  {
+    "eventId": "evt_studio_example_0001",
+    "occurredAt": "2026-10-01T12:00:00.000Z",
+    "amountAtomic": "20000",
+    "memo": "audio ad in Skyline Runners, 1 October batch",
+    "shares": [
+      { "label": "artist", "recipient": "6AF4DwckLZ7pxwWYarmJx5Sk6dyziagHNoDA8CJpDQa5", "bps": 3500, "beneficiaryId": "artist:aurora-lane" },
+      { "label": "studio", "recipient": "EfKS8o2pDsHAJUKQQ3evE5m6PgYR7rxEYvGQavk2y1Da", "bps": 3500, "beneficiaryId": "studio:skyline-games" },
+      { "label": "synxed", "recipient": "GJ7JUe6w6DktBDBPKGWNzhJUhRRFExJqb2hrtdsQFX7s", "bps": 2000, "beneficiaryId": "platform:synxed" },
+      { "label": "rewards_pool", "recipient": "48fB8mLhZJNZxVjyebuEhu5nvKPSyM31asQE6kkjqhA9", "bps": 1000 }
+    ]
+  },
+  {
+    "eventId": "evt_studio_example_0002",
+    "occurredAt": "2026-10-02T12:00:00.000Z",
+    "amountAtomic": "30000",
+    "memo": "audio ad in Skyline Runners, 2 October batch",
+    "shares": [
+      { "label": "artist", "recipient": "6AF4DwckLZ7pxwWYarmJx5Sk6dyziagHNoDA8CJpDQa5", "bps": 3500, "beneficiaryId": "artist:aurora-lane" },
+      { "label": "studio", "recipient": "EfKS8o2pDsHAJUKQQ3evE5m6PgYR7rxEYvGQavk2y1Da", "bps": 3500, "beneficiaryId": "studio:skyline-games" },
+      { "label": "synxed", "recipient": "GJ7JUe6w6DktBDBPKGWNzhJUhRRFExJqb2hrtdsQFX7s", "bps": 2000, "beneficiaryId": "platform:synxed" },
+      { "label": "rewards_pool", "recipient": "48fB8mLhZJNZxVjyebuEhu5nvKPSyM31asQE6kkjqhA9", "bps": 1000 }
+    ]
+  }
+]

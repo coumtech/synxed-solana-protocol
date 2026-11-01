@@ -1,0 +1,20 @@
+{
+  "name": "@coumtech/studio-backend-example",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@coumtech/synxed-solana-protocol": "workspace:*",
+    "@solana/web3.js": "^1.99.0",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.22",
+    "typescript": "^5.8.3"
+  }
+}

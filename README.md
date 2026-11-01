@@ -115,6 +115,22 @@ and reconciles the exact mint, decimals, accounts, memo, totals, and transfers.
 The payer's token account must already hold the example's 20,000 base units.
 See [docs/spl-stablecoin.md](docs/spl-stablecoin.md).
 
+**6. Run a studio backend worker**
+
+```bash
+bun run studio init      # opens the namespace; pin the address it prints
+bun run studio enqueue examples/studio-backend/events.example.json
+bun run studio run
+```
+
+This needs the devnet keypair from step 3 and `SETTLEMENT_PROGRAM_ID` set in
+`.env` (program mode); [docs/studio-integration.md](docs/studio-integration.md)
+lists all ten variables. A batch worker over a SQLite queue that settles
+billable events, decides
+every uncertain outcome from the chain, and writes the ledger only from
+finalized evidence. See [docs/studio-integration.md](docs/studio-integration.md)
+and the [reconciliation runbook](docs/reconciliation.md).
+
 ### Settlement modes
 
 - **Fallback (default):** one system transfer per nonzero share, computed
@@ -159,11 +175,13 @@ container, which image, and how to verify a specific commit:
 programs/synxed-settlement    Solana program (Rust)
 sdk/typescript                TypeScript SDK: types, split, codec, client
 examples/gaming-payment-demo  CLI demo: fake impression -> devnet settlement
-tests/                        Bun test suite (SDK)
+examples/studio-backend       Studio worker: event queue -> settlement -> ledger
+tests/                        Bun test suite (SDK and example workers)
 programs/synxed-settlement/svm-tests
                               In-process SVM tests of the compiled program
 docs/                         architecture, protocol spec, security model,
-                              integration guide, payout ledger, demo script
+                              integration and studio guides, reconciliation
+                              runbook, payout ledger, demo script
 ```
 
 ## Scope and roadmap
@@ -197,6 +215,9 @@ docs/                         architecture, protocol spec, security model,
   [docs/wallet-connect-demo.md](docs/wallet-connect-demo.md)
 - Classic SPL Token settlement for a configured six-decimal stablecoin mint,
   with checked transfers and finalized ledger reconciliation
+- A studio backend worker that uses only the public SDK, with a
+  [studio integration guide](docs/studio-integration.md) and a
+  [reconciliation runbook](docs/reconciliation.md)
 
 **Explicitly future (not in this repository):**
 
