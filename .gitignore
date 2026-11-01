@@ -6,7 +6,7 @@ node_modules/
 .env.*
 !.env.example
 
-# Solana / program keypairs — local only
+# Solana / program keypairs: local only
 .keys/
 **/id.json
 **/*keypair*.json
@@ -27,6 +27,8 @@ dist/
 .idea/
 .vscode/
 *.swp
+# Editor multi-root workspace files can list unrelated local folders
+*.code-workspace
 
 # Logs
 *.log
