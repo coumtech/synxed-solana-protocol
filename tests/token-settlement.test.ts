@@ -146,12 +146,14 @@ describe("SettleTokenN", () => {
       request: { ...request(), eventId: "evt_token_six", shares: shares(6) },
       authority: Keypair.generate().publicKey,
     });
+    expect(six).toBeInstanceOf(ProtocolError);
     expect((six as ProtocolError).code).toBe("TRANSACTION_TOO_LARGE");
     // A long memo overflows the message buffer; the SDK still reports its own code.
     const memo = errorFor({
       request: { ...request(), eventId: "evt_token_memo", shares: shares(8), memo: "x".repeat(1_000) },
       createRecipientAccounts: false,
     });
+    expect(memo).toBeInstanceOf(ProtocolError);
     expect((memo as ProtocolError).code).toBe("TRANSACTION_TOO_LARGE");
     // Without the account-creation instructions the eight-share split fits.
     const prepared = buildTokenSettlementNTransaction({
@@ -164,6 +166,40 @@ describe("SettleTokenN", () => {
       createRecipientAccounts: false,
     });
     expect(prepared.recipientTokenAccounts).toHaveLength(8);
+  });
+
+  test("accepts a 1232-byte token transaction and refuses 1233", () => {
+    const payer = Keypair.generate();
+    const build = (memo: string) =>
+      buildTokenSettlementNTransaction({
+        payer: payer.publicKey,
+        request: { ...request(), eventId: "evt_token_boundary", memo },
+        mint: MINT,
+        decimals: 6,
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+        createRecipientAccounts: false,
+      });
+    let accepted = -1;
+    for (let length = 0; length < 2_000; length += 1) {
+      try {
+        build("x".repeat(length));
+        accepted = length;
+      } catch (error) {
+        expect(error).toBeInstanceOf(ProtocolError);
+        expect((error as ProtocolError).code).toBe("TRANSACTION_TOO_LARGE");
+        expect((error as ProtocolError).message).toContain("is 1233 bytes");
+        expect(length).toBe(accepted + 1);
+        // The last accepted transaction really is 1,232 bytes on the wire.
+        const prepared = build("x".repeat(accepted));
+        prepared.transaction.feePayer = payer.publicKey;
+        prepared.transaction.recentBlockhash = PublicKey.default.toBase58();
+        prepared.transaction.sign(payer);
+        expect(prepared.transaction.serialize().length).toBe(1_232);
+        return;
+      }
+    }
+    throw new Error("no token transaction reached the size limit");
   });
 
   test("refuses the record or the namespace as a token destination", () => {
