@@ -98,6 +98,8 @@ decline unless you mean to sign for it with a funded key.
 | | |
 | --- | --- |
 | Program id | `HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT` (devnet) |
+| First deployment | slot 489,312,348, signature `21Yx5MaKNGtuNR8fUo2rXDkyFebPbNuwk9t9pk8AVtG6Qw3jVwiqn2iEXx6BkszdceTbodutbhcrjM1JjEb1V4tm` |
+| Last upgrade | slot 499,646,827 (`solana program show`) |
 | Built from | `main` at the commit named in the PR that last upgraded it |
 | Build | pinned image above |
 | Upgrade authority | the maintainers' devnet payer key |
@@ -134,6 +136,14 @@ comparison, performed against whatever `main` currently is.
 5. Run `scripts/verify-deployment.sh` and confirm `MATCH`, then trigger
    the *Verify deployment* workflow (or wait for the daily run) so the
    public record shows green.
+6. Record the upgrade slot (`solana program show` prints the last one) in
+   the table above, with the program's first deployment slot. For this
+   deployment the first deployment slot is the one in the table, the oldest
+   signature on the program id. Take the value from the table or from two archival providers
+   that agree, never from the provider you are checking: a pruned provider
+   returns only what it still keeps, and section 6 of
+   `docs/integration.md` uses the number to decide whether the whole legacy
+   period is visible.
 
 Do not merge program changes without upgrading: the docs describe `main`,
 and the daily check fails until the deployment catches up.

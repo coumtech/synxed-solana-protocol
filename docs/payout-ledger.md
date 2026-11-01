@@ -29,14 +29,16 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `schemaVersion` | `1` | Explicit storage contract version for future migrations |
+| `schemaVersion` | `2` | Explicit storage contract version; version 2 added `namespace` and `authority` |
 | `eventId` | string | Application event id; `sha256(eventId)` is the on-chain seed |
 | `signature` | string | Transaction signature (base58) |
 | `slot` | integer | Slot the transaction landed in |
 | `cluster` | `"devnet"` \| `"mainnet-beta"` | Devnet only today |
 | `programId` | string | Settlement program whose instruction was reconciled |
-| `payer` | string | Signing settlement authority and funding wallet |
-| `settlementRecord` | string | On-chain idempotency-record PDA |
+| `namespace` | string | Settlement namespace the event was settled in; reconciliation refuses any other |
+| `authority` | string | Namespace authority that signed the settlement |
+| `payer` | string | Funding wallet (and token source owner) that signed the settlement |
+| `settlementRecord` | string | On-chain idempotency-record PDA, derived from the namespace and the event id (in version 1 rows, from the event id alone: `["settlement", event_id]`) |
 | `mode` | `"program"` \| `"program-token"` | Only program-mode transactions are authoritative ledger inputs |
 | `asset` | string | `"SOL_LAMPORTS_STANDIN"`, `"SPL_STABLECOIN"`, or `"USDC"`; token identity is also bound by `mint` |
 | `mint` | string \| null | Classic SPL Token mint for token settlements; `null` for native SOL |
@@ -46,6 +48,12 @@ One row per settled event. Mirrors the on-chain settlement exactly.
 | `payouts` | `PayoutLine[]` | Exactly one per configured share, in share order |
 | `occurredAt` | RFC 3339 | From the originating `SettlementRequest` |
 | `settledAt` | RFC 3339 | Block time of the transaction |
+
+Rows written before the move to settlement namespaces are version 1, without
+`namespace` and `authority`; keep them as they are. The SDK no longer
+reconciles the retired instructions those rows came from, so a ledger rebuilt
+from chain history covers only namespaced settlements (see "Upgrading from the
+retired instructions" in [integration.md](integration.md)).
 
 ### `PayoutLine`
 
@@ -141,8 +149,9 @@ a fold over chain data:
    difference is the pool's undistributed balance and must be non-negative.
 
 The SDK's `reconcileSettlementN` and `reconcileTokenSettlementN` wait for
-finality, decode the instruction,
-derives its settlement-record PDA, validates the structured memo, and compares
+finality, decode the instruction, check that it settled in the expected
+namespace, derive its settlement-record PDA from that namespace, validate the
+structured memo, and compare
 the exact multiset of inner system transfers. Record-account rent transfers are
 identified separately and never counted as payouts. `allocatePoolPayout`
 requires unique beneficiary IDs, positive amounts, and exact conservation.

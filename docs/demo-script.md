@@ -49,7 +49,9 @@ and that rule is documented."
 
 **[0:50] Settle it for real.**
 Set `SOLANA_PAYER_KEYPAIR` (already in `.env`) and run the demo again.
-Wait for the `Settled on devnet (program mode)` block. Copy the
+The first program-mode run opens the payer's settlement namespace and prints
+its address: "only this key can settle these event ids." Wait for the
+`Settled on devnet (program mode)` block. Copy the
 `explorer` URL into the browser. The demo then waits for finality and prints
 `Ledger reconciliation: MATCH` with a local evidence path.
 

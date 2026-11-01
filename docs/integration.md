@@ -65,7 +65,7 @@ const submission = await submitSettlement({
   payer,                        // Keypair funding the payouts
   request,
   lamportsPerAtomicUnit: 1_000n, // devnet stand-in scaling, see below
-  // programId: new PublicKey("...") (optional, see "Program mode")
+  // programId and namespace: optional, see "Program mode" and section 5
 });
 console.log(submission.explorerUrl);
 ```
@@ -80,9 +80,11 @@ console.log(submission.explorerUrl);
   lamports).
 - **Fallback mode (default):** one `SystemProgram` transfer per nonzero share plus a memo.
   No deployment needed.
-- **Program mode:** pass `programId` and the client sends a single `Settle`
-  instruction; the program re-validates the split on-chain, writes the
-  idempotency record, and pays every recipient atomically.
+- **Program mode:** pass `programId` and your `namespace` (section 5) and the
+  client sends a single `SettleN` instruction, signed by the payer and the
+  namespace authority; the program checks the authority, re-validates the
+  split on-chain, writes the idempotency record, and pays every recipient
+  atomically.
 
 ## 4. Deploying the program (optional, for program mode)
 
@@ -109,13 +111,162 @@ solana program deploy programs/synxed-settlement/target/deploy/synxed_settlement
 Put the printed program id in `.env` as `SETTLEMENT_PROGRAM_ID`. Deploy
 keys are yours; never commit them.
 
-## 5. Operational notes
+## 5. Your settlement namespace (program mode)
+
+Program mode settles inside a namespace that you open once. Its authority,
+the payer by default, is the only key that can settle in it, and every
+settlement record is derived from the namespace and the event id, so nobody
+else can settle one of your event ids first.
+
+```ts
+import {
+  ensureNamespace,
+  namespaceIdFromLabel,
+  submitSettlement,
+} from "@coumtech/synxed-solana-protocol";
+
+const { address: namespace } = await ensureNamespace({
+  connection,
+  payer,                                     // pays the rent, signs as creator
+  programId,
+  namespaceId: namespaceIdFromLabel("studio-payouts"),
+  // authority: defaults to payer.publicKey
+});
+
+await submitSettlement({ connection, payer, request,
+  lamportsPerAtomicUnit: 1_000n, programId, namespace });
+```
+
+- **Address:** the namespace is a program account at
+  `["namespace", creator, namespace_id]`, so it is fixed by your key and the
+  id you chose. `ensureNamespace` opens it on first use (rent for 98 bytes,
+  0.00114808 SOL on devnet on 21 October 2026, paid once) and afterwards
+  only checks that it exists and that its authority is the one you expect.
+  `CreateNamespace` does not ask the initial authority to sign, so check the
+  key you pass: a namespace opened with a key nobody holds can never settle,
+  and its id is used up for that creator.
+- **Idempotency is per namespace.** An event settled in one namespace can be
+  settled again in another, so a different label, payer key, or program id
+  silently starts afresh. Pin the namespace address in your production
+  configuration and call `ensureNamespace` there with `create: false` and
+  `expectedAddress` set to it, so a missing namespace or a different address
+  is an error instead of a new namespace (`NAMESPACE_MISSING`,
+  `NAMESPACE_ADDRESS`). If the payer key that opened it was replaced, rotate
+  the authority first if the old key may be exposed; then pass the old key as
+  `creator` and, if you did not rotate the authority, as `authority` (and to
+  the submit functions).
+- **Environments:** use one namespace per environment (for example
+  `studio-payouts-staging` and `studio-payouts`), so the same event id can be
+  settled independently in each.
+- **A separate authority:** pass `authority` to `ensureNamespace`, then the
+  authority's `Keypair` as `authority` to the submit functions; both the
+  payer and the authority sign. A wallet that builds its own transaction
+  passes the authority's public key to `buildSettlementNTransaction`. A
+  hardware key signs the transaction directly. A multisig (for example a
+  Squads vault) signs through its own program, so its settlements are inner
+  instructions that the SDK's reconcile functions do not read: reconcile
+  those by hand, as described in known limitation 1 of
+  [security-model.md](security-model.md).
+- **Rotating the key:** the current and the new authority both sign
+  `buildSetNamespaceAuthorityInstruction`, so the namespace can never be
+  handed to a key nobody holds. The namespace address and its records stay
+  the same, so events settled before the rotation stay settled. Rotating to
+  or from a multisig vault means the vault signs through its own program
+  while the other key signs the same transaction; this repository has not
+  tested that with any multisig, so try it on devnet before relying on it.
+- **Losing the authority key:** nobody can recover a namespace whose
+  authority key is lost; the creator has no override. Keep the authority
+  backed up. If you must move to a new namespace, first make sure nothing
+  already signed for the old one can still land: a signed settlement stays
+  valid until its blockhash expires, or, with a durable nonce, until the
+  nonce advances. Wait until every recent blockhash you signed with has
+  expired, advance or close any durable nonce you signed with, and cancel
+  pending multisig proposals; an event whose signed settlement cannot be
+  invalidated stays unresolved. Then check each pending event in the old
+  namespace with `fetchSettlementRecord`, which counts only a record the
+  program owns for that event (anyone can send lamports to a record's
+  address, so an account merely existing there proves nothing).
+  For each record found, find its creating transaction with
+  `findSettlementTransaction` and reconcile it against your stored request
+  (known limitation 1 of [security-model.md](security-model.md)) before
+  treating the event as paid. Settle in the new namespace only the events
+  with no record in the old one, and confirm each null with a second RPC
+  provider first.
+- **Wallets:** `fetchNamespace` reports whether the namespace exists (lamports
+  someone sent to its address do not count; the program opens a namespace
+  there all the same). Passing `createNamespaceId` to
+  `buildSettlementNTransaction` opens it in the same transaction as the first
+  settlement, so the user approves once. If that transaction fails with
+  `AccountAlreadyInitialized` in its first instruction (`CreateNamespace`),
+  the namespace was opened meanwhile: build the settlement again without
+  `createNamespaceId`.
+
+## 6. Upgrading from the retired instructions
+
+The reference deployment once ran instructions that keyed the settlement
+record on the event id alone (tags 0 to 2). The program now refuses them, and
+this SDK neither builds nor reconciles them.
+
+Events settled before the upgrade have their records at the old address,
+`["settlement", event_id]`, which a namespaced settlement does not see. The
+retired instructions let anyone settle any event id, with their own payer and
+to wallets of their choosing. Events first attempted after the upgrade need
+no check. Before retrying an event first attempted before it:
+
+1. Call `fetchLegacySettlementRecord`. It counts only an account the program
+   owns that holds this event's record; lamports sent to the address do not
+   count. If it returns null, confirm that with a second RPC provider, then
+   settle the event in your namespace as usual.
+2. For a record, find its creating transaction with
+   `findLegacySettlementTransaction`, and confirm the transaction with a
+   second provider. Both must be archival: record the program's first
+   deployment slot when you deploy (the reference deployment's is in
+   [verified-build.md](verified-build.md)), and require each provider's
+   `getFirstAvailableBlock` to be before it, so the whole legacy period is
+   visible; the provider must also answer `getParsedTransactions` for that
+   slot. That check is necessary, not
+   sufficient. If the provider can show the whole history, a single candidate
+   is the creator even when it is an inner invocation (another program
+   invoked it), so compare it by hand. If it cannot, the event is unresolved:
+   do not pay it and do not settle it again.
+   The SDK does not reconcile retired instructions, so compare it with your
+   stored requests by hand: the payer is the instruction's first account, and
+   the payouts are the transfers inside it, other than the rent transfer to
+   the record.
+   "Matches" means everything `reconcileSettlementN` and
+   `reconcileTokenSettlementN` would check: the same asset (lamports or
+   tokens), mint and decimals, the same recipient wallets (and their token
+   accounts for that mint), and the same on-chain amounts after scaling. The
+   retired instructions let a payer choose all of these. Keep a list of every
+   payer key you have used, including your users' wallets in a wallet flow,
+   then decide:
+
+| The creating transaction | Decision |
+| --- | --- |
+| Paid by a payer key on your list, and matches a request stored for this event id | Paid: never settle it again |
+| Paid by a payer key on your list, and matches no request stored for this event id | Incident: do not mark it paid, and do not settle it again |
+| Paid by someone else, and matches a request stored for this event id | Paid by them: never settle it again, and raise an alert |
+| Paid by someone else, in any other way | Not paid by you: settle it in your namespace, and raise an alert |
+
+Anything you cannot decide (the transaction cannot be found, or the two
+providers disagree) is unresolved: retry later, and do not settle the event
+meanwhile.
+
+Ledger rows written before the upgrade are `SettlementRecord` schema
+version 1, without `namespace` and `authority`, and their `settlementRecord`
+is the old address `["settlement", event_id]`; keep them as they are. This
+SDK cannot reconcile those transactions again, so a ledger rebuilt from
+chain history covers only settlements made after the upgrade.
+
+## 7. Operational notes
 
 - Use one `eventId` per billable event. In program mode the chain rejects a
-  second settlement of the same id (`AccountAlreadyInitialized`).
-- A duplicate error does not prove that you paid the event: anyone who learns
-  an unsettled event id can settle it first. Before marking the event settled
-  or settling it again, follow the procedure under known limitation 1 in
+  second settlement of the same id in your namespace
+  (`AccountAlreadyInitialized`).
+- Only your namespace authority can create that record, so a duplicate error
+  means your own key settled the event before, for example in a retry that
+  landed. Reconcile that transaction against your stored request before
+  marking the event paid; see known limitation 1 in
   [security-model.md](security-model.md).
 - Recipients are plain system accounts (wallet pubkeys). They do not need
   to sign.
@@ -153,7 +304,7 @@ const request: SettlementRequestN = {
 
 const result = computeSettlementN(request); // payouts per label
 const submission = await submitSettlementN({ connection, payer, request,
-  lamportsPerAtomicUnit: 1_000n, programId });
+  lamportsPerAtomicUnit: 1_000n, programId, namespace });
 ```
 
 One to eight shares are accepted; the shares must sum to 10000 bps. A
@@ -167,9 +318,8 @@ Use `submitTokenSettlementN` when the settlement asset is a configured classic
 SPL Token mint. The SDK derives the payer and recipient associated token
 accounts, adds idempotent recipient-account creation instructions, and submits
 one `SettleTokenN` program instruction. With that account creation one
-transaction fits six token shares while the event id and memo stay short, and
-seven only when they are a few characters long; see known limitation 7
-in [security-model.md](security-model.md). The on-chain program verifies the mint,
+transaction fits five token shares, and six only while the event id and memo
+stay short; see known limitation 7 in [security-model.md](security-model.md). The on-chain program verifies the mint,
 decimals, account ownership, and every checked transfer.
 
 ```ts
@@ -189,6 +339,7 @@ const submission = await submitTokenSettlementN({
   mint,
   decimals: mintInfo.decimals,
   programId,
+  namespace,
   tokenBaseUnitsPerAtomicUnit: 1n,
 });
 
@@ -199,6 +350,7 @@ const evidence = await reconcileTokenSettlementN({
   mint,
   decimals: mintInfo.decimals,
   programId,
+  namespace,
   tokenBaseUnitsPerAtomicUnit: 1n,
 });
 ```

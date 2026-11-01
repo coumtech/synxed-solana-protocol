@@ -16,7 +16,12 @@ const DEFAULT_RPC = "https://api.devnet.solana.com";
 const DEFAULT_PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
 const AMOUNT_ATOMIC = 20_000n;
 const UNITS_PER_ATOMIC = 1_000n;
-const FUNDING_OVERHEAD = 1_200_000n;
+// The fee for one signature, with room to spare. Rent figures are asked from
+// the cluster, which can change them.
+const FEE_MARGIN = 10_000n;
+// Each wallet settles in its own namespace under this label, so nobody else
+// can claim one of its event ids.
+const NAMESPACE_LABEL = "synxed-wallet-demo";
 // Name the wallet-adapter provider gives the Mobile Wallet Adapter entry it adds
 // on Android mobile web (from @solana-mobile/wallet-adapter-mobile).
 const MOBILE_WALLET_ADAPTER_NAME = "Mobile Wallet Adapter";
@@ -107,7 +112,14 @@ export function App(): React.JSX.Element {
     try {
       setRun({ status: "working", message: "Validating the four-way settlement…" });
       const [
-        { buildSettlementNTransaction },
+        {
+          NAMESPACE_ACCOUNT_SIZE,
+          SETTLEMENT_RECORD_SIZE,
+          buildSettlementNTransaction,
+          fetchNamespace,
+          findNamespacePda,
+          namespaceIdFromLabel,
+        },
         { assertLedgerCluster, reconcileSettlementN },
       ] = await Promise.all([
           import("@coumtech/synxed-solana-protocol/client"),
@@ -128,14 +140,39 @@ export function App(): React.JSX.Element {
         shares,
         memo: "Wallet-connected four-way settlement",
       };
+      // The wallet's namespace: opened in the same transaction the first time.
+      const namespaceId = namespaceIdFromLabel(NAMESPACE_LABEL);
+      const [namespace] = findNamespacePda(PROGRAM_ID, publicKey, namespaceId);
+      const existing = await fetchNamespace(connection, PROGRAM_ID, namespace);
+      if (existing !== null && !existing.authority.equals(publicKey)) {
+        throw new Error(
+          `This wallet's demo namespace ${namespace.toBase58()} is controlled by ${existing.authority.toBase58()}, so this wallet cannot settle in it.`,
+        );
+      }
       const prepared = buildSettlementNTransaction({
         payer: publicKey,
         request,
         lamportsPerAtomicUnit: UNITS_PER_ATOMIC,
         programId: PROGRAM_ID,
+        namespace,
+        ...(existing === null ? { createNamespaceId: namespaceId } : {}),
       });
       const balance = BigInt(await connection.getBalance(publicKey, "confirmed"));
-      const required = prepared.lamportsTotal + FUNDING_OVERHEAD;
+      // The split, the record's rent, the namespace's rent the first time,
+      // and the fee; the wallet must also keep its own rent-exempt minimum.
+      const [recordRent, namespaceRent, walletMinimum] = await Promise.all([
+        connection.getMinimumBalanceForRentExemption(SETTLEMENT_RECORD_SIZE),
+        existing === null
+          ? connection.getMinimumBalanceForRentExemption(NAMESPACE_ACCOUNT_SIZE)
+          : Promise.resolve(0),
+        connection.getMinimumBalanceForRentExemption(0),
+      ]);
+      const required =
+        prepared.lamportsTotal +
+        BigInt(recordRent) +
+        BigInt(namespaceRent) +
+        BigInt(walletMinimum) +
+        FEE_MARGIN;
       if (balance < required) {
         throw new Error(
           `Wallet needs at least ${formatSol(required)} SOL on devnet; current balance is ${formatSol(balance)} SOL. Fund it at faucet.solana.com.`,
@@ -155,6 +192,7 @@ export function App(): React.JSX.Element {
         connection,
         signature,
         programId: PROGRAM_ID,
+        namespace,
         request,
         unitsPerAtomicUnit: UNITS_PER_ATOMIC,
         beneficiaryIds: {
@@ -393,8 +431,8 @@ function persistEvidence(
 ): void {
   try {
     localStorage.setItem(
-      `synxed:settlement-evidence:v1:${signature}`,
-      JSON.stringify({ version: 1, reconciliation }),
+      `synxed:settlement-evidence:v2:${signature}`,
+      JSON.stringify({ version: 2, reconciliation }),
     );
   } catch {
     // Display remains authoritative even when private browsing blocks storage.
@@ -402,9 +440,14 @@ function persistEvidence(
 }
 
 function formatSol(lamports: bigint): string {
+  // Four decimal places, rounded rather than truncated, so the message and
+  // docs agree (0.02266684 SOL prints as 0.0227).
   const whole = lamports / 1_000_000_000n;
-  const fraction = (lamports % 1_000_000_000n).toString().padStart(9, "0").slice(0, 4);
-  return `${whole}.${fraction}`;
+  const fraction = ((lamports % 1_000_000_000n) + 50_000n) / 100_000n;
+  if (fraction === 10_000n) {
+    return `${whole + 1n}.0000`;
+  }
+  return `${whole}.${fraction.toString().padStart(4, "0")}`;
 }
 
 function shorten(address: string): string {

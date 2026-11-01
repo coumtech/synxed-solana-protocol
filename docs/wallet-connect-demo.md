@@ -20,9 +20,11 @@ A build of `main` is hosted at
 reference devnet program and the public devnet RPC; nothing in the bundle is
 secret. To use it you need a Solana wallet: a Wallet Standard browser wallet
 (Phantom, Solflare, and others) or Solflare's web wallet, switched to
-**devnet** (Phantom: Settings → Developer Settings →
-Testnet Mode, then choose Solana Devnet) and funded from <https://faucet.solana.com> (about 0.022 SOL is
-spent per settlement). On an iPhone, open the page inside your wallet app's
+**devnet** (Phantom: Settings → Developer Settings → Testnet Mode, then
+choose Solana Devnet) and funded from <https://faucet.solana.com>. The demo
+asks for about 0.0215 SOL in the wallet, 0.0227 SOL for its first
+settlement, which spends about 0.0220 SOL of it; later settlements spend
+about 0.0209 SOL. On an iPhone, open the page inside your wallet app's
 built-in browser; on Android, Chrome hands off to an installed wallet app
 through Mobile Wallet Adapter. Evidence of a successful settlement stays in
 your browser's local storage only.
@@ -51,9 +53,13 @@ bun run demo:wallet
 ```
 
 Open the printed local URL in a browser with a Solana wallet, switch that
-wallet to **devnet**, and fund it from the Solana devnet faucet. The example
-requires approximately 0.022 SOL: 0.020 SOL for the reference split, settlement
-record rent, and the transaction fee.
+wallet to **devnet**, and fund it from the Solana devnet faucet. Before it asks
+for a signature, the demo checks that the wallet holds the 0.020 SOL reference
+split, the settlement record's rent, the transaction fee, and the wallet's own
+rent-exempt minimum, which stays in the wallet. That is about 0.0215 SOL on
+devnet (28 October 2026). The wallet's first settlement also opens its
+namespace and pays that account's rent once, about 0.0227 SOL in all. The demo
+asks the cluster for each rent figure, so these can change.
 
 The recipient fields are intentionally visible and editable. Public demo
 addresses are prefilled so the flow is reproducible; replace them with devnet
@@ -64,18 +70,24 @@ addresses you control when recipient balance inspection matters.
 The web app calls the SDK's `buildSettlementNTransaction`; it does not maintain
 a second instruction codec. The transaction contains:
 
-1. A structured memo binding the event ID, occurrence time, asset, amount, and
+1. On the wallet's first settlement only, a `CreateNamespace` instruction
+   that opens the wallet's own settlement namespace (label
+   `synxed-wallet-demo`, with the wallet as creator and authority). Later
+   settlements check that it exists and that the wallet is its authority.
+2. A structured memo binding the event ID, occurrence time, asset, amount, and
    human-readable description.
-2. One `SettleN` instruction using the 35/35/20/10 split.
+3. One `SettleN` instruction using the 35/35/20/10 split, settled in that
+   namespace and signed by the wallet as payer and namespace authority.
 
 After the wallet submits the transaction, the app waits for finalized RPC
 evidence. `reconcileSettlementN` verifies the RPC genesis hash is devnet,
-decodes the instruction, derives the idempotency record PDA, and compares the
+decodes the instruction, checks the namespace, derives the idempotency record
+PDA from it, and compares the
 memo, share configuration, accounts, and exact inner transfers. Only a full
 match is displayed or saved.
 
 Successful evidence is stored under the versioned browser key
-`synxed:settlement-evidence:v1:<signature>`. It contains public devnet data
+`synxed:settlement-evidence:v2:<signature>`. It contains public devnet data
 only and can be cleared through normal browser storage controls.
 
 ## Security boundary

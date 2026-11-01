@@ -23,6 +23,7 @@ import {
 import { fakeAudioAdImpression } from "./event.ts";
 import {
   REPO_ROOT,
+  demoNamespace,
   ensureFunds,
   envBigInt,
   envIntList,
@@ -152,13 +153,22 @@ async function main(): Promise<void> {
 
   const programId = parseProgramId();
   await ensureFunds(connection, payer, lamportsTotal + fundingOverhead(programId));
+  // The program and its namespace travel as one value: it type-checks with
+  // or without exactOptionalPropertyTypes (spreading the two keys separately
+  // does not), and program mode cannot lose its namespace on the way.
+  const program =
+    programId === undefined
+      ? undefined
+      : { programId, namespace: await demoNamespace(connection, payer, programId) };
+  // Spread as a named value: an inline `?? {}` would be widened again.
+  const programMode = program ?? {};
 
   const submission = await submitSettlementN({
     connection,
     payer,
     request,
     lamportsPerAtomicUnit: scale,
-    ...(programId !== undefined ? { programId } : {}),
+    ...programMode,
   });
 
   console.log(`\nSettled on devnet (${submission.mode} mode, ${shares.length}-way)`);
@@ -176,7 +186,7 @@ async function main(): Promise<void> {
     `  payer     ${explorerAddressUrl(payer.publicKey.toBase58())}`,
   );
 
-  if (programId === undefined) {
+  if (program === undefined) {
     console.log(
       "\nLedger reconciliation skipped: system-transfer mode has no on-chain " +
         "idempotency record. Set SETTLEMENT_PROGRAM_ID for authoritative ledger evidence.",
@@ -188,7 +198,8 @@ async function main(): Promise<void> {
   const reconciliation = await reconcileSettlementN({
     connection,
     signature: submission.signature,
-    programId,
+    programId: program.programId,
+    namespace: program.namespace,
     request,
     unitsPerAtomicUnit: scale,
     beneficiaryIds: {

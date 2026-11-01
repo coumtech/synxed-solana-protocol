@@ -3,6 +3,8 @@ import { PublicKey, type Connection, type Keypair } from "@solana/web3.js";
 import {
   ProtocolError,
   buildSettlementNTransaction,
+  findNamespacePda,
+  namespaceIdFromLabel,
   submitSettlementN,
   type SettlementRequestN,
 } from "../sdk/typescript/src/index.ts";
@@ -42,11 +44,14 @@ describe("submitSettlementN input guards", () => {
         programId,
       )[0].toBase58(),
     }));
+    const namespaceId = namespaceIdFromLabel("browser-wallet");
+    const [namespace] = findNamespacePda(programId, payerKey, namespaceId);
     const prepared = buildSettlementNTransaction({
       payer: payerKey,
       request: browserRequest,
       lamportsPerAtomicUnit: 1_000n,
       programId,
+      namespace,
     });
     expect(prepared.mode).toBe("program");
     expect(prepared.lamportsByShare).toEqual([
@@ -57,6 +62,56 @@ describe("submitSettlementN input guards", () => {
     ]);
     expect(prepared.transaction.instructions).toHaveLength(2);
     expect(prepared.transaction.instructions[1].programId.equals(programId)).toBe(true);
+    expect(prepared.transaction.instructions[1].keys[2].pubkey.equals(namespace)).toBe(true);
+
+    // The first settlement can open the wallet's namespace in the same transaction.
+    const first = buildSettlementNTransaction({
+      payer: payerKey,
+      request: browserRequest,
+      lamportsPerAtomicUnit: 1_000n,
+      programId,
+      namespace,
+      createNamespaceId: namespaceId,
+    });
+    expect(first.transaction.instructions).toHaveLength(3);
+    expect(Array.from(first.transaction.instructions[0].data.subarray(0, 1))).toEqual([3]);
+    expect(first.transaction.instructions[0].keys[2].pubkey.equals(namespace)).toBe(true);
+  });
+
+  test("refuses program mode without a namespace, and a namespace without a program", () => {
+    const programId = new PublicKey("HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT");
+    const payerKey = PublicKey.findProgramAddressSync(
+      [new TextEncoder().encode("browser-payer")],
+      programId,
+    )[0];
+    const valid = request(20_000n);
+    valid.shares = valid.shares.map((share, index) => ({
+      ...share,
+      recipient: PublicKey.findProgramAddressSync(
+        [new TextEncoder().encode(`recipient-${index}`)],
+        programId,
+      )[0].toBase58(),
+    }));
+    const [namespace] = findNamespacePda(programId, payerKey, namespaceIdFromLabel("a"));
+    // The types refuse both; plain JavaScript callers meet the runtime guard.
+    expect(() =>
+      // @ts-expect-error program mode needs a namespace
+      buildSettlementNTransaction({ payer: payerKey, request: valid, programId }),
+    ).toThrow(expect.objectContaining({ code: "NAMESPACE_REQUIRED" }));
+    expect(() =>
+      // @ts-expect-error a namespace needs a program
+      buildSettlementNTransaction({ payer: payerKey, request: valid, namespace }),
+    ).toThrow(expect.objectContaining({ code: "PROGRAM_ID_REQUIRED" }));
+    // createNamespaceId must derive the namespace being settled in.
+    expect(() =>
+      buildSettlementNTransaction({
+        payer: payerKey,
+        request: valid,
+        programId,
+        namespace,
+        createNamespaceId: namespaceIdFromLabel("b"),
+      }),
+    ).toThrow(expect.objectContaining({ code: "NAMESPACE_ADDRESS" }));
   });
 
   test("rejects scaled totals beyond u64", async () => {

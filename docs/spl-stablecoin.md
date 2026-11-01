@@ -13,8 +13,13 @@ checked during finalized reconciliation.
   transfer-fee and other extensions cannot silently change credited amounts.
 - The program uses `TransferChecked` and validates the initialized mint, exact
   decimals, source authority, and source/destination mints.
-- The token instruction shares the native settlement record PDA. Reusing an
-  event ID across native or token modes is rejected on-chain.
+- Token and native settlements share one settlement record per event in a
+  namespace. Reusing an event ID across native or token modes in the same
+  namespace is rejected on-chain, and only the namespace's authority can
+  settle in it.
+- With recipient token account creation in the same transaction, five shares
+  always fit and six fit only with a short event id and memo; see known
+  limitation 7 in [security-model.md](security-model.md).
 - The SDK derives canonical associated token accounts and reconciliation fails
   closed if the mint, decimals, accounts, memo, totals, finality, or inner
   transfers differ.
@@ -38,10 +43,11 @@ The command:
 1. verifies the RPC genesis hash is Solana devnet;
 2. fetches the mint from the classic token program and requires six decimals;
 3. verifies the payer's associated token balance and SOL fee/rent buffer;
-4. creates recipient associated token accounts idempotently;
-5. submits a 35/35/20/10 `SettleTokenN` transaction;
-6. waits for finalized evidence and reconciles every checked transfer; and
-7. writes public evidence under `.local/ledger/`.
+4. opens the payer's settlement namespace if it does not exist yet;
+5. creates recipient associated token accounts idempotently;
+6. submits a 35/35/20/10 `SettleTokenN` transaction in that namespace;
+7. waits for finalized evidence and reconciles every checked transfer; and
+8. writes public evidence under `.local/ledger/`.
 
 For a `20000`-base-unit example, the exact transfers are `7000`, `7000`,
 `4000`, and `2000`. Amounts remain integer strings or `bigint` throughout.
