@@ -16,6 +16,7 @@
 import {
   Connection,
   Keypair,
+  PACKET_DATA_SIZE,
   PublicKey,
   SystemProgram,
   Transaction,
@@ -702,6 +703,32 @@ export function buildTokenSettlementNTransaction(
       },
     ),
   );
+  // Serialized size: a one-byte signature count (at most two signers here),
+  // 64 bytes per signer, then the message. A memo or event id long enough to
+  // overflow the message buffer throws while serializing, so catch that too.
+  let size: number;
+  try {
+    const probe = new Transaction();
+    probe.add(...transaction.instructions);
+    probe.feePayer = options.payer;
+    probe.recentBlockhash = PublicKey.default.toBase58();
+    const message = probe.compileMessage();
+    size = message.serialize().length + 1 + message.header.numRequiredSignatures * 64;
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new ProtocolError(
+        "TRANSACTION_TOO_LARGE",
+        `token settlement exceeds the ${PACKET_DATA_SIZE}-byte transaction limit; use fewer shares, set createRecipientAccounts: false, or shorten the event id or memo`,
+      );
+    }
+    throw error;
+  }
+  if (size > PACKET_DATA_SIZE) {
+    throw new ProtocolError(
+      "TRANSACTION_TOO_LARGE",
+      `token settlement is ${size} bytes, over the ${PACKET_DATA_SIZE}-byte transaction limit; use fewer shares, set createRecipientAccounts: false, or shorten the event id or memo`,
+    );
+  }
   return {
     transaction,
     mode: "program-token",

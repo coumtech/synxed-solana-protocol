@@ -26,7 +26,7 @@ function openStore(path: string): Store {
   return new Store(path);
 }
 
-function limitArgument(raw: string | undefined): number {
+export function limitArgument(raw: string | undefined): number {
   if (raw === undefined) {
     return 10;
   }

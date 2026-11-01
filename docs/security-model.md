@@ -357,7 +357,9 @@ the amount or of the decimals, every character of `occurredAt` beyond 24, a
 separate namespace authority (96 bytes), and any extra instruction, such as
 a priority fee, use the same margin. Without account creation each share
 costs 35 bytes, and eight shares fit in the same cases (965 to 1,047 bytes).
-web3.js refuses to serialize an oversized transaction, so nothing is sent.
+The SDK refuses a token settlement over the 1,232-byte limit with
+`TRANSACTION_TOO_LARGE` before signing, and web3.js refuses to serialize one
+that still exceeds the packet size, so nothing is sent.
 For more token shares, or a long event id or memo, create the recipient token
 accounts in a separate transaction first and build the settlement with
 `createRecipientAccounts: false`. Native settlements fit eight shares in all
@@ -392,6 +394,11 @@ when the transaction also opens the namespace).
   before every merge is a process rule ([CONTRIBUTING.md](../CONTRIBUTING.md)),
   not a GitHub setting.
 - GitHub Actions are pinned to full commit SHAs; Dependabot proposes updates.
+- Once the one-time setup in CONTRIBUTING.md is complete, the npm release
+  workflow builds the package from the committed source in a credential-free
+  job; its tarball is checked file by file and by npm's own tar reader before
+  staging, and it is staged with provenance and npm trusted publishing. No
+  npm token is stored in GitHub. The package is not published yet.
 - Secret scanning with push protection and private vulnerability reporting
   are enabled.
 - JavaScript dependencies install from the committed lockfile
