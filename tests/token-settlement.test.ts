@@ -116,30 +116,47 @@ describe("SettleTokenN", () => {
   });
 
   test("refuses a token settlement too large for one transaction", () => {
-    const recipients = Array.from({ length: 8 }, () => Keypair.generate().publicKey.toBase58());
-    const wide: SettlementRequestN = {
-      ...request(),
-      eventId: "evt_token_too_large",
-      shares: recipients.map((recipient, index) => ({
+    const shares = (count: number): SettlementRequestN["shares"] =>
+      Array.from({ length: count }, (_, index) => ({
         label: `share-${index}`,
-        recipient,
-        bps: 1_250,
-      })),
+        recipient: Keypair.generate().publicKey.toBase58(),
+        bps: index === count - 1 ? 10_000 - 1_250 * (count - 1) : 1_250,
+      }));
+    const errorFor = (overrides: Partial<Parameters<typeof buildTokenSettlementNTransaction>[0]>): unknown => {
+      try {
+        buildTokenSettlementNTransaction({
+          payer: PAYER,
+          request: request(),
+          mint: MINT,
+          decimals: 6,
+          programId: PROGRAM_ID,
+          namespace: NAMESPACE,
+          ...overrides,
+        });
+        return null;
+      } catch (error) {
+        return error;
+      }
     };
-    expect(() =>
-      buildTokenSettlementNTransaction({
-        payer: PAYER,
-        request: wide,
-        mint: MINT,
-        decimals: 6,
-        programId: PROGRAM_ID,
-        namespace: NAMESPACE,
-      }),
-    ).toThrow(ProtocolError);
-    // Without the account-creation instructions the same split fits.
+    const eight = errorFor({ request: { ...request(), eventId: "evt_token_too_large", shares: shares(8) } });
+    expect(eight).toBeInstanceOf(ProtocolError);
+    expect((eight as ProtocolError).code).toBe("TRANSACTION_TOO_LARGE");
+    // A separate authority adds a signer; six shares with creation no longer fit.
+    const six = errorFor({
+      request: { ...request(), eventId: "evt_token_six", shares: shares(6) },
+      authority: Keypair.generate().publicKey,
+    });
+    expect((six as ProtocolError).code).toBe("TRANSACTION_TOO_LARGE");
+    // A long memo overflows the message buffer; the SDK still reports its own code.
+    const memo = errorFor({
+      request: { ...request(), eventId: "evt_token_memo", shares: shares(8), memo: "x".repeat(1_000) },
+      createRecipientAccounts: false,
+    });
+    expect((memo as ProtocolError).code).toBe("TRANSACTION_TOO_LARGE");
+    // Without the account-creation instructions the eight-share split fits.
     const prepared = buildTokenSettlementNTransaction({
       payer: PAYER,
-      request: wide,
+      request: { ...request(), eventId: "evt_token_too_large", shares: shares(8) },
       mint: MINT,
       decimals: 6,
       programId: PROGRAM_ID,

@@ -42,12 +42,16 @@ function clearEnv(): void {
   }
 }
 
-function keypairFile(bytes: number[] = Array.from(Keypair.generate().secretKey)): string {
+function keypairFileBytes(bytes: number[]): string {
   const directory = mkdtempSync(join(tmpdir(), "synxed-studio-config-"));
   directories.push(directory);
-  const path = join(directory, "payer.json");
+  const path = join(directory, "keypair.json");
   writeFileSync(path, JSON.stringify(bytes));
   return path;
+}
+
+function keypairFile(keypair: Keypair = Keypair.generate()): { path: string; keypair: Keypair } {
+  return { path: keypairFileBytes(Array.from(keypair.secretKey)), keypair };
 }
 
 const PROGRAM_ID = "HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT";
@@ -56,7 +60,7 @@ const ADDRESS = "4xrJM7aoaSkbmzXRgARZP8WSBzdd1nqrSqk45KJhE7n3";
 describe("studio config", () => {
   test("loads the devnet defaults", () => {
     clearEnv();
-    process.env.SOLANA_PAYER_KEYPAIR = keypairFile();
+    process.env.SOLANA_PAYER_KEYPAIR = keypairFile().path;
     process.env.SETTLEMENT_PROGRAM_ID = PROGRAM_ID;
     const config = loadConfig();
     expect(config.rpcUrl).toBe("https://api.devnet.solana.com");
@@ -72,8 +76,10 @@ describe("studio config", () => {
 
   test("reads every override", () => {
     clearEnv();
-    process.env.SOLANA_PAYER_KEYPAIR = keypairFile();
-    process.env.SETTLEMENT_AUTHORITY_KEYPAIR = keypairFile();
+    const payer = keypairFile();
+    const authority = keypairFile();
+    process.env.SOLANA_PAYER_KEYPAIR = payer.path;
+    process.env.SETTLEMENT_AUTHORITY_KEYPAIR = authority.path;
     process.env.SETTLEMENT_PROGRAM_ID = PROGRAM_ID;
     process.env.SOLANA_RPC_URL = "https://rpc.example.test";
     process.env.SOLANA_SECOND_RPC_URL = "https://second.example.test";
@@ -85,7 +91,8 @@ describe("studio config", () => {
     const config = loadConfig();
     expect(config.rpcUrl).toBe("https://rpc.example.test");
     expect(config.secondRpcUrl).toBe("https://second.example.test");
-    expect(config.authority).toBeDefined();
+    expect(config.payer.publicKey.equals(payer.keypair.publicKey)).toBe(true);
+    expect(config.authority?.publicKey.equals(authority.keypair.publicKey)).toBe(true);
     expect(config.namespaceLabel).toBe("studio-payouts");
     expect(config.namespaceAddress?.toBase58()).toBe(ADDRESS);
     expect(config.lamportsPerAtomicUnit).toBe(2_000n);
@@ -97,7 +104,7 @@ describe("studio config", () => {
     clearEnv();
     expect(() => loadConfig()).toThrow("SOLANA_PAYER_KEYPAIR is required");
 
-    process.env.SOLANA_PAYER_KEYPAIR = keypairFile();
+    process.env.SOLANA_PAYER_KEYPAIR = keypairFile().path;
     expect(() => loadConfig()).toThrow("SETTLEMENT_PROGRAM_ID is required");
 
     process.env.SETTLEMENT_PROGRAM_ID = "not-a-key";
@@ -118,7 +125,7 @@ describe("studio config", () => {
 
   test("refuses a keypair file that is not 64 bytes", () => {
     clearEnv();
-    process.env.SOLANA_PAYER_KEYPAIR = keypairFile([1, 2, 3]);
+    process.env.SOLANA_PAYER_KEYPAIR = keypairFileBytes([1, 2, 3]);
     process.env.SETTLEMENT_PROGRAM_ID = PROGRAM_ID;
     expect(() => loadConfig()).toThrow("SOLANA_PAYER_KEYPAIR must point at a 64-byte JSON keypair file");
   });
