@@ -392,6 +392,10 @@ when the transaction also opens the namespace).
   before every merge is a process rule ([CONTRIBUTING.md](../CONTRIBUTING.md)),
   not a GitHub setting.
 - GitHub Actions are pinned to full commit SHAs; Dependabot proposes updates.
+- The npm package is built from the committed source in a credential-free
+  job; its tarball is checked file by file and by npm's own tar reader before
+  staging, and it is staged with provenance and npm trusted publishing. No
+  npm token is stored in GitHub.
 - Secret scanning with push protection and private vulnerability reporting
   are enabled.
 - JavaScript dependencies install from the committed lockfile

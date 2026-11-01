@@ -115,6 +115,40 @@ describe("SettleTokenN", () => {
     ]);
   });
 
+  test("refuses a token settlement too large for one transaction", () => {
+    const recipients = Array.from({ length: 8 }, () => Keypair.generate().publicKey.toBase58());
+    const wide: SettlementRequestN = {
+      ...request(),
+      eventId: "evt_token_too_large",
+      shares: recipients.map((recipient, index) => ({
+        label: `share-${index}`,
+        recipient,
+        bps: 1_250,
+      })),
+    };
+    expect(() =>
+      buildTokenSettlementNTransaction({
+        payer: PAYER,
+        request: wide,
+        mint: MINT,
+        decimals: 6,
+        programId: PROGRAM_ID,
+        namespace: NAMESPACE,
+      }),
+    ).toThrow(ProtocolError);
+    // Without the account-creation instructions the same split fits.
+    const prepared = buildTokenSettlementNTransaction({
+      payer: PAYER,
+      request: wide,
+      mint: MINT,
+      decimals: 6,
+      programId: PROGRAM_ID,
+      namespace: NAMESPACE,
+      createRecipientAccounts: false,
+    });
+    expect(prepared.recipientTokenAccounts).toHaveLength(8);
+  });
+
   test("refuses the record or the namespace as a token destination", () => {
     const [record] = findSettlementRecordPda(PROGRAM_ID, NAMESPACE, eventIdSeed("evt_token_guard"));
     const destinations = RECIPIENTS.map((recipient) => getAssociatedTokenAddressSync(MINT, new PublicKey(recipient)));

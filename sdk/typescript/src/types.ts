@@ -132,4 +132,5 @@ export type ProtocolErrorCode =
   | "TOKEN_PROGRAM"
   | "TOKEN_SOURCE_RECIPIENT"
   | "TOKEN_ASSET"
+  | "TRANSACTION_TOO_LARGE"
   | "ASSET_MODE";

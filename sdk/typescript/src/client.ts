@@ -702,6 +702,18 @@ export function buildTokenSettlementNTransaction(
       },
     ),
   );
+  const probe = new Transaction();
+  probe.add(...transaction.instructions);
+  probe.feePayer = options.payer;
+  probe.recentBlockhash = PublicKey.default.toBase58();
+  const message = probe.compileMessage();
+  const size = message.serialize().length + 1 + message.header.numRequiredSignatures * 64;
+  if (size > 1232) {
+    throw new ProtocolError(
+      "TRANSACTION_TOO_LARGE",
+      `token settlement is ${size} bytes, over the 1232-byte transaction limit; use fewer shares or set createRecipientAccounts: false`,
+    );
+  }
   return {
     transaction,
     mode: "program-token",
