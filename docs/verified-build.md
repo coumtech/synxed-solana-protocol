@@ -99,7 +99,7 @@ decline unless you mean to sign for it with a funded key.
 | --- | --- |
 | Program id | `HQtacJhd73ygr8rBg8mHpmHduhS79dFvDZqXCRhoU4HT` (devnet) |
 | First deployment | slot 489,312,348, signature `21Yx5MaKNGtuNR8fUo2rXDkyFebPbNuwk9t9pk8AVtG6Qw3jVwiqn2iEXx6BkszdceTbodutbhcrjM1JjEb1V4tm` |
-| Last upgrade | slot 499,646,827 (`solana program show`) |
+| Last upgrade | slot 517,439,581 (`solana program show`, 1 November 2026) |
 | Built from | `main` at the commit named in the PR that last upgraded it |
 | Build | pinned image above |
 | Upgrade authority | the maintainers' devnet payer key |
